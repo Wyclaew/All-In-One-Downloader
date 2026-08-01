@@ -1,0 +1,50 @@
+appId: com.erne.everythingdownloader
+productName: Everything Downloader
+copyright: © 2026 erne
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - dist/**
+  - electron/**
+  - package.json
+
+# Optional: drop yt-dlp / ffmpeg binaries into resources/bin/<platform>/ and they
+# get shipped with the app. electron/lib/binaries.js looks there first, then PATH.
+extraResources:
+  - from: resources/bin
+    to: bin
+    filter:
+      - '**/*'
+
+mac:
+  category: public.app-category.utilities
+  darkModeSupport: true
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  # Ad-hoc signing keeps local builds runnable without a developer certificate.
+  identity: null
+
+dmg:
+  artifactName: ${productName}-${version}-${arch}.dmg
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: ${productName}-${version}-setup.exe
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+linux:
+  target:
+    - AppImage
+  category: Utility
