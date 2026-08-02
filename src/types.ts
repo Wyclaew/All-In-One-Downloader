@@ -51,6 +51,10 @@ export interface MediaItem {
   enriched: boolean
   downloadId?: string | null
   resolved?: Resolved | null
+  /** Heights offered by a resolved HLS master playlist. */
+  variants?: number[]
+  /** Stream is protected by a key system we won't touch. */
+  drm?: boolean
 }
 
 export type DownloadStatus = 'queued' | 'running' | 'paused' | 'done' | 'error' | 'canceled'

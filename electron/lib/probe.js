@@ -13,6 +13,7 @@ const store = require('./store')
 const { toolEnv, ytdlpPathOrThrow } = require('./binaries')
 const { resolveCookieArg, exportCookieJar } = require('./browsers')
 const { resolvePage } = require('./resolver')
+const { describeStream } = require('./mediainfo')
 const { uid, siteLabel, hostOf, num, resolvedArgs } = require('./util')
 
 const MAX_JSON = 64 * 1024 * 1024 // channels can dump a lot of JSON
@@ -341,7 +342,8 @@ async function runProbe(source, playlistEnd) {
  * fallback: our own page resolver
  * ========================================================================== */
 
-function itemFromCandidate(candidate, source, index, title, userAgent, total) {
+function itemFromCandidate(candidate, source, index, title, userAgent, total, thumbnail) {
+  const info = candidate.info || null
   const suffix = total > 1 ? ` · akış ${index + 1}` : ''
   return {
     id: uid('it'),
@@ -349,16 +351,19 @@ function itemFromCandidate(candidate, source, index, title, userAgent, total) {
     index,
     url: candidate.url,
     title: `${title || hostOf(source.url) || 'Adsız'}${suffix}`,
-    duration: null,
-    thumbnail: null,
+    duration: info ? info.duration : null,
+    thumbnail: thumbnail || null,
     uploader: null,
     ext: candidate.kind === 'hls' ? 'm3u8' : candidate.kind === 'dash' ? 'mpd' : null,
-    height: null,
-    filesize: null,
-    isLive: false,
+    height: info ? info.height : null,
+    filesize: info ? info.filesize : null,
+    isLive: info ? !!info.live : false,
     site: hostOf(source.url) || source.site,
     addedAt: Date.now(),
-    enriched: false,
+    // Verified during resolution — no second metadata pass needed.
+    enriched: !!(info && (info.duration || info.height)),
+    variants: info && info.variants ? info.variants.map((v) => v.height).filter(Boolean) : [],
+    drm: !!(info && info.drm),
     resolved: {
       pageUrl: source.url,
       referer: candidate.referer || source.url,
@@ -433,8 +438,9 @@ async function tryResolve(source, settings, fallbackError) {
   const title = (result.title || source.title || hostOf(source.url) || '').trim()
   const picked = candidates.slice(0, 8)
   const items = picked.map((c, i) =>
-    itemFromCandidate(c, source, i, title, result.userAgent, picked.length)
+    itemFromCandidate(c, source, i, title, result.userAgent, picked.length, result.thumbnail)
   )
+  const drmOnly = items.length > 0 && items.every((i) => i.drm)
 
   store.commit((s) => {
     source.title = title || source.url
@@ -442,7 +448,7 @@ async function tryResolve(source, settings, fallbackError) {
     source.kind = 'video'
     source.count = items.length
     source.status = 'ready'
-    source.error = null
+    source.error = drmOnly ? 'Bulunan akışlar DRM korumalı — indirilemez.' : null
     source.stage = null
     source.note = null
     source.resolvedBy = result.engine === 'browser' ? 'tarayıcı motoru' : 'sayfa taraması'
@@ -454,37 +460,62 @@ async function tryResolve(source, settings, fallbackError) {
 }
 
 /**
- * Ask yt-dlp about a resolved manifest to learn its duration and heights.
- * Cheap, and it turns a bare stream URL into a proper-looking entry.
+ * Second chance at metadata for resolved streams the verification pass couldn't
+ * read: ffprobe and the manifest parser first, yt-dlp as a last resort.
  */
 async function enrichResolved(sourceId) {
-  const bare = { ...store.getState().settings, cookiesBrowser: '' }
   const pending = store.itemsOfSource(sourceId).filter((i) => i.resolved && !i.enriched)
   const source = store.findSource(sourceId)
+  if (!pending.length) return
   if (source) store.commit(() => { source.enriching = pending.length })
 
   for (const item of pending) {
+    let filled = false
     try {
-      const { json } = await runJson(
-        item.url,
-        ['-J', '--no-playlist', ...resolvedArgs(item.resolved)],
-        bare
-      )
-      store.commit(() => {
-        const live = store.findItem(item.id)
-        if (!live || !json) return
-        live.duration = num(json.duration) ?? live.duration
-        live.height = heightOf(json) || live.height
-        live.filesize = num(json.filesize) || num(json.filesize_approx) || live.filesize
-        live.isLive = !!json.is_live
-        live.enriched = true
-      })
+      const info = await describeStream(item.url, item.resolved)
+      if (info && (info.duration || info.height)) {
+        filled = true
+        store.commit(() => {
+          const live = store.findItem(item.id)
+          if (!live) return
+          live.duration = info.duration ?? live.duration
+          live.height = info.height || live.height
+          live.filesize = info.filesize || live.filesize
+          live.isLive = !!info.live
+          live.variants = (info.variants || []).map((v) => v.height).filter(Boolean)
+          live.drm = !!info.drm
+          live.enriched = true
+        })
+      }
     } catch {
-      store.commit(() => {
-        const live = store.findItem(item.id)
-        if (live) live.enriched = true
-      })
+      /* fall through to yt-dlp */
     }
+
+    if (!filled) {
+      const bare = { ...store.getState().settings, cookiesBrowser: '' }
+      try {
+        const { json } = await runJson(
+          item.url,
+          ['-J', '--no-playlist', ...resolvedArgs(item.resolved)],
+          bare
+        )
+        store.commit(() => {
+          const live = store.findItem(item.id)
+          if (!live || !json) return
+          live.duration = num(json.duration) ?? live.duration
+          live.height = heightOf(json) || live.height
+          live.filesize = num(json.filesize) || num(json.filesize_approx) || live.filesize
+          live.isLive = !!json.is_live
+          live.enriched = true
+        })
+      } catch {
+        store.commit(() => {
+          const live = store.findItem(item.id)
+          if (live) live.enriched = true
+        })
+      }
+    }
+
     if (source) store.commit(() => { source.enriching = Math.max(0, source.enriching - 1) })
   }
 

@@ -109,6 +109,12 @@ async function detectTools({ force = false } = {}) {
   if (cache && !force) return cache
   const ytdlpPath = locate('yt-dlp')
   const ffmpegPath = locate('ffmpeg')
+  // ffprobe ships beside ffmpeg; fall back to the same directory if PATH misses it.
+  let ffprobeFound = locate('ffprobe')
+  if (!ffprobeFound && ffmpegPath) {
+    const sibling = path.join(path.dirname(ffmpegPath), `ffprobe${EXE}`)
+    if (isExecutable(sibling)) ffprobeFound = sibling
+  }
   const [ytdlpVersion, ffmpegVersion] = await Promise.all([
     ytdlpPath ? runVersion(ytdlpPath, ['--version']) : Promise.resolve(null),
     ffmpegPath ? runVersion(ffmpegPath, ['-version']) : Promise.resolve(null),
@@ -121,6 +127,7 @@ async function detectTools({ force = false } = {}) {
           version: (ffmpegVersion || '').replace(/^ffmpeg version\s*/i, '').split(' ')[0] || null,
         }
       : null,
+    ffprobe: ffprobeFound ? { path: ffprobeFound } : null,
     platform: process.platform,
     installHint: IS_WIN
       ? 'winget install yt-dlp.yt-dlp ; winget install Gyan.FFmpeg'
@@ -141,6 +148,18 @@ function ytdlpPathOrThrow() {
 
 function ffmpegPath() {
   return cache && cache.ffmpeg ? cache.ffmpeg.path : locate('ffmpeg')
+}
+
+function ffprobePath() {
+  if (cache && cache.ffprobe) return cache.ffprobe.path
+  const direct = locate('ffprobe')
+  if (direct) return direct
+  const ff = ffmpegPath()
+  if (ff) {
+    const sibling = path.join(path.dirname(ff), `ffprobe${EXE}`)
+    if (isExecutable(sibling)) return sibling
+  }
+  return null
 }
 
 /** `yt-dlp -U`. Only works for standalone binaries; package managers own theirs. */
@@ -167,4 +186,13 @@ function updateYtdlp() {
   })
 }
 
-module.exports = { detectTools, toolEnv, ytdlpPathOrThrow, ffmpegPath, updateYtdlp, locate, IS_WIN }
+module.exports = {
+  detectTools,
+  toolEnv,
+  ytdlpPathOrThrow,
+  ffmpegPath,
+  ffprobePath,
+  updateYtdlp,
+  locate,
+  IS_WIN,
+}

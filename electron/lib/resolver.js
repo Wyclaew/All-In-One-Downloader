@@ -26,6 +26,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { BrowserWindow, session } = require('electron')
+const { describeStream } = require('./mediainfo')
 const { uid, hostOf } = require('./util')
 
 const UA =
@@ -35,6 +36,14 @@ const UA =
 const MANIFEST_EXT = /\.(m3u8|mpd)(\?|#|$)/i
 const FILE_EXT = /\.(mp4|webm|m4v|mkv|mov|flv|mp3|m4a|ogg|opus|wav)(\?|#|$)/i
 const SEGMENT_EXT = /\.(ts|m4s|aac|init)(\?|#|$)/i
+
+/**
+ * Never a stream, however promising the surrounding code looks. Posters in
+ * particular slip through source-position matching, and ffprobe happily reports
+ * a width and height for a PNG — so they have to be excluded by name.
+ */
+const NON_MEDIA_EXT =
+  /\.(png|jpe?g|gif|webp|svg|avif|bmp|ico|css|js|mjs|json|xml|txt|html?|php|woff2?|ttf|eot|pdf|zip|vtt|srt)(\?|#|$)/i
 
 const MEDIA_URL_RE =
   /https?:\/\/[^\s"'`<>()\\]{8,}?\.(?:m3u8|mpd|mp4|webm|m4v|mkv|mov|flv|mp3|m4a)(?:\?[^\s"'`<>()\\]*)?/gi
@@ -188,23 +197,146 @@ async function fetchText(url, referer, timeoutMs = 12000) {
   }
 }
 
+/** `\x68\x74\x74\x70...` — a favourite way to hide a URL from a grep. */
+function decodeHexEscapes(text) {
+  if (!/\\x[0-9a-f]{2}/i.test(text)) return ''
+  return text.replace(/(?:\\x[0-9a-fA-F]{2})+/g, (run) =>
+    run
+      .split('\\x')
+      .filter(Boolean)
+      .map((h) => String.fromCharCode(parseInt(h, 16)))
+      .join('')
+  )
+}
+
+/** `%68%74%74%70...`, same idea. */
+function decodePercentEscapes(text) {
+  if (!/%[0-9a-f]{2}%[0-9a-f]{2}/i.test(text)) return ''
+  return text.replace(/(?:%[0-9a-fA-F]{2}){4,}/g, (run) => {
+    try {
+      return decodeURIComponent(run)
+    } catch {
+      return run
+    }
+  })
+}
+
+/**
+ * URLs sitting in the positions players read their source from, even when the
+ * URL carries no file extension: `file:"…"`, `sources:[{src:"…"}]`,
+ * `<source src="…">`, JSON-LD `contentUrl`. These are strong hints but unproven,
+ * so they come back as `unknown` and get validated before use.
+ */
+const CONFIG_VALUE_RE =
+  /\b(?:file|src|source|url|videoUrl|video_url|playUrl|play_url|stream|streamUrl|hls|hlsUrl|manifest|contentUrl|mp4|m3u8)\b\s*[:=]\s*["'`](https?:\/\/[^"'`\s]{12,})["'`]/gi
+
+const TAG_SRC_RE = /<(?:video|source|audio)\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']/gi
+
 function collectFromText(text, baseUrl) {
+  const raw = String(text)
   const expanded = [
-    normaliseText(text),
-    normaliseText(unpackPacked(text)),
-    normaliseText(decodeBase64Blobs(text)),
-  ].join('\n')
+    normaliseText(raw),
+    normaliseText(unpackPacked(raw)),
+    normaliseText(decodeBase64Blobs(raw)),
+    normaliseText(decodeHexEscapes(raw)),
+    normaliseText(decodePercentEscapes(raw)),
+  ]
+    .filter(Boolean)
+    .join('\n')
 
   const found = []
-  let match
-  MEDIA_URL_RE.lastIndex = 0
-  while ((match = MEDIA_URL_RE.exec(expanded)) !== null) {
-    const url = match[0].replace(/[",';)\]]+$/, '')
-    const kind = kindOf(url)
-    if (kind === 'segment' || kind === 'unknown') continue
-    found.push({ url, kind, referer: baseUrl, origin: originOf(baseUrl), via: 'static' })
+  const push = (url, confident) => {
+    const clean = String(url).replace(/[",';)\]}]+$/, '').trim()
+    if (!isHttp(clean) || JUNK_HOST.test(clean)) return
+    if (NON_MEDIA_EXT.test(clean)) return
+    const kind = kindOf(clean)
+    if (kind === 'segment') return
+    if (kind === 'unknown' && !confident) return
+    found.push({
+      url: clean,
+      kind,
+      referer: baseUrl,
+      origin: originOf(baseUrl),
+      via: 'static',
+      // `unknown` means "found in a source position but unverified".
+      needsCheck: kind === 'unknown',
+    })
   }
+
+  let match
+
+  MEDIA_URL_RE.lastIndex = 0
+  while ((match = MEDIA_URL_RE.exec(expanded)) !== null) push(match[0], false)
+
+  CONFIG_VALUE_RE.lastIndex = 0
+  while ((match = CONFIG_VALUE_RE.exec(expanded)) !== null) push(match[1], true)
+
+  TAG_SRC_RE.lastIndex = 0
+  while ((match = TAG_SRC_RE.exec(expanded)) !== null) {
+    try {
+      push(new URL(match[1], baseUrl).href, true)
+    } catch {
+      /* malformed */
+    }
+  }
+
   return { candidates: found, expanded }
+}
+
+/**
+ * Player scripts are usually a separate file, so scanning only the HTML misses
+ * the very place the source lives. Take same-site and player-looking scripts.
+ */
+function collectScripts(html, baseUrl) {
+  const urls = []
+  const re = /<script\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']/gi
+  let match
+  let host = ''
+  try {
+    host = new URL(baseUrl).hostname
+  } catch {
+    /* ignore */
+  }
+
+  while ((match = re.exec(html)) !== null) {
+    let abs
+    try {
+      abs = new URL(normaliseText(match[1]), baseUrl)
+    } catch {
+      continue
+    }
+    if (!/^https?:$/.test(abs.protocol) || JUNK_HOST.test(abs.href)) continue
+    const sameSite = host && (abs.hostname === host || abs.hostname.endsWith(`.${host}`))
+    const looksLikePlayer = /player|embed|stream|video|hls|jwplayer|clappr|plyr|source/i.test(abs.pathname)
+    // Skip the usual framework bulk; it never holds a stream URL.
+    if (/jquery|bootstrap|analytics|gtag|gtm|recaptcha|polyfill|react|vue\.|lodash/i.test(abs.pathname)) continue
+    if (sameSite || looksLikePlayer) urls.push(abs.href)
+  }
+  return urls
+}
+
+function pageImageOf(html) {
+  const og =
+    html.match(/<meta[^>]+property=["']og:image(?::secure_url)?["'][^>]+content=["']([^"']+)["']/i) ||
+    html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i)
+  return og ? decodeEntities(og[1]).trim() : ''
+}
+
+/** Strip the site's boilerplate off a page title. */
+function cleanTitle(title, host) {
+  let out = decodeEntities(String(title || '')).replace(/\s+/g, ' ').trim()
+  if (!out) return ''
+  const site = String(host || '').replace(/^www\./, '').split('.')[0]
+  if (site) {
+    const escaped = site.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    out = out.replace(new RegExp(`\\s*[-–—|·:]\\s*${escaped}.*$`, 'i'), '')
+  }
+  out = out
+    .replace(/\s*[-–—|]\s*(?:izle|full hd izle|hd izle|watch online|online|free|full movie)\s*$/i, '')
+    .replace(/^\s*(?:watch|izle)\s+/i, '')
+    .replace(/\s+(?:full hd online|full hd|online izle|izle)\s*$/i, '')
+    .trim()
+  return out || decodeEntities(String(title || '')).trim()
 }
 
 function originOf(url) {
@@ -248,13 +380,17 @@ function decodeEntities(text) {
     .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
 }
 
-/** Walk the page and up to `maxDepth` levels of nested iframes. */
-async function staticScan(pageUrl, { maxDepth = 2, maxFetches = 7 } = {}) {
+/**
+ * Walk the page, its player scripts, and up to `maxDepth` levels of nested
+ * iframes — carrying the Referer chain, because embed hosts check it.
+ */
+async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress = null } = {}) {
   const candidates = []
   let title = ''
+  let thumbnail = ''
   let fetches = 0
   const visited = new Set()
-  let queue = [{ url: pageUrl, referer: '', depth: 0 }]
+  let queue = [{ url: pageUrl, referer: '', depth: 0, kind: 'page' }]
 
   while (queue.length && fetches < maxFetches) {
     const next = []
@@ -266,21 +402,34 @@ async function staticScan(pageUrl, { maxDepth = 2, maxFetches = 7 } = {}) {
 
       const { text, finalUrl } = await fetchText(job.url, job.referer)
       if (!text) continue
-      if (!title) title = pageTitleOf(text)
+
+      if (job.kind === 'page') {
+        if (!title) title = pageTitleOf(text)
+        if (!thumbnail) thumbnail = pageImageOf(text)
+      }
 
       const { candidates: found } = collectFromText(text, finalUrl)
+      if (found.length && onProgress) {
+        onProgress(`${found.length} olası akış bulundu, doğrulanıyor`)
+      }
       candidates.push(...found)
 
-      if (job.depth < maxDepth) {
-        for (const frame of collectIframes(text, finalUrl)) {
-          next.push({ url: frame, referer: finalUrl, depth: job.depth + 1 })
+      // Scripts hold sources but never frames, so they are a leaf.
+      if (job.kind === 'page') {
+        for (const script of collectScripts(text, finalUrl).slice(0, 5)) {
+          next.push({ url: script, referer: finalUrl, depth: job.depth, kind: 'script' })
+        }
+        if (job.depth < maxDepth) {
+          for (const frame of collectIframes(text, finalUrl)) {
+            next.push({ url: frame, referer: finalUrl, depth: job.depth + 1, kind: 'page' })
+          }
         }
       }
     }
     queue = next
   }
 
-  return { title, candidates: dedupe(candidates), engine: 'static' }
+  return { title, thumbnail, candidates: dedupe(candidates), engine: 'static' }
 }
 
 /* ========================================================================== *
@@ -605,24 +754,91 @@ function browserScan(pageUrl, { timeoutMs = 30000, onProgress = null, browserCoo
  * Resolve a page to playable media.
  * Returns { title, candidates: [{url, kind, referer, origin, cookieFile}], engine }
  */
+/**
+ * Confirm a candidate really is media, and learn its duration and height while
+ * we're there. Unverified guesses from player configs live or die here, which is
+ * what lets the scan be aggressive without inventing entries.
+ */
+async function verifyCandidates(candidates, { limit = 8, concurrency = 3 } = {}) {
+  const shortlist = candidates.slice(0, limit)
+  const keep = []
+  let cursor = 0
+
+  async function worker() {
+    while (cursor < shortlist.length) {
+      const candidate = shortlist[cursor++]
+      const resolved = {
+        referer: candidate.referer,
+        origin: candidate.origin,
+        userAgent: UA,
+        cookieFile: candidate.cookieFile || null,
+        kind: candidate.kind === 'unknown' ? 'hls' : candidate.kind,
+      }
+      try {
+        const info = await describeStream(candidate.url, resolved)
+        // Duration is the honest test of "this is a video": a poster image
+        // reports a resolution but never a running time.
+        const real = !!(info.duration || info.variants.length)
+        if (real) {
+          keep.push({
+            ...candidate,
+            kind: info.variants.length ? 'hls' : candidate.kind === 'unknown' ? 'file' : candidate.kind,
+            info,
+          })
+        } else if (!candidate.needsCheck) {
+          // Extension said media but nothing could read it; keep it and let
+          // yt-dlp have the final say rather than dropping a real find.
+          keep.push({ ...candidate, info: null })
+        }
+      } catch {
+        if (!candidate.needsCheck) keep.push({ ...candidate, info: null })
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, shortlist.length) }, worker))
+  return dedupe(keep)
+}
+
+/**
+ * Resolve a page to playable media.
+ * Returns { title, thumbnail, candidates: [{url, kind, referer, origin, cookieFile, info}], engine }
+ */
 async function resolvePage(
   pageUrl,
   { onProgress = null, timeoutMs = 30000, staticOnly = false, browserCookieJar = null } = {}
 ) {
   if (!isHttp(pageUrl)) return { title: '', candidates: [], engine: 'none' }
 
-  if (onProgress) onProgress('sayfa taranıyor')
-  const fast = await staticScan(pageUrl)
-  const usable = fast.candidates.filter((c) => c.kind !== 'unknown')
-  if (usable.length || staticOnly) {
-    return { ...fast, candidates: usable, userAgent: UA }
+  if (onProgress) onProgress('sayfa ve oynatıcı kodları taranıyor')
+  const fast = await staticScan(pageUrl, { onProgress })
+
+  if (fast.candidates.length) {
+    const verified = await verifyCandidates(fast.candidates)
+    if (verified.length) {
+      return {
+        ...fast,
+        title: cleanTitle(fast.title, hostOf(pageUrl)),
+        candidates: verified,
+        userAgent: UA,
+      }
+    }
+  }
+  if (staticOnly) {
+    return { ...fast, title: cleanTitle(fast.title, hostOf(pageUrl)), candidates: [], userAgent: UA }
   }
 
-  if (onProgress) onProgress('oynatıcı çalıştırılıyor')
+  if (onProgress) onProgress('oynatıcı görünmez tarayıcıda çalıştırılıyor')
   const deep = await browserScan(pageUrl, { timeoutMs, onProgress, browserCookieJar })
+  const verified = deep.candidates.length ? await verifyCandidates(deep.candidates) : []
+
   return {
     ...deep,
-    title: deep.title || fast.title,
+    // Keep browser finds even if verification couldn't read them: the session
+    // that captured them is gone, so a fresh fetch may legitimately fail.
+    candidates: verified.length ? verified : deep.candidates,
+    title: cleanTitle(deep.title || fast.title, hostOf(pageUrl)),
+    thumbnail: fast.thumbnail || '',
     userAgent: UA,
   }
 }
