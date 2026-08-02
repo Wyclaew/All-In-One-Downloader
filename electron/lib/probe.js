@@ -178,6 +178,8 @@ function itemFromNode(node, source, index) {
     height: heightOf(node),
     filesize: num(node.filesize) || num(node.filesize_approx) || null,
     isLive: !!node.is_live,
+    // Used later to avoid subtitling a video in the language it already speaks.
+    language: node.language || null,
     site: siteLabel(url || source.url, node.extractor_key || node.ie_key),
     addedAt: Date.now(),
     // A flat-playlist entry with no duration needs a second look.
@@ -410,7 +412,8 @@ async function tryResolve(source, settings, fallbackError) {
   try {
     result = await resolvePage(source.url, {
       browserCookieJar,
-      timeoutMs: Math.max(8000, Number(settings.resolverTimeout) || 30000),
+      minStreamSeconds: Math.max(0, Number(settings.minStreamSeconds) ?? 120),
+      timeoutMs: Math.max(8000, Number(settings.resolverTimeout) || 45000),
       onProgress: (message) => {
         const live = store.findSource(source.id)
         if (live) store.commit(() => { live.note = message })
@@ -423,14 +426,21 @@ async function tryResolve(source, settings, fallbackError) {
   const candidates = (result && result.candidates) || []
 
   if (!candidates.length) {
+    const adsOnly = result && result.adsSkipped > 0
     store.commit(() => {
       source.status = 'error'
       source.stage = null
       source.note = null
+      const shortest =
+        result && Number.isFinite(result.shortest) ? Math.round(result.shortest) : null
       source.error =
         result && result.encrypted
           ? 'Bu akış DRM korumalı — indirilemez.'
-          : fallbackError || 'Sayfada oynatılabilir bir akış bulunamadı.'
+          : result && result.shortOnly
+            ? `Yalnızca ${shortest ? `${shortest} sn'lik ` : 'kısa '}bir akış geldi — bu reklam. Video akışı süre içinde başlamadı: Ayarlar → Erişim'den beklemeyi artır, ya da gerçekten kısa bir video ise "En kısa video süresi"ni Yok yap.`
+            : adsOnly
+              ? `${result.adsSkipped} reklam akışı atlandı, video akışı gelmedi. Ayarlar → Erişim'den beklemeyi artırıp yeniden dene.`
+              : fallbackError || 'Sayfada oynatılabilir bir akış bulunamadı.'
     })
     return
   }

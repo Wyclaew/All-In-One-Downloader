@@ -22,10 +22,11 @@ body,
 }
 
 :root {
-  /* A slab serif for titles: unusual in a utility app, and it holds long video
-     names better than a condensed sans. Superclarendon ships with macOS,
-     Rockwell with Windows. */
-  --f-display: 'Superclarendon', 'Rockwell', 'Bookman Old Style', Georgia, serif;
+  /* Titles use the system UI face at a larger size with tighter tracking. The
+     character comes from the layout, the accent and the numerals — spending it
+     on an unusual typeface was a step too far. */
+  --f-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI Variable Display',
+    'Segoe UI', system-ui, sans-serif;
   --f-body: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI',
     system-ui, sans-serif;
   --f-mono: ui-monospace, 'SF Mono', Menlo, 'Cascadia Mono', Consolas, monospace;
@@ -46,13 +47,13 @@ body,
   --dim: #5d6570;
   --dimmer: #8b9199;
 
-  /* ---- the ink block: rail and title bar, dark in both themes ---- */
-  --ink: #17202a;
-  --ink-2: #1e2934;
-  --ink-3: #26323e;
-  --ink-text: #eef1f4;
-  --ink-dim: #93a0ad;
-  --ink-rule: #2c3844;
+  /* ---- chrome: rail and title bar. Light theme keeps it light. ---- */
+  --ink: #eceae5;
+  --ink-2: #e3e0d9;
+  --ink-3: #d9d5cc;
+  --ink-text: #1b1f25;
+  --ink-dim: #6b7280;
+  --ink-rule: #d7d3ca;
 
   /* ---- vermilion: live transfer only ---- */
   --signal: #d2461f;
@@ -242,6 +243,7 @@ a {
   padding: 0 12px;
   background: var(--ink);
   color: var(--ink-text);
+  border-bottom: 1px solid var(--ink-rule);
   -webkit-app-region: drag;
 }
 
@@ -442,9 +444,10 @@ a {
   min-height: 0;
 }
 
-/* The ink block. Dark in both themes: it frames the paper and gives the window
-   a shape you recognise before reading a word. */
+/* The chrome block: a tone apart from the working area rather than a slab of
+   black, so the light theme stays light all the way across. */
 .rail {
+  border-right: 1px solid var(--ink-rule);
   display: flex;
   flex-direction: column;
   gap: 1px;

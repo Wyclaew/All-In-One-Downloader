@@ -455,6 +455,38 @@ function start(downloadId) {
  */
 async function autoSubtitles(download, filePath, settings) {
   const subtitles = require('./subtitles')
+  const { audioLanguages, normaliseLanguage } = require('./mediainfo')
+
+  let wanted = String(settings.subtitleLangs || 'tr,en')
+    .split(',')
+    .map((l) => normaliseLanguage(l) || l.trim().toLowerCase())
+    .filter(Boolean)
+
+  // Subtitling a Turkish video in Turkish is noise. Drop any language the file
+  // already speaks — from the file's own audio tags first, then whatever the
+  // extractor told us. An untagged file means "unknown", so nothing is dropped.
+  if (settings.skipSameLanguageSubtitles !== false) {
+    const spoken = new Set(await audioLanguages(filePath))
+    const declared = normaliseLanguage(download.language)
+    if (declared) spoken.add(declared)
+    if (spoken.size) {
+      const before = wanted.length
+      wanted = wanted.filter((l) => !spoken.has(l))
+      if (!wanted.length) {
+        store.toast(
+          `Altyazı atlandı: video zaten ${[...spoken].join(', ')} dilinde.`,
+          'info'
+        )
+        return
+      }
+      if (wanted.length < before) {
+        store.commit(() => {
+          download.audioLanguage = [...spoken][0]
+        })
+      }
+    }
+  }
+
   let found
   try {
     found = await subtitles.search({
@@ -468,11 +500,6 @@ async function autoSubtitles(download, filePath, settings) {
     store.toast(`Altyazı aranamadı: ${err.message}`, 'warn')
     return
   }
-
-  const wanted = String(settings.subtitleLangs || 'tr,en')
-    .split(',')
-    .map((l) => l.trim().toLowerCase())
-    .filter(Boolean)
 
   let pick = null
   for (const lang of wanted) {
@@ -529,6 +556,7 @@ function enqueue({ item, url, title, site, sourceId, quality, audioOnly, categor
     thumbnail: item ? item.thumbnail : null,
     duration: item ? item.duration : null,
     resolved: item && item.resolved ? item.resolved : null,
+    language: item && item.language ? item.language : null,
     quality: quality === undefined ? settings.defaultQuality : Number(quality) || 0,
     audioOnly: !!audioOnly,
     categoryId: categoryId || null,

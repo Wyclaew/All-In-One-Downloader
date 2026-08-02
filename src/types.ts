@@ -50,6 +50,7 @@ export interface MediaItem {
   addedAt: number
   enriched: boolean
   downloadId?: string | null
+  language?: string | null
   resolved?: Resolved | null
   /** Heights offered by a resolved HLS master playlist. */
   variants?: number[]
@@ -77,6 +78,10 @@ export interface Download {
   resolved?: Resolved | null
   subtitlePath?: string | null
   subtitleLanguage?: string | null
+  /** Declared by the extractor; used to skip same-language subtitles. */
+  language?: string | null
+  /** Detected from the finished file's audio tracks. */
+  audioLanguage?: string | null
   status: DownloadStatus
   stage: DownloadStage
   percent: number | null
@@ -123,12 +128,14 @@ export interface Settings {
 
   useResolver: boolean
   resolverTimeout: number
+  minStreamSeconds: number
 
   subtitleLangs: string
   subtitleApiKey: string
   autoFetchSubtitles: boolean
   syncSubtitles: boolean
   embedSubtitleFile: boolean
+  skipSameLanguageSubtitles: boolean
 }
 
 export interface SubtitleHit {

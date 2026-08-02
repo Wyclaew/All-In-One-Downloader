@@ -241,6 +241,20 @@ export default function Settings({ settings, tools, onRefreshTools, onToast }: P
           </div>
         </Row>
 
+        <Row label={T.settings.minStream} hint={T.settings.minStreamHint}>
+          <select
+            className="select"
+            value={settings.minStreamSeconds}
+            onChange={(e) => patch({ minStreamSeconds: Number(e.target.value) })}
+          >
+            {[0, 60, 120, 300, 600].map((s) => (
+              <option key={s} value={s}>
+                {s === 0 ? T.common.none : `${s < 60 ? s : s / 60} ${s < 60 ? 'sn' : 'dk'}`}
+              </option>
+            ))}
+          </select>
+        </Row>
+
         <Row label={T.settings.enrichLimit} hint={T.settings.enrichHint}>
           <select
             className="select"
@@ -296,6 +310,11 @@ export default function Settings({ settings, tools, onRefreshTools, onToast }: P
               checked={settings.embedSubtitleFile}
               onChange={(v) => patch({ embedSubtitleFile: v })}
               label={T.settings.subsEmbed}
+            />
+            <Toggle
+              checked={settings.skipSameLanguageSubtitles}
+              onChange={(v) => patch({ skipSameLanguageSubtitles: v })}
+              label={T.settings.subsSkipSame}
             />
           </div>
         </Row>

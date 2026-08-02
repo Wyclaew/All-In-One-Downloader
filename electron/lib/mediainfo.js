@@ -369,4 +369,90 @@ async function describeStream(url, resolved) {
   return info
 }
 
-module.exports = { describeStream, parseHls, parseDash, cookieHeaderFor, ffprobeMedia }
+/* -------------------------------------------------------------------------- */
+/* audio language                                                              */
+/* -------------------------------------------------------------------------- */
+
+/** ffprobe reports ISO 639-2; subtitle providers speak ISO 639-1. */
+const LANG_ALIASES = {
+  tur: 'tr', tr: 'tr',
+  eng: 'en', en: 'en',
+  ger: 'de', deu: 'de', de: 'de',
+  fre: 'fr', fra: 'fr', fr: 'fr',
+  spa: 'es', es: 'es',
+  ita: 'it', it: 'it',
+  rus: 'ru', ru: 'ru',
+  ara: 'ar', ar: 'ar',
+  jpn: 'ja', ja: 'ja',
+  kor: 'ko', ko: 'ko',
+  chi: 'zh', zho: 'zh', zh: 'zh',
+  por: 'pt', pt: 'pt',
+  dut: 'nl', nld: 'nl', nl: 'nl',
+  pol: 'pl', pl: 'pl',
+  swe: 'sv', sv: 'sv',
+  gre: 'el', ell: 'el', el: 'el',
+  per: 'fa', fas: 'fa', fa: 'fa',
+  hin: 'hi', hi: 'hi',
+  ukr: 'uk', uk: 'uk',
+  rum: 'ro', ron: 'ro', ro: 'ro',
+  bul: 'bg', bg: 'bg',
+  srp: 'sr', sr: 'sr',
+  hrv: 'hr', hr: 'hr',
+  cze: 'cs', ces: 'cs', cs: 'cs',
+  hun: 'hu', hu: 'hu',
+  heb: 'he', he: 'he',
+  tha: 'th', th: 'th',
+  vie: 'vi', vi: 'vi',
+  ind: 'id', id: 'id',
+}
+
+/** Two-letter code, or '' when the tag is missing or 'und'. */
+function normaliseLanguage(code) {
+  const raw = String(code || '').trim().toLowerCase().split(/[-_]/)[0]
+  if (!raw || raw === 'und' || raw === 'unknown' || raw === 'mul') return ''
+  return LANG_ALIASES[raw] || (raw.length === 2 ? raw : '')
+}
+
+/**
+ * Languages of a downloaded file's audio tracks. Many web downloads carry no
+ * tag at all, so an empty result means "unknown", never "none".
+ */
+function audioLanguages(filePath) {
+  return new Promise((resolve) => {
+    const bin = ffprobePath()
+    if (!bin) return resolve([])
+    execFile(
+      bin,
+      [
+        '-v', 'error',
+        '-select_streams', 'a',
+        '-show_entries', 'stream_tags=language',
+        '-print_format', 'json',
+        '-i', filePath,
+      ],
+      { env: toolEnv(), timeout: 20000, windowsHide: true },
+      (err, stdout) => {
+        if (err || !stdout) return resolve([])
+        try {
+          const data = JSON.parse(stdout)
+          const langs = (data.streams || [])
+            .map((s) => normaliseLanguage(s.tags && s.tags.language))
+            .filter(Boolean)
+          resolve([...new Set(langs)])
+        } catch {
+          resolve([])
+        }
+      }
+    )
+  })
+}
+
+module.exports = {
+  describeStream,
+  parseHls,
+  parseDash,
+  cookieHeaderFor,
+  ffprobeMedia,
+  audioLanguages,
+  normaliseLanguage,
+}

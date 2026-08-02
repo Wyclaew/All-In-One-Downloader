@@ -62,6 +62,33 @@ const JUNK_HOST =
 const CONTENT_TYPE_MEDIA =
   /(application\/(?:vnd\.apple\.mpegurl|x-mpegurl|dash\+xml)|video\/(?:mp4|webm|x-matroska)|audio\/(?:mp4|mpeg|webm))/i
 
+/**
+ * Video-ad delivery networks. A pre-roll is a real video stream on a real CDN,
+ * so nothing about its shape distinguishes it — but its host does.
+ */
+const AD_MEDIA_HOST =
+  /(connatix|imasdk\.googleapis|securepubads|pubads\.g\.doubleclick|springserve|spotx|spotxchange|teads|adsafeprotected|aniview|unrulymedia|vidoomy|primis\.tech|viralize|onnetwork|smartclip|videoplaza|tremorhub|telaria|beachfront|sekindo|playwire|freewheel|fwmrm|yieldmo|adnxs|adform|dotomi|contextweb|ex\.co|minutemedia|vidazoo|adplayer|admatic|adhood|reklamstore)/i
+
+/**
+ * Ad paths, delimiter-anchored on purpose: a bare "ads" substring also matches
+ * innocent paths like /uploads/.
+ */
+const AD_PATH =
+  /(\/ads?\/|(?:^|[/_.-])(?:vast|vmap|preroll|pre-roll|midroll|postroll|advert|adserver|adserve|adbreak)(?:[/_.-]|$))/i
+
+/** How long to keep listening after the last useful stream shows up. */
+const SETTLE_MS = 5000
+
+function looksLikeAd(url) {
+  let pathname = ''
+  try {
+    pathname = new URL(url).pathname
+  } catch {
+    pathname = String(url)
+  }
+  return AD_MEDIA_HOST.test(url) || AD_PATH.test(pathname)
+}
+
 /* ========================================================================== *
  * shared helpers
  * ========================================================================== */
@@ -249,6 +276,7 @@ function collectFromText(text, baseUrl) {
     const clean = String(url).replace(/[",';)\]}]+$/, '').trim()
     if (!isHttp(clean) || JUNK_HOST.test(clean)) return
     if (NON_MEDIA_EXT.test(clean)) return
+    if (looksLikeAd(clean)) return
     const kind = kindOf(clean)
     if (kind === 'segment') return
     if (kind === 'unknown' && !confident) return
@@ -463,7 +491,7 @@ const PLAY_NUDGE = `(() => {
 })()`
 
 /** Players build their source at their own pace; poke on a schedule, not on events. */
-const NUDGE_SCHEDULE = [700, 2500, 5000, 8500, 13000, 18000, 24000]
+const NUDGE_SCHEDULE = [700, 2500, 5000, 8500, 13000, 18000, 24000, 30000, 36000, 42000]
 
 /**
  * Load a Netscape cookie jar into a session, so the offscreen browser carries
@@ -549,12 +577,17 @@ function writeCookieJar(cookies, file) {
  * Load the page offscreen and record every media request it makes.
  * Resolves as soon as a manifest or progressive file shows up, or on timeout.
  */
-function browserScan(pageUrl, { timeoutMs = 30000, onProgress = null, browserCookieJar = null } = {}) {
+function browserScan(
+  pageUrl,
+  { timeoutMs = 45000, onProgress = null, browserCookieJar = null, minStreamSeconds = 120 } = {}
+) {
   return new Promise((resolve) => {
     const partition = `resolver-${uid('s')}` // no persist: prefix -> in-memory
     const ses = session.fromPartition(partition)
     const hits = new Map()
+    const skipped = new Set()
     const timers = []
+    let adCount = 0
     let encrypted = false
     let title = ''
     let win = null
@@ -577,20 +610,67 @@ function browserScan(pageUrl, { timeoutMs = 30000, onProgress = null, browserCoo
       if (kind === 'unknown' && why !== 'content-type') return
       if (kind === 'segment') return
       const key = url.split('#')[0]
-      if (hits.has(key)) return
-      hits.set(key, {
+      if (hits.has(key) || skipped.has(key)) return
+
+      // A pre-roll loads before the feature does. Naming it here and refusing to
+      // settle on it is the whole point: stopping at the first stream we saw was
+      // how an advert ended up being downloaded instead of the video.
+      if (looksLikeAd(url)) {
+        skipped.add(key)
+        adCount += 1
+        note(`reklam akışı atlandı (${hostOf(url) || 'reklam ağı'}) — video bekleniyor`)
+        return
+      }
+
+      const hit = {
         url,
         kind: kind === 'unknown' ? 'hls' : kind,
         referer: referer || pageUrl,
         origin: originOf(referer || pageUrl),
         via: 'browser',
-      })
-      note(`akış yakalandı: ${hostOf(url) || 'kaynak'}`)
-      // Give sibling requests a moment to arrive, then wrap up.
-      if (kind === 'hls' || kind === 'dash' || kind === 'file') {
-        clearTimeout(settleTimer)
-        settleTimer = setTimeout(finish, 1200)
+        info: null,
+        short: false,
       }
+      hits.set(key, hit)
+      note(`akış yakalandı: ${hostOf(url) || 'kaynak'}`)
+      measure(hit)
+    }
+
+    /**
+     * Never settle on a stream without knowing how long it is.
+     *
+     * A pre-roll can be self-hosted on the site's own CDN under an innocent path
+     * — no host list will catch it. Its length gives it away, so we read that
+     * first and keep listening if the stream is too short to be the feature.
+     */
+    function measure(hit) {
+      const resolved = {
+        referer: hit.referer,
+        origin: hit.origin,
+        userAgent: UA,
+        kind: hit.kind,
+      }
+      describeStream(hit.url, resolved)
+        .then((info) => {
+          hit.info = info
+          if (minStreamSeconds > 0 && info && info.duration && info.duration < minStreamSeconds) {
+            hit.short = true
+            adCount += 1
+            note(
+              `${Math.round(info.duration)} sn'lik kısa akış — reklam olabilir, video bekleniyor`
+            )
+            return
+          }
+          settle()
+        })
+        .catch(() => settle())
+    }
+
+    /** Wait a beat for sibling streams, then wrap up. */
+    function settle() {
+      if (done) return
+      clearTimeout(settleTimer)
+      settleTimer = setTimeout(finish, SETTLE_MS)
     }
 
     async function finish() {
@@ -627,11 +707,21 @@ function browserScan(pageUrl, { timeoutMs = 30000, onProgress = null, browserCoo
         /* best effort */
       }
 
+      const all = [...hits.values()]
+      const keepers = all.filter((h) => !h.short)
+
       resolve({
         title: /^(video player|player|loading|untitled)?$/i.test(title.trim()) ? '' : title,
-        candidates: dedupe([...hits.values()]).map((c) => ({ ...c, cookieFile })),
+        candidates: dedupe(keepers).map((c) => ({ ...c, cookieFile })),
         engine: 'browser',
         encrypted,
+        adsSkipped: adCount,
+        // Reported so the caller can explain an empty result rather than just
+        // saying nothing was found.
+        shortOnly: keepers.length === 0 && all.length > 0,
+        shortest: all.length
+          ? Math.min(...all.filter((h) => h.info && h.info.duration).map((h) => h.info.duration), Infinity)
+          : Infinity,
       })
     }
 
@@ -717,9 +807,11 @@ function browserScan(pageUrl, { timeoutMs = 30000, onProgress = null, browserCoo
             }
           }
 
-          // One real gesture, only on the first pass: players that need a click
-          // get one, and a playing player never gets clicked back to paused.
-          if (allowClick && !sawVideo) {
+          // A gesture on the first pass, and again while the only thing we have
+          // seen is an advert — some players wait for a click to move on to the
+          // feature once the pre-roll finishes.
+          const stuckOnAds = adCount > 0 && ![...hits.values()].some((h) => !h.short)
+          if ((allowClick && !sawVideo) || stuckOnAds) {
             win.webContents.sendInputEvent({ type: 'mouseDown', x: 640, y: 360, button: 'left', clickCount: 1 })
             win.webContents.sendInputEvent({ type: 'mouseUp', x: 640, y: 360, button: 'left', clickCount: 1 })
           }
@@ -759,7 +851,7 @@ function browserScan(pageUrl, { timeoutMs = 30000, onProgress = null, browserCoo
  * we're there. Unverified guesses from player configs live or die here, which is
  * what lets the scan be aggressive without inventing entries.
  */
-async function verifyCandidates(candidates, { limit = 8, concurrency = 3 } = {}) {
+async function verifyCandidates(candidates, { limit = 12, concurrency = 3 } = {}) {
   const shortlist = candidates.slice(0, limit)
   const keep = []
   let cursor = 0
@@ -767,6 +859,11 @@ async function verifyCandidates(candidates, { limit = 8, concurrency = 3 } = {})
   async function worker() {
     while (cursor < shortlist.length) {
       const candidate = shortlist[cursor++]
+      // Already measured during capture; don't pay for it twice.
+      if (candidate.info && (candidate.info.duration || candidate.info.variants.length)) {
+        keep.push(candidate)
+        continue
+      }
       const resolved = {
         referer: candidate.referer,
         origin: candidate.origin,
@@ -801,12 +898,38 @@ async function verifyCandidates(candidates, { limit = 8, concurrency = 3 } = {})
 }
 
 /**
+ * Second line of defence against adverts, for the ones served from a host we
+ * don't recognise: a pre-roll runs for seconds, a feature for many minutes. Once
+ * we know the durations, anything dwarfed by the longest stream is dropped.
+ *
+ * Only applies when something long was actually found — otherwise the page may
+ * genuinely hold a short clip, and dropping it would be wrong.
+ */
+function dropShortStreams(candidates, minSeconds) {
+  const timed = candidates.filter((c) => c.info && c.info.duration)
+  if (!timed.length) return { kept: candidates, dropped: 0 }
+
+  const longest = Math.max(...timed.map((c) => c.info.duration))
+  if (longest < minSeconds) return { kept: candidates, dropped: 0 }
+
+  const floor = Math.max(minSeconds / 2, longest * 0.25)
+  const kept = candidates.filter((c) => c.info && c.info.duration && c.info.duration >= floor)
+  return { kept: kept.length ? kept : candidates, dropped: candidates.length - kept.length }
+}
+
+/**
  * Resolve a page to playable media.
  * Returns { title, thumbnail, candidates: [{url, kind, referer, origin, cookieFile, info}], engine }
  */
 async function resolvePage(
   pageUrl,
-  { onProgress = null, timeoutMs = 30000, staticOnly = false, browserCookieJar = null } = {}
+  {
+    onProgress = null,
+    timeoutMs = 45000,
+    staticOnly = false,
+    browserCookieJar = null,
+    minStreamSeconds = 120,
+  } = {}
 ) {
   if (!isHttp(pageUrl)) return { title: '', candidates: [], engine: 'none' }
 
@@ -815,11 +938,14 @@ async function resolvePage(
 
   if (fast.candidates.length) {
     const verified = await verifyCandidates(fast.candidates)
-    if (verified.length) {
+    const { kept, dropped } = dropShortStreams(verified, minStreamSeconds)
+    if (kept.length) {
+      if (dropped && onProgress) onProgress(`${dropped} kısa akış (reklam) atlandı`)
       return {
         ...fast,
         title: cleanTitle(fast.title, hostOf(pageUrl)),
-        candidates: verified,
+        candidates: kept,
+        adsSkipped: dropped,
         userAgent: UA,
       }
     }
@@ -829,14 +955,23 @@ async function resolvePage(
   }
 
   if (onProgress) onProgress('oynatıcı görünmez tarayıcıda çalıştırılıyor')
-  const deep = await browserScan(pageUrl, { timeoutMs, onProgress, browserCookieJar })
+  const deep = await browserScan(pageUrl, {
+    timeoutMs,
+    onProgress,
+    browserCookieJar,
+    minStreamSeconds,
+  })
   const verified = deep.candidates.length ? await verifyCandidates(deep.candidates) : []
+  // Keep browser finds even if verification couldn't read them: the session that
+  // captured them is gone, so a fresh fetch may legitimately fail.
+  const pool = verified.length ? verified : deep.candidates
+  const { kept, dropped } = dropShortStreams(pool, minStreamSeconds)
+  if (dropped && onProgress) onProgress(`${dropped} kısa akış (reklam) atlandı`)
 
   return {
     ...deep,
-    // Keep browser finds even if verification couldn't read them: the session
-    // that captured them is gone, so a fresh fetch may legitimately fail.
-    candidates: verified.length ? verified : deep.candidates,
+    candidates: kept,
+    adsSkipped: (deep.adsSkipped || 0) + dropped,
     title: cleanTitle(deep.title || fast.title, hostOf(pageUrl)),
     thumbnail: fast.thumbnail || '',
     userAgent: UA,

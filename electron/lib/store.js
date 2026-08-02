@@ -34,7 +34,10 @@ function defaultSettings() {
 
     // in-house page resolver, for sites yt-dlp has no extractor for
     useResolver: true,
-    resolverTimeout: 30000,
+    // Long enough that a pre-roll can finish and the real stream can start.
+    resolverTimeout: 45000,
+    // Streams shorter than this are treated as adverts when a longer one exists.
+    minStreamSeconds: 120,
 
     // subtitles fetched from a provider, separate from yt-dlp's own --write-subs
     subtitleLangs: 'tr,en',
@@ -42,6 +45,8 @@ function defaultSettings() {
     autoFetchSubtitles: false,
     syncSubtitles: true,
     embedSubtitleFile: false,
+    // Don't put Turkish subtitles on a Turkish-language video.
+    skipSameLanguageSubtitles: true,
   }
 }
 

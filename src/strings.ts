@@ -119,6 +119,10 @@ export const T = {
     subsAuto: 'İndirme bitince uygun altyazıyı kendiliğinden ekle',
     subsSync: 'Ada göre bulunan altyazıyı sesle hizala',
     subsEmbed: 'Altyazıyı video dosyasına göm',
+    subsSkipSame: 'Videonun sesi zaten o dildeyse altyazı ekleme',
+    minStream: 'En kısa video süresi',
+    minStreamHint:
+      'Reklam filtresi. Bir sayfada birden fazla akış bulunursa, bundan kısa olanlar reklam sayılıp atılır — ama yalnızca daha uzun bir akış da bulunduysa. "Yok" seçersen süre bakılmaz.',
     subsSyncReady: 'ffsubsync bulundu — hizalama yapılabilir.',
     subsSyncMissing:
       'ffsubsync kurulu değil; imza eşleşmesi olmayan altyazılar olduğu gibi kaydedilir. Kurmak için: pip3 install ffsubsync',
