@@ -226,6 +226,46 @@ function decodeHexEscapes(text) {
   )
 }
 
+/**
+ * Players on these hosts are ones yt-dlp already knows how to extract. Finding
+ * one on an unrecognised page is the best possible outcome: instead of scraping
+ * the stream ourselves, we hand the embed URL back to yt-dlp and get its full
+ * format list, subtitles and metadata.
+ */
+const EMBED_HOST =
+  /^https?:\/\/(?:[\w-]+\.)*(?:youtube\.com\/embed|youtube-nocookie\.com\/embed|youtu\.be|player\.vimeo\.com|dailymotion\.com\/(?:embed|player)|ok\.ru\/videoembed|vk\.com\/video_ext|facebook\.com\/plugins\/video|player\.twitch\.tv|streamable\.com|sproutvideo\.com|wistia\.(?:com|net)|players\.brightcove\.net|cdn\.jwplayer\.com|content\.jwplatform\.com|kaltura\.com|rutube\.ru\/play|bitchute\.com\/embed|odysee\.com\/\$\/embed|archive\.org\/embed|w\.soundcloud\.com\/player|iframe\.mediadelivery\.net|embed\.redtube|players\.akamai)/i
+
+/** `'8u3m.tsefinam//:sptth'` — the URL stored backwards. */
+function decodeReversed(text) {
+  if (!/\/\/:s?ptth/.test(text)) return ''
+  const out = []
+  const re = /[\w\-./:%?=&#]*\/\/:s?ptth/g
+  let match
+  while ((match = re.exec(text)) !== null) {
+    const forward = match[0].split('').reverse().join('')
+    if (isHttp(forward)) out.push(forward)
+  }
+  return out.join('\n')
+}
+
+/** `String.fromCharCode(104,116,116,112,...)` spelling out a URL. */
+function decodeCharCodes(text) {
+  if (!/fromCharCode\s*\(/i.test(text)) return ''
+  const out = []
+  const re = /fromCharCode\s*\(([\d\s,]{12,})\)/gi
+  let match
+  while ((match = re.exec(text)) !== null) {
+    const decoded = match[1]
+      .split(',')
+      .map((n) => Number(n.trim()))
+      .filter((n) => Number.isFinite(n) && n > 0 && n < 0x10000)
+      .map((n) => String.fromCharCode(n))
+      .join('')
+    if (/https?:\/\//i.test(decoded)) out.push(decoded)
+  }
+  return out.join('\n')
+}
+
 /** `%68%74%74%70...`, same idea. */
 function decodePercentEscapes(text) {
   if (!/%[0-9a-f]{2}%[0-9a-f]{2}/i.test(text)) return ''
@@ -249,6 +289,47 @@ const CONFIG_VALUE_RE =
 
 const TAG_SRC_RE = /<(?:video|source|audio)\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']/gi
 
+/** Custom players keep their source in a data attribute more often than not. */
+const DATA_ATTR_RE =
+  /\bdata-(?:src|url|file|video|video-src|videourl|source|hls|stream|media|mp4|m3u8|player)\s*=\s*["'](https?:\/\/[^"']{12,})["']/gi
+
+/**
+ * Standard metadata a page can declare about its own video. `og:video` and
+ * JSON-LD `contentUrl` are frequently the file itself; `embedUrl` is a player we
+ * can hand to yt-dlp. Both are site-agnostic and cost nothing to read.
+ */
+function declaredMediaOf(html, baseUrl) {
+  const found = []
+  const push = (value) => {
+    if (!value) return
+    try {
+      const abs = new URL(decodeEntities(String(value)).trim(), baseUrl).href
+      if (isHttp(abs)) found.push(abs)
+    } catch {
+      /* malformed */
+    }
+  }
+
+  const metaKeys =
+    /(og:video(?::secure_url|:url)?|twitter:player:stream|video_src_url|videoUrl)/i
+  for (const match of html.matchAll(
+    /<meta[^>]+(?:property|name|itemprop)=["']([^"']+)["'][^>]+content=["']([^"']+)["']/gi
+  )) {
+    if (metaKeys.test(match[1])) push(match[2])
+  }
+
+  for (const block of html.matchAll(
+    /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
+  )) {
+    for (const key of ['contentUrl', 'embedUrl']) {
+      const re = new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`, 'gi')
+      for (const hit of block[1].matchAll(re)) push(hit[1])
+    }
+  }
+
+  return found
+}
+
 function collectFromText(text, baseUrl) {
   const raw = String(text)
   const expanded = [
@@ -257,6 +338,8 @@ function collectFromText(text, baseUrl) {
     normaliseText(decodeBase64Blobs(raw)),
     normaliseText(decodeHexEscapes(raw)),
     normaliseText(decodePercentEscapes(raw)),
+    normaliseText(decodeReversed(raw)),
+    normaliseText(decodeCharCodes(raw)),
   ]
     .filter(Boolean)
     .join('\n')
@@ -297,6 +380,11 @@ function collectFromText(text, baseUrl) {
       /* malformed */
     }
   }
+
+  DATA_ATTR_RE.lastIndex = 0
+  while ((match = DATA_ATTR_RE.exec(expanded)) !== null) push(match[1], true)
+
+  for (const declared of declaredMediaOf(expanded, baseUrl)) push(declared, true)
 
   return { candidates: found, expanded }
 }
@@ -453,6 +541,7 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
   let title = ''
   let thumbnail = ''
   let expectedDuration = null
+  const embeds = new Set()
   let fetches = 0
   const visited = new Set()
   let queue = [{ url: pageUrl, referer: '', depth: 0, kind: 'page' }]
@@ -484,6 +573,15 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
         if (!expectedDuration) expectedDuration = pageDurationOf(text)
       }
 
+      // Anything pointing at a player yt-dlp knows is worth more than anything
+      // we could scrape ourselves; collect those separately.
+      for (const url of [
+        ...collectIframes(text, finalUrl),
+        ...declaredMediaOf(text, finalUrl),
+      ]) {
+        if (EMBED_HOST.test(url)) embeds.add(url)
+      }
+
       const { candidates: found } = collectFromText(text, finalUrl)
       if (found.length && onProgress) {
         onProgress(`${found.length} olası akış bulundu, doğrulanıyor`)
@@ -505,7 +603,14 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
     queue = next
   }
 
-  return { title, thumbnail, expectedDuration, candidates: dedupe(candidates), engine: 'static' }
+  return {
+    title,
+    thumbnail,
+    expectedDuration,
+    embeds: [...embeds],
+    candidates: dedupe(candidates),
+    engine: 'static',
+  }
 }
 
 /* ========================================================================== *
@@ -749,6 +854,7 @@ function browserScan(
     const hits = new Map()
     const skipped = new Set()
     const jsonScanned = new Set()
+    const segments = new Set()
     const timers = []
     let adSkipTimer = null
     let adSkips = 0
@@ -773,7 +879,11 @@ function browserScan(
       if (!isHttp(url) || blocker.shouldBlock(url)) return
       const kind = kindOf(url)
       if (kind === 'unknown' && why !== 'content-type') return
-      if (kind === 'segment') return
+      if (kind === 'segment') {
+        // Not downloadable on their own, but they say where the playlist lives.
+        if (segments.size < 4) segments.add(url)
+        return
+      }
       const key = url.split('#')[0]
       if (hits.has(key) || skipped.has(key)) return
 
@@ -877,6 +987,47 @@ function browserScan(
       }
     }
 
+    /**
+     * Last resort for a player that fetches segments directly and never asks for
+     * a playlist we can see. Segments almost always sit beside or below the
+     * playlist, so walk up from one and try the conventional names.
+     */
+    async function deriveManifestFromSegments() {
+      const names = ['master.m3u8', 'index.m3u8', 'playlist.m3u8', 'manifest.mpd', 'index.mpd']
+      const first = [...segments][0]
+      if (!first) return null
+
+      let parsed
+      try {
+        parsed = new URL(first)
+      } catch {
+        return null
+      }
+      const parts = parsed.pathname.split('/').filter(Boolean)
+
+      for (let level = 0; level < 3 && parts.length; level += 1) {
+        parts.pop()
+        const dir = `${parsed.origin}/${parts.length ? `${parts.join('/')}/` : ''}`
+        for (const name of names) {
+          const candidate = dir + name
+          try {
+            const res = ses.fetch
+              ? await ses.fetch(candidate, { headers: { Referer: pageUrl, 'User-Agent': UA } })
+              : await fetch(candidate, { headers: { Referer: pageUrl, 'User-Agent': UA } })
+            if (!res.ok) continue
+            const text = (await res.text()).slice(0, 65536)
+            if (/#EXTM3U/i.test(text) || /<MPD/i.test(text)) {
+              note('parçalardan manifest türetildi')
+              return candidate
+            }
+          } catch {
+            /* try the next name */
+          }
+        }
+      }
+      return null
+    }
+
     /** Wait a beat for sibling streams, then wrap up. */
     function settle() {
       if (done) return
@@ -916,7 +1067,24 @@ function browserScan(
       await releasePartition(partition, ses)
 
       const all = [...hits.values()]
-      const keepers = all.filter((h) => !h.short)
+      let keepers = all.filter((h) => !h.short)
+
+      if (!keepers.length && segments.size) {
+        const derived = await deriveManifestFromSegments()
+        if (derived) {
+          keepers = [
+            {
+              url: derived,
+              kind: /\.mpd(\?|#|$)/i.test(derived) ? 'dash' : 'hls',
+              referer: pageUrl,
+              origin: originOf(pageUrl),
+              via: 'derived',
+              info: null,
+              short: false,
+            },
+          ]
+        }
+      }
 
       resolve({
         title: /^(video player|player|loading|untitled)?$/i.test(title.trim()) ? '' : title,
@@ -1251,6 +1419,10 @@ async function resolvePage(
     onProgress(`sayfa videoyu ${Math.round(fast.expectedDuration / 60)} dk diye bildiriyor`)
   }
 
+  // An embed on a host yt-dlp knows beats anything we could scrape: the caller
+  // re-probes it and gets the full format list, subtitles and metadata.
+  const embeds = fast.embeds || []
+
   if (fast.candidates.length && !skipStatic) {
     const verified = dropVariantDuplicates(await verifyCandidates(fast.candidates))
     const { kept, dropped } = dropShortStreams(verified, minStreamSeconds, fast.expectedDuration)
@@ -1261,12 +1433,19 @@ async function resolvePage(
         title: cleanTitle(fast.title, hostOf(pageUrl)),
         candidates: kept,
         adsSkipped: dropped,
+        embeds,
         userAgent: UA,
       }
     }
   }
   if (staticOnly) {
-    return { ...fast, title: cleanTitle(fast.title, hostOf(pageUrl)), candidates: [], userAgent: UA }
+    return {
+      ...fast,
+      title: cleanTitle(fast.title, hostOf(pageUrl)),
+      candidates: [],
+      embeds,
+      userAgent: UA,
+    }
   }
 
   if (onProgress) onProgress('oynatıcı görünmez tarayıcıda çalıştırılıyor')
@@ -1290,6 +1469,7 @@ async function resolvePage(
     adsSkipped: (deep.adsSkipped || 0) + dropped,
     title: cleanTitle(deep.title || fast.title, hostOf(pageUrl)),
     thumbnail: fast.thumbnail || '',
+    embeds,
     userAgent: UA,
   }
 }

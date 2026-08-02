@@ -145,6 +145,42 @@ saniyede birkaç kez güncellenen bir indirme kaynak listesini yeniden çizdirme
 hızla getirir, sonra süresi/kapağı eksik kalan öğeler küçük bir havuzla arka planda
 tamamlanır. Böyle olmasa 200 videolu bir kanal dakikalarca boş ekran demek olurdu.
 
+## Çözümleyici nasıl çalışıyor
+
+yt-dlp bir sayfayı tanımazsa devreye giren kendi motorum. Sırayla, en ucuzdan
+başlayarak:
+
+1. **Sayfa taraması.** Sayfayı ve **oynatıcı script'lerini** indirir, iç içe
+   iframe'leri Referer zincirini koruyarak 3 kata kadar takip eder. Şu yollardan
+   akış arar:
+   - `.m3u8` / `.mpd` / `.mp4` gibi doğrudan adresler
+   - oynatıcı config konumları (`file:`, `sources:[{src:…}]`) — uzantısı olmasa bile
+   - `<video>` / `<source>` etiketleri ve `data-src`, `data-hls`, `data-file` gibi
+     data öznitelikleri
+   - `og:video`, `twitter:player:stream` ve JSON-LD `contentUrl` beyanları
+   - `eval(function(p,a,c,k,e,d))` ile paketlenmiş script'lerin açılması
+   - base64 blob'lar, `\x68\x74…` hex kaçışları, `%68%74…` yüzde kaçışları,
+     **tersten yazılmış** adresler (`//:sptth`) ve `String.fromCharCode(…)` dizileri
+2. **Gömülü oynatıcı devri.** Sayfada yt-dlp'nin tanıdığı bir oynatıcı (YouTube,
+   Vimeo, Dailymotion, Twitch, JW, Kaltura, Brightcove, Wistia, VK, OK.ru…)
+   gömülüyse o adres yt-dlp'ye geri verilir — kendi kazıdığımız çıplak bir akış
+   yerine tam format listesi, altyazılar ve künye gelir.
+3. **Tarayıcı motoru.** Sayfa görünmez bir pencerede **gerçekten çalıştırılır** ve
+   ağ istekleri dinlenir. Obfuscate edilmiş ve `blob:`/MSE ile beslenen oynatıcılar
+   böyle çözülür. Ayrıca:
+   - oynatıcıya benzeyen bir **JSON belgesi** yanıtı açılıp içi taranır (bazı
+     oynatıcılar hiç `.m3u8` istemez)
+   - yalnızca segment görülürse, segmentin klasöründen yukarı çıkarak
+     **manifest türetilir** (`master.m3u8`, `index.m3u8`, `manifest.mpd`…)
+   - reklam SDK'larına bilerek izin verilir, reklam otomatik geçilir
+4. **Tarayıcıda yakala.** Reklam duvarı veya doğrulama isteyen sayfalar için
+   görünür pencere: kapıyı sen geçersin, akışı uygulama yakalar.
+
+Bulunan her aday **doğrulanır**: manifest ayrıştırılır, gerekirse `ffprobe`
+çalıştırılır. Süresi olmayan bir şey medya sayılmaz — poster görselleri böyle
+ayıklanır. Reklamlar üç ayrı sinyalle elenir: bilinen reklam ağları, sayfanın
+JSON-LD'de beyan ettiği süre, ve akışlar arası süre karşılaştırması.
+
 İlerleme, yt-dlp'nin süslü çubuğu okunarak değil `--progress-template` ile makine
 okunur biçimde alınır. Birleştirilen indirmelerde (video + ses ayrı akış) baytlar
 biriktirilir ve metre asla geri gitmez.

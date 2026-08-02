@@ -461,7 +461,61 @@ async function tryResolve(source, settings, fallbackError) {
     })
   }
 
+  // Best possible outcome on an unrecognised page: it embeds a player yt-dlp
+  // already knows. Re-probing the embed gets the real format list, subtitles and
+  // metadata instead of a bare stream URL we scraped ourselves.
+  if (result && !(result.candidates || []).length && (result.embeds || []).length) {
+    const viaEmbed = await probeEmbeds(source, result.embeds, settings)
+    if (viaEmbed) return
+  }
+
   applyResolution(source, result, fallbackError)
+}
+
+/**
+ * Hand embed URLs to yt-dlp and build the source from whatever it recognises.
+ * Returns true when the source ended up populated.
+ */
+async function probeEmbeds(source, embeds, settings) {
+  store.commit(() => {
+    source.note = `gömülü oynatıcı bulundu, yt-dlp'ye veriliyor`
+  })
+
+  const items = []
+  for (const embed of embeds.slice(0, 4)) {
+    try {
+      const { json } = await runJson(embed, ['-J', '--flat-playlist'], settings)
+      if (!json || typeof json !== 'object') continue
+      const nodes = json._type === 'playlist' ? json.entries || [] : [json]
+      for (const node of nodes) {
+        if (!node) continue
+        const item = itemFromNode(node, source, items.length)
+        // The embed page rarely has a useful title; the host page's is better.
+        if (!node.title && source.title) item.title = source.title
+        items.push(item)
+      }
+    } catch {
+      /* try the next embed */
+    }
+    if (items.length) break
+  }
+
+  if (!items.length) return false
+
+  store.commit((s) => {
+    source.count = items.length
+    source.status = 'ready'
+    source.error = null
+    source.stage = null
+    source.note = null
+    source.kind = items.length > 1 ? 'playlist' : 'video'
+    source.resolvedBy = 'gömülü oynatıcı'
+    source.probedAt = Date.now()
+    s.items.push(...items)
+  })
+
+  enrich(source.id, settings).catch(() => {})
+  return true
 }
 
 /**
