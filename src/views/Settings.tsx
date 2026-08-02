@@ -239,6 +239,22 @@ export default function Settings({ settings, tools, onRefreshTools, onToast }: P
                 ))}
               </select>
             </div>
+            <div className="set-inline">
+              <span style={{ fontSize: 12.5, color: 'var(--dim)' }}>
+                {T.settings.resolverParallel}
+              </span>
+              <select
+                className="select"
+                value={settings.resolverConcurrency}
+                onChange={(e) => patch({ resolverConcurrency: Number(e.target.value) })}
+              >
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </Row>
 

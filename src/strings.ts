@@ -166,6 +166,7 @@ export const T = {
       'yt-dlp bir sayfayı tanımazsa devreye girer: sayfayı ve gömülü oynatıcıları tarar, gerekirse sayfayı görünmez bir tarayıcıda çalıştırıp akışı yakalar. Yukarıda bir tarayıcı seçtiysen o oturumu kullanır, yani sitelere yeniden giriş yapman gerekmez.',
     resolverOn: 'Tanınmayan siteler için çözümleyiciyi kullan',
     resolverWait: 'En fazla bekleme:',
+    resolverParallel: 'Aynı anda çözümlenecek bağlantı:',
 
     theme: 'Tema',
     themeDark: 'Koyu',

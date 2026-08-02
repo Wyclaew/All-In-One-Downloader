@@ -522,6 +522,58 @@ const PLAY_NUDGE = `(() => {
   } catch (e) { return 'err'; }
 })()`
 
+/**
+ * Get past a pre-roll.
+ *
+ * Two mechanisms, in order of preference. First the player's own skip control,
+ * operated exactly as a viewer would. Failing that, run the advert out by seeking
+ * a short video element to its end — which is what makes the ad SDK report
+ * completion, and completion is the thing that makes the player load the feature.
+ *
+ * The 180-second guard matters: it is what keeps this from ever fast-forwarding
+ * the actual video.
+ */
+const AD_SKIP = `(() => {
+  try {
+    var done = [];
+    var wanted = /^(skip|skip ad|skip advert|atla|reklamı atla|reklamı geç|geç|kapat)/i;
+    var controls = ['.ytp-ad-skip-button', '.ytp-ad-skip-button-modern', '.videoAdUiSkipButton',
+      '.ima-skip-button', '.jw-skip', '.jw-icon-inline.jw-skip', '[class*="skip-button"]',
+      '[class*="skipButton"]', '[id*="skipBtn"]', '[class*="ad-skip"]'];
+
+    for (var i = 0; i < controls.length; i++) {
+      var el = document.querySelector(controls[i]);
+      if (el && el.offsetParent !== null && !el.disabled) { el.click(); done.push('skip'); break; }
+    }
+
+    if (!done.length) {
+      var clickable = document.querySelectorAll('button,a,[role="button"]');
+      for (var j = 0; j < clickable.length && j < 400; j++) {
+        var c = clickable[j];
+        if (c.offsetParent === null) continue;
+        var label = (c.textContent || c.getAttribute('aria-label') || '').trim();
+        if (label && label.length < 32 && wanted.test(label)) { c.click(); done.push('skiptext'); break; }
+      }
+    }
+
+    var videos = document.querySelectorAll('video');
+    for (var k = 0; k < videos.length; k++) {
+      var v = videos[k];
+      var d = v.duration;
+      // Only ever a short clip — never the feature.
+      if (!isFinite(d) || d <= 0 || d > 180) continue;
+      try { v.muted = true; if (v.paused) { var p = v.play(); if (p && p.catch) p.catch(function(){}); } } catch (e) {}
+      if (v.currentTime < d - 0.4) {
+        try { v.currentTime = Math.max(0, d - 0.15); done.push('runout'); } catch (e) {}
+      }
+    }
+    return done.join(',') || 'none';
+  } catch (e) { return 'err'; }
+})()`
+
+/** How often to look for an advert to get past. */
+const AD_SKIP_INTERVAL = 1200
+
 /** Players build their source at their own pace; poke on a schedule, not on events. */
 const NUDGE_SCHEDULE = [700, 2500, 5000, 8500, 13000, 18000, 24000, 30000, 36000, 42000]
 
@@ -654,6 +706,8 @@ function browserScan(
     const hits = new Map()
     const skipped = new Set()
     const timers = []
+    let adSkipTimer = null
+    let adSkips = 0
     let adCount = 0
     let encrypted = false
     let title = ''
@@ -767,6 +821,7 @@ function browserScan(
       done = true
       clearTimeout(settleTimer)
       clearTimeout(hardStop)
+      clearInterval(adSkipTimer)
       for (const t of timers) clearTimeout(t)
 
       let cookieFile = null
@@ -870,8 +925,44 @@ function browserScan(
         if (/encrypted|widevine|playready|\bdrm\b/i.test(String(text))) encrypted = true
       })
 
+      /**
+       * Keep looking for an advert to get past, in every frame, in both modes.
+       * The assisted window gets it too — the point of asking a person to clear
+       * the gate isn't to make them sit through the pre-roll as well.
+       */
+      function startAdSkipping() {
+        if (adSkipTimer) return
+        adSkipTimer = setInterval(() => {
+          if (done || !win || win.isDestroyed()) return
+          try {
+            const main = win.webContents.mainFrame
+            const frames = main ? [main, ...(main.framesInSubtree || [])] : []
+            for (const frame of frames) {
+              try {
+                const result = frame.executeJavaScript(AD_SKIP, true)
+                if (result && result.then) {
+                  result
+                    .then((r) => {
+                      if (typeof r === 'string' && r !== 'none' && r !== 'err' && adSkips < 3) {
+                        adSkips += 1
+                        note('reklam geçiliyor')
+                      }
+                    })
+                    .catch(() => {})
+                }
+              } catch {
+                /* frame detached */
+              }
+            }
+          } catch {
+            /* window gone */
+          }
+        }, AD_SKIP_INTERVAL)
+      }
+
       let scheduled = false
       win.webContents.on('did-finish-load', () => {
+        startAdSkipping()
         if (assisted) {
           note('pencere açık — reklamı geç ve videoyu başlat')
           try {

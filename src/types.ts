@@ -131,6 +131,7 @@ export interface Settings {
   minStreamSeconds: number
   blockTrackers: boolean
   extraBlockedHosts: string
+  resolverConcurrency: number
 
   subtitleLangs: string
   subtitleApiKey: string

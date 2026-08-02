@@ -14,6 +14,41 @@
 // misses. Video-ad networks are tracked separately because those requests must
 // never be mistaken for the feature.
 
+/**
+ * Ad endpoints that must be allowed through even though they are adverts.
+ *
+ * This is counter-intuitive and it cost real debugging to find: players with an
+ * integrated ad SDK (Google IMA, Connatix and friends) only release the content
+ * stream after their ad lifecycle completes. Cancel those requests and the SDK
+ * never fires its "ad finished" event, so the feature is never loaded — the
+ * player just sits there, even if the viewer clicks skip themselves.
+ *
+ * So we let the advert load, skip it, and refuse to treat it as downloadable.
+ * Blocking it would be the intuitive move and it is the wrong one.
+ */
+const AD_SDK_ALLOW = [
+  'imasdk.googleapis.com',
+  'pubads.g.doubleclick.net',
+  'securepubads.g.doubleclick.net',
+  'static.doubleclick.net',
+  's0.2mdn.net',
+  'connatix.com',
+  'cds.connatix.com',
+  'capi.connatix.com',
+  'springserve.com',
+  'spotx.tv',
+  'spotxchange.com',
+  'aniview.com',
+  'primis.tech',
+  'teads.tv',
+  'vidazoo.com',
+  'ex.co',
+  'onnetwork.tv',
+  'playwire.com',
+  'freewheel.tv',
+  'fwmrm.net',
+]
+
 /** Trackers, pop-under networks and ad exchanges: cancelled outright. */
 const TRACKERS = [
   'doubleclick.net',
@@ -175,6 +210,8 @@ function createBlocker({ extraBlocked = '', allowTrackers = false } = {}) {
     shouldBlock(url) {
       const host = hostOf(url)
       if (!host) return false
+      // The ad SDK has to run or the player never hands over the content.
+      if (matchesAny(host, AD_SDK_ALLOW)) return false
       return matchesAny(host, blocked)
     },
 
@@ -187,4 +224,4 @@ function createBlocker({ extraBlocked = '', allowTrackers = false } = {}) {
   }
 }
 
-module.exports = { createBlocker, TRACKERS, AD_MEDIA, AD_PATH }
+module.exports = { createBlocker, TRACKERS, AD_MEDIA, AD_SDK_ALLOW, AD_PATH }

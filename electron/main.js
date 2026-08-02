@@ -161,16 +161,39 @@ function buildMenu() {
 
 // ---- ipc -----------------------------------------------------------------
 
-// Probes run one at a time — a channel URL is heavy and parallel probes just
-// fight for bandwidth — but adding a link never blocks the renderer.
-let probeChain = Promise.resolve()
+/**
+ * A pool of resolvers rather than a queue of one.
+ *
+ * Each browser scan already runs in its own isolated session with its own
+ * window, so several sites can be worked through at once without interfering —
+ * and since most of a resolve is spent waiting on a page to load and a player to
+ * start, the wall-clock saving is close to linear. Adding a link still returns
+ * immediately either way.
+ */
+const probeQueue = []
+let activeProbes = 0
+
+function probeLimit() {
+  return Math.max(1, Math.min(6, Number(store.getState().settings.resolverConcurrency) || 3))
+}
+
+function pumpProbes() {
+  while (activeProbes < probeLimit() && probeQueue.length) {
+    const source = probeQueue.shift()
+    activeProbes += 1
+    probe
+      .probeUrl(source.url, { sourceId: source.id })
+      .catch((err) => console.error('[probe]', err))
+      .finally(() => {
+        activeProbes -= 1
+        pumpProbes()
+      })
+  }
+}
 
 function queueProbe(source) {
-  probeChain = probeChain.then(() =>
-    probe.probeUrl(source.url, { sourceId: source.id }).catch((err) => {
-      console.error('[probe]', err)
-    })
-  )
+  probeQueue.push(source)
+  pumpProbes()
 }
 
 function handle(channel, fn) {

@@ -40,6 +40,8 @@ function defaultSettings() {
     minStreamSeconds: 120,
     blockTrackers: true,
     extraBlockedHosts: '',
+    // How many links to resolve at the same time.
+    resolverConcurrency: 3,
 
     // subtitles fetched from a provider, separate from yt-dlp's own --write-subs
     subtitleLangs: 'tr,en',
