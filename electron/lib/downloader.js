@@ -707,6 +707,17 @@ function remove(id, { deleteFile = false } = {}) {
   pump_queue()
 }
 
+/**
+ * Drop throttling state for downloads that no longer exist. Called after a bulk
+ * clear, which otherwise leaves an entry per removed transfer behind forever.
+ */
+function forgetMissing() {
+  const alive = new Set(store.getState().downloads.map((d) => d.id))
+  for (const id of progressLastSent.keys()) {
+    if (!alive.has(id)) progressLastSent.delete(id)
+  }
+}
+
 function killAll() {
   for (const [, job] of jobs) {
     job.paused = true
@@ -728,6 +739,7 @@ module.exports = {
   retry,
   remove,
   killAll,
+  forgetMissing,
   pumpQueue: pump_queue,
   activeCount,
 }

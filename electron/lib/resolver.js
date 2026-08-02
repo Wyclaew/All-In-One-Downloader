@@ -73,6 +73,12 @@ const CONTENT_TYPE_MEDIA =
 /** How long to keep listening after the last useful stream shows up. */
 const SETTLE_MS = 5000
 
+/**
+ * JSON endpoints worth opening. Narrow enough to skip the analytics chatter every
+ * page makes, wide enough to catch the document a player reads its sources from.
+ */
+const JSON_PLAYER_HINT = /(config|playlist|manifest|sources?|player|media|stream|video|episode|watch)/i
+
 /* ========================================================================== *
  * shared helpers
  * ========================================================================== */
@@ -452,14 +458,24 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
   let queue = [{ url: pageUrl, referer: '', depth: 0, kind: 'page' }]
 
   while (queue.length && fetches < maxFetches) {
-    const next = []
+    // Fetch a whole level at once. These are independent documents and the time
+    // is all network latency, so doing them one after another was leaving most
+    // of the wait on the table.
+    const batch = []
     for (const job of queue) {
-      if (fetches >= maxFetches) break
+      if (fetches + batch.length >= maxFetches) break
       if (visited.has(job.url)) continue
       visited.add(job.url)
-      fetches += 1
+      batch.push(job)
+    }
+    fetches += batch.length
 
-      const { text, finalUrl } = await fetchText(job.url, job.referer)
+    const fetched = await Promise.all(
+      batch.map(async (job) => ({ job, ...(await fetchText(job.url, job.referer)) }))
+    )
+
+    const next = []
+    for (const { job, text, finalUrl } of fetched) {
       if (!text) continue
 
       if (job.kind === 'page') {
@@ -732,6 +748,7 @@ function browserScan(
     const ses = session.fromPartition(partition)
     const hits = new Map()
     const skipped = new Set()
+    const jsonScanned = new Set()
     const timers = []
     let adSkipTimer = null
     let adSkips = 0
@@ -836,6 +853,30 @@ function browserScan(
         .catch(() => settle())
     }
 
+    /**
+     * Some players never request a .m3u8 at all: they fetch a JSON document that
+     * *contains* the stream URLs and feed the result to MSE. Vimeo is the obvious
+     * case — its player asks for `/config`, so watching for media file extensions
+     * finds nothing. When a JSON response looks like a player document, read it
+     * and scan the body the same way we scan a page.
+     */
+    async function scanJsonBody(url) {
+      if (jsonScanned.has(url) || jsonScanned.size >= 12) return
+      jsonScanned.add(url)
+      try {
+        const res = ses.fetch
+          ? await ses.fetch(url, { headers: { Referer: pageUrl, 'User-Agent': UA } })
+          : await fetch(url, { headers: { Referer: pageUrl, 'User-Agent': UA } })
+        if (!res.ok) return
+        const text = (await res.text()).slice(0, 2 * 1024 * 1024)
+        const { candidates } = collectFromText(text, url)
+        if (candidates.length) note(`oynatıcı belgesinde ${candidates.length} akış bulundu`)
+        for (const candidate of candidates) record(candidate.url, pageUrl, 'content-type')
+      } catch {
+        /* the document was not readable from here */
+      }
+    }
+
     /** Wait a beat for sibling streams, then wrap up. */
     function settle() {
       if (done) return
@@ -909,7 +950,11 @@ function browserScan(
         const headers = details.responseHeaders || {}
         const key = Object.keys(headers).find((k) => k.toLowerCase() === 'content-type')
         const type = key ? String(headers[key]) : ''
-        if (CONTENT_TYPE_MEDIA.test(type)) record(details.url, details.referrer, 'content-type')
+        if (CONTENT_TYPE_MEDIA.test(type)) {
+          record(details.url, details.referrer, 'content-type')
+        } else if (/application\/json/i.test(type) && JSON_PLAYER_HINT.test(details.url)) {
+          scanJsonBody(details.url)
+        }
         callback({ cancel: false })
       })
 

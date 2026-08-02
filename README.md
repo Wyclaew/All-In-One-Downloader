@@ -1,4 +1,4 @@
-# Everything Downloader
+# All in One Downloader
 
 Bir bağlantı yapıştır, sayfadaki indirilebilir videoları listele, seçtiklerini indir.
 Her bağlantı kendi başlığı altında açılır-kapanır bir grup olarak kalır — hiçbir şey
@@ -68,11 +68,11 @@ Windows (.exe kurulum):
 npm run dist:win
 ```
 
-**Windows notu:** kod ve `electron-builder.yml` yapılandırması hazır — platform
-dallanmaları (ikili dosya adları, PATH, pencere çerçevesi, `windowsHide`, dosya
-gösterme) tek tek ele alındı. Ama `.exe` üretmek NSIS gerektirir: bunu ya bir
-Windows makinesinde ya da macOS'ta `wine` kurarak yapabilirsin. Bu depoda henüz
-Windows paketi üretilmedi.
+**Windows notu:** bir Windows kurulumu macOS'ta wine olmadan üretilemez, bu yüzden
+iki kurulum dosyası da GitHub Actions üzerinde kendi işletim sistemlerinde
+derlenir. `v` ile başlayan bir etiket gönderdiğinde (`git tag v0.2.1 && git push
+--tags`) akış çalışır ve `.dmg` (arm64 + x64) ile `.exe` kurulumunu aynı
+sürüme ekler. Actions sekmesinden elle de başlatabilirsin.
 
 `resources/bin/` klasörüne `yt-dlp` / `ffmpeg` ikililerini koyarsan uygulamayla
 birlikte paketlenirler ve kullanıcının ayrıca kurmasına gerek kalmaz.
@@ -81,8 +81,11 @@ birlikte paketlenirler ve kullanıcının ayrıca kurmasına gerek kalmaz.
 
 - **Bağlantı ekle:** URL alanına yapıştır ve Enter. Aynı anda birden fazla bağlantı
   yapıştırabilirsin — metindeki tüm URL'ler ayrı kaynak olarak eklenir.
-- Çözümleme arka planda ve sırayla yürür; alan hemen boşalır, sıradaki bağlantıyı
-  yazabilirsin.
+- Çözümleme arka planda ve **paralel** yürür (varsayılan 3 bağlantı birlikte); alan
+  hemen boşalır, sıradaki bağlantıyı yazabilirsin.
+- yt-dlp bir sayfayı tanımazsa **kendi çözümleyicim** devreye girer. Reklam duvarı
+  veya doğrulama isteyen sayfalarda grup başlığındaki nişangâh düğmesi görünür bir
+  pencere açar: kapıyı sen geçersin, akışı uygulama yakalar.
 - Her satırda süre, çözünürlük, boyut ve **hangi siteden geldiği** görünür.
 - Satır başına kalite seçebilir, ya da grup başlığındaki seçimle **Tümünü indir**
   diyebilirsin. `Sadece ses` seçeneği mp3/m4a/opus/flac/wav olarak çıkarır.
@@ -108,8 +111,8 @@ Pencereye bir bağlantı sürükleyip bırakmak da işe yarar.
 
 Kitaplık, kaynaklar ve ayarlar tek bir JSON dosyasında:
 
-- macOS: `~/Library/Application Support/Everything Downloader/library.json`
-- Windows: `%APPDATA%\Everything Downloader\library.json`
+- macOS: `~/Library/Application Support/All in One Downloader/library.json`
+- Windows: `%APPDATA%\All in One Downloader\library.json`
 
 Yazma işlemi geçici dosya + rename ile yapılır, yani yarıda kesilse bile dosya
 bozulmaz. İndirilen videolar buraya değil, **Ayarlar → İndirme klasörü**'nde
@@ -126,6 +129,11 @@ electron/
     binaries.js        yt-dlp/ffmpeg bulma, genişletilmiş PATH
     probe.js           bağlantı → kaynak + medya listesi (iki aşamalı)
     downloader.js      aktarım sırası, ilerleme ayrıştırma, duraklat/sürdür
+    browsers.js        tarayıcı çerez depolarını bulma (Opera GX dahil)
+    resolver.js        yt-dlp'nin tanımadığı sayfalar için iki motorlu çözümleyici
+    mediainfo.js       manifest ayrıştırma + ffprobe ile süre/çözünürlük
+    blocklist.js       istek engelleme; reklam SDK'larına bilerek izin verir
+    subtitles.js       OpenSubtitles arama, sese hizalama, gömme
 src/                   React arayüzü (görünümler, bileşenler, biçimleyiciler)
 ```
 
@@ -143,9 +151,16 @@ biriktirilir ve metre asla geri gitmez.
 
 ## Bilinen sınırlar
 
-- Vimeo bağlantıları bu yt-dlp sürümünde `401 Unauthorized` veriyor (yt-dlp'nin
-  Vimeo çıkarıcısıyla ilgili, uygulamayla değil). `Ayarlar → Araçlar → Motoru
-  güncelle` ileride düzeltebilir.
+- **Vimeo çalışmıyor.** yt-dlp'nin Vimeo çıkarıcısı `Failed to fetch macos OAuth
+  token: 401` veriyor; 2026.07.04 sürümünde de aynı, yani güncelleme çözmüyor.
+  Kendi çözümleyicim de yakalayamıyor: Vimeo oynatıcısı manifest'ini JSON olarak
+  alıp MSE ile besliyor ve otomatik tarayıcıda hiç başlamıyor. Tarayıcıda yakala
+  ile deneyebilirsin.
+- **Reklam duvarı olan bazı siteler** (ör. dizibox) akışı otomatik tarayıcıya
+  vermiyor. Ön-reklam artık asla indirilmiyor; ama asıl videoyu almak için
+  Tarayıcıda yakala gerekebilir.
+- DRM korumalı akışlar (Widevine/PlayReady/FairPlay) indirilmez. Düz AES-128 HLS
+  DRM değildir ve normal indirilir.
 - Giriş gerektiren içerik için **Ayarlar → Erişim → Tarayıcı çerezleri**'ni seç.
   Seçtiğin tarayıcının çerez veritabanı yoksa uygulama bir kez çerezsiz yeniden
   dener ve uyarır; ama her istekte boşa bir deneme yapmamak için ayarı düzeltmek

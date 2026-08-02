@@ -286,11 +286,20 @@ function parseIsoDuration(text) {
 
 function parseDash(text) {
   const duration = parseIsoDuration((text.match(/mediaPresentationDuration="([^"]+)"/i) || [])[1])
-  const heights = [...text.matchAll(/height="(\d+)"/gi)].map((m) => Number(m[1]))
+
+  // Accumulate rather than spreading into Math.max: a manifest with a
+  // representation per segment can carry thousands of matches, and spreading an
+  // array that large overflows the call stack.
+  let height = 0
+  for (const match of text.matchAll(/height="(\d+)"/gi)) {
+    const value = Number(match[1])
+    if (Number.isFinite(value) && value > height) height = value
+  }
+
   const drm = /<ContentProtection[^>]*>/i.test(text) && DRM_HINT.test(text)
   return {
     duration,
-    height: heights.length ? Math.max(...heights) : null,
+    height: height || null,
     drm,
     encrypted: /<ContentProtection/i.test(text),
   }

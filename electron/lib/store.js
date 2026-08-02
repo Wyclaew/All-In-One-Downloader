@@ -221,10 +221,22 @@ function getHostProfile(host) {
   return profile
 }
 
+const MAX_HOST_PROFILES = 300
+
 function rememberHostProfile(host, data) {
   if (!host) return
   commit((s) => {
     s.hostProfiles[host] = { ...(s.hostProfiles[host] || {}), ...data, at: Date.now() }
+
+    // One entry per site would otherwise grow the state file forever. Keep the
+    // most recent, since staleness is what makes an entry useless anyway.
+    const hosts = Object.keys(s.hostProfiles)
+    if (hosts.length > MAX_HOST_PROFILES) {
+      hosts
+        .sort((a, b) => (s.hostProfiles[a].at || 0) - (s.hostProfiles[b].at || 0))
+        .slice(0, hosts.length - MAX_HOST_PROFILES)
+        .forEach((stale) => delete s.hostProfiles[stale])
+    }
   })
 }
 

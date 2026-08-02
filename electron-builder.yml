@@ -6,6 +6,11 @@ directories:
   buildResources: build
   output: release
 
+publish:
+  provider: github
+  owner: Wyclaew
+  repo: All-In-One-Downloader
+
 files:
   - dist/**
   - electron/**

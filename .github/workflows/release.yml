@@ -1,0 +1,62 @@
+name: Release
+
+# A Windows installer cannot be built from macOS without wine, so the two
+# installers are built on their own runners and published to the same release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: --mac
+            name: macOS (dmg + zip, arm64 & x64)
+          - os: windows-latest
+            target: --win
+            name: Windows (nsis installer)
+
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build renderer
+        run: npm run build
+
+      - name: Build and publish installer
+        run: npx electron-builder ${{ matrix.target }} --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The app ships unsigned; without this electron-builder hunts for a
+          # certificate on the runner and fails when it finds none.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Keep the installers as build artifacts too
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          if-no-files-found: ignore
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe

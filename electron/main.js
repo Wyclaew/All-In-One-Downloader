@@ -351,6 +351,7 @@ function registerIpc() {
         return true
       })
     })
+    downloader.forgetMissing()
     return true
   })
 
