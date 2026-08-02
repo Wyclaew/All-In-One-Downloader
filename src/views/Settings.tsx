@@ -3,7 +3,7 @@ import { api } from '../api'
 import { QUALITY_OPTIONS } from '../quality'
 import { T } from '../strings'
 import type { BrowserOption, Settings as SettingsShape, Tools } from '../types'
-import { Btn, Icon, Toggle } from '../components/ui'
+import { Btn, Icon, Info, Toggle } from '../components/ui'
 
 interface Props {
   settings: SettingsShape
@@ -398,20 +398,26 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   )
 }
 
+/**
+ * The explanation sits behind an ⓘ next to the label rather than under it, so a
+ * long settings page stays scannable and the detail is one click away.
+ */
 function Row({
   label,
   hint,
   children,
 }: {
   label: string
-  hint?: string
+  hint?: ReactNode
   children: ReactNode
 }) {
   return (
     <div className="set-row">
       <div className="set-key">
-        {label}
-        {hint ? <div className="set-hint">{hint}</div> : null}
+        <span className="info-wrap">
+          <span>{label}</span>
+          {hint ? <Info label={`${label} hakkında`}>{hint}</Info> : null}
+        </span>
       </div>
       <div className="set-control">{children}</div>
     </div>

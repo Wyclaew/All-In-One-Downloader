@@ -35,6 +35,7 @@ export type IconName =
   | 'spinner'
   | 'pencil'
   | 'captions'
+  | 'minus'
 
 const PATHS: Record<IconName, ReactNode> = {
   chevron: <path d="M6 3.5l4.5 4.5L6 12.5" />,
@@ -60,6 +61,7 @@ const PATHS: Record<IconName, ReactNode> = {
     </>
   ),
   plus: <path d="M8 3.4v9.2M3.4 8h9.2" />,
+  minus: <path d="M3.6 8h8.8" />,
   check: <path d="M3.2 8.4l3.2 3.2 6.4-7.2" />,
   alert: (
     <>
@@ -455,6 +457,59 @@ export function Toggle({
       <span className="toggle-track" />
       <span style={{ fontSize: 12.5 }}>{label}</span>
     </label>
+  )
+}
+
+/**
+ * An explanation behind a marker. Keeps the technical detail available without
+ * a paragraph under every single control.
+ */
+export function Info({ children, label = 'Açıklama' }: { children: ReactNode; label?: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button
+        type="button"
+        className={`info-btn${open ? ' on' : ''}`}
+        aria-expanded={open}
+        aria-label={label}
+        title={label}
+        onClick={() => setOpen((v) => !v)}
+      >
+        i
+      </button>
+      {open ? <div className="info-body">{children}</div> : null}
+    </>
+  )
+}
+
+/** Tri-state tick box: off, on, or partially on for a group. */
+export function Check({
+  state,
+  onChange,
+  label,
+}: {
+  state: boolean | 'some'
+  onChange: () => void
+  label: string
+}) {
+  const on = state === true
+  const some = state === 'some'
+  return (
+    <button
+      type="button"
+      className={`check${on ? ' on' : some ? ' some' : ''}`}
+      role="checkbox"
+      aria-checked={some ? 'mixed' : on}
+      aria-label={label}
+      title={label}
+      onClick={(e) => {
+        e.stopPropagation()
+        onChange()
+      }}
+    >
+      <Icon name={some ? 'minus' : 'check'} size={11} />
+    </button>
   )
 }
 

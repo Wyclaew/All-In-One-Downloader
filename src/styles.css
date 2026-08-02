@@ -1,7 +1,11 @@
 /* ==========================================================================
-   Everything Downloader — ingest console
-   Graphite instrument panel, one sodium-amber signal colour, condensed caps for
-   labels, tabular mono for every number. Level meters instead of pill bars.
+   Everything Downloader
+
+   Two-tone: the rail is a block of ink in both themes, the working area is
+   paper. Titles are set in a slab serif — sturdy and editorial rather than the
+   usual utility sans. Vermilion appears only where something is live, so a
+   glance across the window tells you what is moving. Numbers are large and
+   tabular, because a downloader is mostly numbers. Level meters, never pills.
    ========================================================================== */
 
 *,
@@ -18,53 +22,76 @@ body,
 }
 
 :root {
-  --f-display: 'Avenir Next Condensed', 'Futura', 'Roboto Condensed', 'Arial Narrow', 'Segoe UI',
-    system-ui, sans-serif;
+  /* A slab serif for titles: unusual in a utility app, and it holds long video
+     names better than a condensed sans. Superclarendon ships with macOS,
+     Rockwell with Windows. */
+  --f-display: 'Superclarendon', 'Rockwell', 'Bookman Old Style', Georgia, serif;
   --f-body: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI',
     system-ui, sans-serif;
   --f-mono: ui-monospace, 'SF Mono', Menlo, 'Cascadia Mono', Consolas, monospace;
 
-  --r: 3px;
-  --rail-w: 210px;
-  --bar-h: 48px;
+  --r: 4px;
+  --rail-w: 216px;
+  --bar-h: 52px;
 
-  --bg: #0f1318;
-  --panel: #151a21;
-  --panel-2: #1b2129;
-  --panel-3: #212932;
-  --well: #0a0d11;
-  --rule: #273038;
-  --rule-soft: #1d242b;
-  --text: #e5eaf0;
-  --dim: #8b96a4;
-  --dimmer: #5d6875;
-  --signal: #f0a03c;
-  --signal-deep: #c2761d;
-  --signal-glow: rgba(240, 160, 60, 0.22);
-  --signal-ink: #1a1206;
-  --ok: #74c295;
-  --bad: #e0705c;
-  --shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  /* ---- working area: paper ---- */
+  --bg: #f4f3f0;
+  --panel: #fffffe;
+  --panel-2: #f7f6f3;
+  --panel-3: #efeee9;
+  --well: #e6e4de;
+  --rule: #ddd9d1;
+  --rule-soft: #ebe8e2;
+  --text: #191d23;
+  --dim: #5d6570;
+  --dimmer: #8b9199;
+
+  /* ---- the ink block: rail and title bar, dark in both themes ---- */
+  --ink: #17202a;
+  --ink-2: #1e2934;
+  --ink-3: #26323e;
+  --ink-text: #eef1f4;
+  --ink-dim: #93a0ad;
+  --ink-rule: #2c3844;
+
+  /* ---- vermilion: live transfer only ---- */
+  --signal: #d2461f;
+  --signal-deep: #ae3616;
+  --signal-glow: rgba(210, 70, 31, 0.18);
+  --signal-ink: #fff6f2;
+
+  --ok: #1f7a5c;
+  --bad: #a8261b;
+  --shadow: 0 10px 30px rgba(23, 32, 42, 0.16);
 }
 
-:root[data-theme='light'] {
-  --bg: #e7eaee;
-  --panel: #ffffff;
-  --panel-2: #f2f4f7;
-  --panel-3: #e9edf2;
-  --well: #dbe0e6;
-  --rule: #d1d8e0;
-  --rule-soft: #e5e9ee;
-  --text: #161b21;
-  --dim: #5c6875;
-  --dimmer: #78838f;
-  --signal: #b06405;
-  --signal-deep: #8a4e04;
-  --signal-glow: rgba(176, 100, 5, 0.16);
-  --signal-ink: #fff8ee;
-  --ok: #2c7a52;
-  --bad: #ad3f2c;
-  --shadow: 0 12px 28px rgba(20, 30, 45, 0.18);
+:root[data-theme='dark'] {
+  --bg: #12161b;
+  --panel: #171c22;
+  --panel-2: #1d232a;
+  --panel-3: #242b33;
+  --well: #0d1116;
+  --rule: #2a323b;
+  --rule-soft: #1f262d;
+  --text: #e8eaed;
+  --dim: #98a1ac;
+  --dimmer: #697280;
+
+  --ink: #0d1116;
+  --ink-2: #151b21;
+  --ink-3: #1e252c;
+  --ink-text: #e8eaed;
+  --ink-dim: #8b95a1;
+  --ink-rule: #232b33;
+
+  --signal: #e6522a;
+  --signal-deep: #b8391a;
+  --signal-glow: rgba(230, 82, 42, 0.2);
+  --signal-ink: #1a0d08;
+
+  --ok: #4fae87;
+  --bad: #e0685a;
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
 }
 
 body {
@@ -134,13 +161,43 @@ a {
 
 /* ---- type helpers ------------------------------------------------------- */
 
+/* An eyebrow, not a shout: small caps only for tiny section markers. */
 .label {
-  font-family: var(--f-display);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
+  font-family: var(--f-body);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--dim);
+  color: var(--dimmer);
+}
+
+/* Titles carry the slab. */
+.serif {
+  font-family: var(--f-display);
+  font-weight: 400;
+  letter-spacing: -0.005em;
+}
+
+/* The numbers are the point: give the important ones real size. */
+.figure {
+  font-family: var(--f-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+  font-size: 19px;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.figure.live {
+  color: var(--signal);
+}
+
+.figure-unit {
+  font-family: var(--f-body);
+  font-size: 10.5px;
+  color: var(--dimmer);
+  margin-left: 3px;
 }
 
 .mono {
@@ -183,8 +240,8 @@ a {
   align-items: center;
   gap: 14px;
   padding: 0 12px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--rule);
+  background: var(--ink);
+  color: var(--ink-text);
   -webkit-app-region: drag;
 }
 
@@ -199,23 +256,22 @@ a {
 .wordmark {
   display: flex;
   align-items: baseline;
-  gap: 5px;
+  gap: 6px;
   font-family: var(--f-display);
-  font-size: 13px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  font-size: 16px;
+  letter-spacing: -0.01em;
   white-space: nowrap;
   -webkit-app-region: drag;
 }
 
 .wordmark b {
-  font-weight: 600;
-  color: var(--text);
+  font-weight: 400;
+  color: var(--ink-text);
 }
 
 .wordmark span {
   font-weight: 400;
-  color: var(--dimmer);
+  color: var(--ink-dim);
 }
 
 /* the lamp: dark when idle, lit while anything is transferring */
@@ -333,15 +389,15 @@ a {
 .field-tag {
   display: flex;
   align-items: center;
-  padding: 0 10px;
+  padding: 0 11px;
   border-right: 1px solid var(--rule);
-  font-family: var(--f-display);
+  font-family: var(--f-body);
   font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
+  font-weight: 650;
+  letter-spacing: 0.07em;
   color: var(--dimmer);
   background: var(--panel-2);
-  border-radius: 2px 0 0 2px;
+  border-radius: calc(var(--r) - 1px) 0 0 calc(var(--r) - 1px);
 }
 
 .field input {
@@ -386,13 +442,15 @@ a {
   min-height: 0;
 }
 
+/* The ink block. Dark in both themes: it frames the paper and gives the window
+   a shape you recognise before reading a word. */
 .rail {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 12px 8px;
-  background: var(--panel);
-  border-right: 1px solid var(--rule);
+  gap: 1px;
+  padding: 14px 10px 20px;
+  background: var(--ink);
+  color: var(--ink-text);
   overflow-y: auto;
   scrollbar-width: none;
 }
@@ -415,34 +473,31 @@ a {
 .rail-item {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   width: 100%;
-  padding: 0 9px 0 8px;
-  height: 33px;
+  padding: 0 10px;
+  height: 34px;
   border: 0;
-  border-left: 2px solid transparent;
-  border-radius: 0 var(--r) var(--r) 0;
+  border-radius: var(--r);
   background: transparent;
   text-align: left;
   cursor: pointer;
-  color: var(--dim);
-  font-family: var(--f-display);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
+  color: var(--ink-dim);
+  font-family: var(--f-body);
+  font-size: 13px;
+  font-weight: 450;
   transition: background 0.12s, color 0.12s;
 }
 
 .rail-item:hover {
-  background: var(--panel-2);
-  color: var(--text);
+  background: var(--ink-2);
+  color: var(--ink-text);
 }
 
 .rail-item.active {
-  background: var(--panel-2);
-  border-left-color: var(--signal);
-  color: var(--text);
+  background: var(--ink-3);
+  color: var(--ink-text);
+  font-weight: 600;
 }
 
 .rail-item svg {
@@ -453,14 +508,27 @@ a {
 .rail-item .count {
   margin-left: auto;
   font-family: var(--f-mono);
-  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
   font-weight: 400;
   letter-spacing: 0;
-  color: var(--dimmer);
+  color: var(--ink-dim);
+  opacity: 0.75;
 }
 
 .rail-item.active .count {
-  color: var(--signal);
+  opacity: 1;
+  color: var(--ink-text);
+}
+
+.rail-head .label {
+  color: var(--ink-dim);
+  opacity: 0.7;
+}
+
+.rail-empty {
+  color: var(--ink-dim);
+  opacity: 0.75;
 }
 
 .swatch {
@@ -496,10 +564,9 @@ a {
 
 .pane-title {
   font-family: var(--f-display);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: 20px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
 }
 
 .pane-sub {
@@ -509,7 +576,8 @@ a {
 }
 
 .pane-body {
-  padding: 14px 16px 40px;
+  /* Deep bottom padding so the floating selection bar never hides the last row. */
+  padding: 14px 16px 84px;
   min-height: 0;
 }
 
@@ -517,23 +585,23 @@ a {
    Controls
    ========================================================================== */
 
+/* Sentence case, normal tracking: a button should read like a sentence, not a
+   sign. Uppercase everywhere was the loudest part of the old look. */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  height: 30px;
-  padding: 0 12px;
+  height: 31px;
+  padding: 0 13px;
   border: 1px solid var(--rule);
   border-radius: var(--r);
-  background: var(--panel-2);
+  background: var(--panel);
   color: var(--text);
   cursor: pointer;
-  font-family: var(--f-display);
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
+  font-family: var(--f-body);
+  font-size: 12.5px;
+  font-weight: 550;
   white-space: nowrap;
   transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s;
 }
@@ -548,8 +616,17 @@ a {
 }
 
 .btn:disabled {
-  opacity: 0.4;
+  opacity: 0.45;
   cursor: default;
+}
+
+/* A faded vermilion reads as a broken button, so a disabled primary drops back
+   to neutral instead of tinting. */
+.btn.primary:disabled {
+  background: var(--panel-3);
+  border-color: var(--rule);
+  color: var(--dimmer);
+  opacity: 1;
 }
 
 .btn.primary {
@@ -582,15 +659,15 @@ a {
 }
 
 .btn.tall {
-  height: 42px;
-  padding: 0 20px;
-  font-size: 12px;
+  height: 43px;
+  padding: 0 22px;
+  font-size: 13.5px;
 }
 
 .btn.sm {
-  height: 25px;
-  padding: 0 9px;
-  font-size: 10.5px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 11.5px;
 }
 
 .iconbtn {
@@ -759,24 +836,28 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 18px;
-  padding: 0 6px;
+  height: 19px;
+  padding: 0 7px;
   border: 1px solid var(--rule);
-  border-radius: 2px;
-  background: var(--panel-2);
-  font-family: var(--f-display);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
+  border-radius: 10px;
+  background: var(--panel-3);
+  font-family: var(--f-body);
+  font-size: 11px;
+  font-weight: 550;
+  letter-spacing: 0;
   color: var(--dim);
   white-space: nowrap;
 }
 
+/* The one place small caps still earn their keep: a source tag. */
 .chip.site {
   color: var(--text);
-  border-color: var(--rule);
+  border-color: transparent;
   background: var(--panel-3);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .chip.signal {
@@ -964,8 +1045,10 @@ a {
 }
 
 .group-title {
-  font-size: 13.5px;
-  font-weight: 500;
+  font-family: var(--f-display);
+  font-size: 16px;
+  font-weight: 400;
+  letter-spacing: -0.005em;
   min-width: 0;
 }
 
@@ -1026,10 +1109,10 @@ a {
 
 .row {
   display: grid;
-  grid-template-columns: 104px minmax(0, 1fr) auto;
+  grid-template-columns: auto 104px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
-  padding: 9px 10px 9px 12px;
+  padding: 11px 12px;
   border-top: 1px solid var(--rule-soft);
   transition: background 0.1s;
 }
@@ -1094,9 +1177,10 @@ a {
 }
 
 .row-title {
-  font-size: 13px;
-  font-weight: 450;
-  line-height: 1.35;
+  font-family: var(--f-display);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.32;
 }
 
 .row-meta {
@@ -1229,9 +1313,10 @@ a {
 }
 
 .dl-title {
-  font-size: 13px;
-  font-weight: 450;
-  line-height: 1.35;
+  font-family: var(--f-display);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.32;
 }
 
 .dl-meta {
@@ -1326,8 +1411,25 @@ a {
 
 .set-row > .set-key {
   padding-top: 6px;
-  font-size: 12.5px;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text);
+}
+
+/* The ⓘ body spans the full row so long explanations have room to breathe. */
+.set-row {
+  position: relative;
+}
+
+.set-key .info-body {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 5;
+  margin-top: 2px;
+  font-weight: 400;
+  box-shadow: var(--shadow);
 }
 
 .set-hint {
@@ -1389,11 +1491,9 @@ a {
 }
 
 .tool-line .name {
-  font-family: var(--f-display);
+  font-family: var(--f-mono);
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
 }
 
 .tool-line .path {
@@ -1476,10 +1576,9 @@ a {
 .empty h3 {
   margin: 0;
   font-family: var(--f-display);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: 19px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
 }
 
 .empty p {
@@ -1532,10 +1631,9 @@ a {
 .modal-head h3 {
   margin: 0;
   font-family: var(--f-display);
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
+  font-size: 17px;
+  font-weight: 400;
+  letter-spacing: -0.005em;
 }
 
 .modal-body {
@@ -1552,6 +1650,168 @@ a {
   padding: 12px 16px;
   border-top: 1px solid var(--rule-soft);
   background: var(--panel-2);
+}
+
+/* ==========================================================================
+   Info disclosure — explanations live behind a marker instead of filling the
+   page with paragraphs nobody reads twice.
+   ========================================================================== */
+
+.info-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.info-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dimmer);
+  cursor: help;
+  font-family: var(--f-body);
+  font-size: 10px;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.info-btn:hover,
+.info-btn.on {
+  background: var(--signal);
+  border-color: var(--signal);
+  color: var(--signal-ink);
+}
+
+.info-body {
+  margin-top: 7px;
+  padding: 9px 11px;
+  border-left: 2px solid var(--signal);
+  border-radius: 0 var(--r) var(--r) 0;
+  background: var(--panel-3);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--dim);
+  animation: fade 0.14s ease;
+}
+
+.info-body code {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--text);
+  user-select: text;
+}
+
+/* ==========================================================================
+   Batch selection
+   ========================================================================== */
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  flex: none;
+  border: 1.5px solid var(--rule);
+  border-radius: 3px;
+  background: var(--panel);
+  color: transparent;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+
+.check:hover {
+  border-color: var(--dim);
+}
+
+.check.on {
+  background: var(--signal);
+  border-color: var(--signal);
+  color: var(--signal-ink);
+}
+
+.check.some {
+  border-color: var(--signal);
+  color: var(--signal);
+}
+
+.row.selected,
+.dl.selected {
+  background: color-mix(in srgb, var(--signal) 7%, var(--panel));
+}
+
+/* Floating bar: appears only while something is ticked. */
+.selbar {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  transform: translateX(-50%);
+  border: 1px solid var(--ink-rule);
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--ink-text);
+  box-shadow: var(--shadow);
+  animation: rise 0.16s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+.selbar .count {
+  font-family: var(--f-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  padding-right: 4px;
+}
+
+.selbar .sep {
+  width: 1px;
+  height: 20px;
+  background: var(--ink-rule);
+}
+
+.selbar .btn {
+  background: var(--ink-2);
+  border-color: var(--ink-rule);
+  color: var(--ink-text);
+}
+
+.selbar .btn:hover:not(:disabled) {
+  background: var(--ink-3);
+  border-color: var(--ink-dim);
+}
+
+.selbar .btn.primary {
+  background: var(--signal);
+  border-color: var(--signal);
+  color: var(--signal-ink);
+}
+
+.selbar .select {
+  background: var(--ink-2);
+  border-color: var(--ink-rule);
+  color: var(--ink-text);
+}
+
+.selbar .iconbtn {
+  color: var(--ink-dim);
+}
+
+.selbar .iconbtn:hover {
+  background: var(--ink-3);
+  border-color: var(--ink-rule);
+  color: var(--ink-text);
 }
 
 /* ---- subtitle picker --------------------------------------------------- */
@@ -1786,7 +2046,10 @@ a {
     --rail-w: 176px;
   }
 
-  .row,
+  .row {
+    grid-template-columns: auto 84px minmax(0, 1fr) auto;
+  }
+
   .dl {
     grid-template-columns: 84px minmax(0, 1fr) auto;
   }

@@ -4,7 +4,19 @@ import * as fmt from '../format'
 import { QUALITY_OPTIONS, fromDefault, toRequest } from '../quality'
 import { T } from '../strings'
 import type { AppState, Download, MediaItem, Source } from '../types'
-import { Btn, Chip, Empty, Icon, IconBtn, Menu, MenuItem, Meter, Modal, Thumb } from '../components/ui'
+import {
+  Btn,
+  Check,
+  Chip,
+  Empty,
+  Icon,
+  IconBtn,
+  Menu,
+  MenuItem,
+  Meter,
+  Modal,
+  Thumb,
+} from '../components/ui'
 
 interface Props {
   state: AppState
@@ -17,6 +29,28 @@ export default function Sources({ state, downloads, onGoToLibrary }: Props) {
   const [rowQuality, setRowQuality] = useState<Record<string, string>>({})
   const [pendingRemove, setPendingRemove] = useState<Source | null>(null)
   const [rescanning, setRescanning] = useState<Record<string, boolean>>({})
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [batchQuality, setBatchQuality] = useState<string | null>(null)
+
+  const toggleOne = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleMany = (ids: string[], turnOn: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      for (const id of ids) {
+        if (turnOn) next.add(id)
+        else next.delete(id)
+      }
+      return next
+    })
+  }
 
   const fallbackQuality = fromDefault(state.settings.defaultQuality)
 
@@ -106,6 +140,27 @@ export default function Sources({ state, downloads, onGoToLibrary }: Props) {
                 }
               }}
             >
+              {items.length ? (
+                <span onClick={(e) => e.stopPropagation()}>
+                  <Check
+                    state={
+                      items.every((i) => selected.has(i.id))
+                        ? true
+                        : items.some((i) => selected.has(i.id))
+                          ? 'some'
+                          : false
+                    }
+                    label={T.batch.selectGroup}
+                    onChange={() =>
+                      toggleMany(
+                        items.map((i) => i.id),
+                        !items.every((i) => selected.has(i.id))
+                      )
+                    }
+                  />
+                </span>
+              ) : null}
+
               {probing ? (
                 <Icon name="spinner" className="spin chevron" />
               ) : (
@@ -210,6 +265,8 @@ export default function Sources({ state, downloads, onGoToLibrary }: Props) {
                     item={item}
                     download={downloadByUrl.get(item.url) || null}
                     quality={qualityFor(item)}
+                    selected={selected.has(item.id)}
+                    onToggleSelect={() => toggleOne(item.id)}
                     onQuality={(value) => setRowQuality((prev) => ({ ...prev, [item.id]: value }))}
                     onDownload={() => startDownload(item)}
                   />
@@ -219,6 +276,56 @@ export default function Sources({ state, downloads, onGoToLibrary }: Props) {
           </section>
         )
       })}
+
+      {selected.size ? (
+        <div className="selbar">
+          <span className="count">{selected.size}</span>
+          <span style={{ fontSize: 12.5, color: 'var(--ink-dim)' }}>{T.batch.picked}</span>
+          <span className="sep" />
+          <select
+            className="select"
+            value={batchQuality ?? fallbackQuality}
+            title={T.item.quality}
+            onChange={(e) => setBatchQuality(e.target.value)}
+          >
+            {QUALITY_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <Btn
+            size="sm"
+            variant="primary"
+            icon="download"
+            onClick={() => {
+              api
+                .download({
+                  itemIds: [...selected],
+                  ...toRequest(batchQuality ?? fallbackQuality),
+                })
+                .then((res) => {
+                  setSelected(new Set())
+                  if (res && res.count) onGoToLibrary()
+                })
+            }}
+          >
+            {T.batch.download}
+          </Btn>
+          <Btn
+            size="sm"
+            icon="trash"
+            onClick={() => {
+              for (const id of selected) api.removeItem(id)
+              setSelected(new Set())
+            }}
+          >
+            {T.batch.remove}
+          </Btn>
+          <span className="sep" />
+          <IconBtn icon="x" title={T.batch.clear} onClick={() => setSelected(new Set())} />
+        </div>
+      ) : null}
 
       {pendingRemove ? (
         <Modal
@@ -252,12 +359,16 @@ function Row({
   item,
   download,
   quality,
+  selected,
+  onToggleSelect,
   onQuality,
   onDownload,
 }: {
   item: MediaItem
   download: Download | null
   quality: string
+  selected: boolean
+  onToggleSelect: () => void
   onQuality: (value: string) => void
   onDownload: () => void
 }) {
@@ -266,7 +377,8 @@ function Row({
   const idle = !download || download.status === 'canceled'
 
   return (
-    <div className="row">
+    <div className={`row${selected ? ' selected' : ''}`}>
+      <Check state={selected} label={T.batch.selectOne} onChange={onToggleSelect} />
       <Thumb src={item.thumbnail} duration={fmt.duration(item.duration)} audio={audio} />
 
       <div className="row-ident">

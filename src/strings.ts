@@ -177,6 +177,16 @@ export const T = {
     version: 'Sürüm',
   },
 
+  batch: {
+    selectOne: 'Seç',
+    selectGroup: 'Bu kaynaktaki hepsini seç',
+    picked: 'öğe seçildi',
+    download: 'İndir',
+    remove: 'Listeden çıkar',
+    clear: 'Seçimi temizle',
+    category: 'Kategoriye taşı',
+  },
+
   subs: {
     find: 'Altyazı bul',
     title: 'Altyazı',

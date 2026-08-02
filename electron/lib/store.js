@@ -25,7 +25,8 @@ function defaultSettings() {
     embedThumbnail: true,
     embedMetadata: true,
     rateLimit: '', // ör. 4M
-    theme: 'dark', // dark | light | system
+    // The interface is designed light-first now; follow the OS by default.
+    theme: 'system', // dark | light | system
     autoDetectClipboard: true,
     autoStartDownloads: true,
     enrichLimit: 80,
