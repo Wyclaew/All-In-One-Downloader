@@ -243,13 +243,14 @@ function resolveFinalPath(job, settings) {
   for (const c of candidates) {
     const abs = path.isAbsolute(c) ? c : path.resolve(settings.downloadDir, c)
     if (fs.existsSync(abs)) return abs
-    // Post-processing changes the extension (webm -> mp4, m4a -> mp3).
+    // Post-processing changes the extension (webm -> mp4, m4a -> mp3). Match on
+    // `base.` and not `base`, or "Dune" would happily return "Dune 2.mp4".
     const dir = path.dirname(abs)
     const base = path.basename(abs, path.extname(abs))
     try {
       const sibling = fs
         .readdirSync(dir)
-        .find((f) => f.startsWith(base) && !f.endsWith('.part') && !f.endsWith('.ytdl'))
+        .find((f) => f.startsWith(`${base}.`) && !f.endsWith('.part') && !f.endsWith('.ytdl'))
       if (sibling) return path.join(dir, sibling)
     } catch {
       /* dir gone */

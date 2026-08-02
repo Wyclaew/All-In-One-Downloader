@@ -10,6 +10,8 @@ publish:
   provider: github
   owner: Wyclaew
   repo: All-In-One-Downloader
+  # Publish outright rather than leaving a draft nobody can download.
+  releaseType: release
 
 files:
   - dist/**
@@ -25,6 +27,7 @@ extraResources:
       - '**/*'
 
 mac:
+  artifactName: ${name}-${version}-${arch}-mac.${ext}
   category: public.app-category.utilities
   darkModeSupport: true
   target:

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import * as fmt from '../format'
 import { QUALITY_OPTIONS, fromDefault, toRequest } from '../quality'
@@ -31,6 +31,18 @@ export default function Sources({ state, downloads, onGoToLibrary }: Props) {
   const [rescanning, setRescanning] = useState<Record<string, boolean>>({})
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [batchQuality, setBatchQuality] = useState<string | null>(null)
+
+  // A ticked item can disappear under you — a rescan replaces the list, or the
+  // item is removed. Without this the bar counts things that no longer exist and
+  // a bulk action would be sent ids the main process can't find.
+  useEffect(() => {
+    setSelected((prev) => {
+      if (!prev.size) return prev
+      const alive = new Set(state.items.map((i) => i.id))
+      const kept = [...prev].filter((id) => alive.has(id))
+      return kept.length === prev.size ? prev : new Set(kept)
+    })
+  }, [state.items])
 
   const toggleOne = (id: string) => {
     setSelected((prev) => {

@@ -38,7 +38,19 @@ export function useApp() {
     api.getState().then((s) => alive && s && setState(s))
     api.getTools().then((t) => alive && t && setTools(t))
 
-    const offState = bridge.onState((s) => setState(s))
+    const offState = bridge.onState((s) => {
+      setState(s)
+      // Progress arrives on its own channel and was never cleaned up, so every
+      // download the app had ever seen kept an entry after it was cleared away.
+      setProgress((prev) => {
+        const alive = new Set(s.downloads.map((d) => d.id))
+        const stale = Object.keys(prev).filter((id) => !alive.has(id))
+        if (!stale.length) return prev
+        const next = { ...prev }
+        for (const id of stale) delete next[id]
+        return next
+      })
+    })
     const offProgress = bridge.onProgress((raw) => {
       const p = raw as ProgressEvent
       setProgress((prev) => ({ ...prev, [p.id]: p }))

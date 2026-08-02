@@ -112,7 +112,9 @@ function buildMenu() {
         { type: 'separator' },
         {
           label: 'İndirme Klasörünü Aç',
-          click: () => shell.openPath(store.getState().settings.downloadDir),
+          // Nothing has been downloaded yet on a fresh install, so the folder
+          // may not exist; creating it beats an error about a missing path.
+          click: () => shell.openPath(store.ensureDownloadDir()),
         },
         ...(IS_MAC ? [] : [{ type: 'separator' }, { label: 'Ayarlar…', accelerator: 'Ctrl+,', click: () => toRenderer('settings') }, { role: 'quit', label: 'Çık' }]),
       ],
@@ -425,6 +427,8 @@ function registerIpc() {
 
   handle('file:open', async (p) => {
     if (!p) throw new Error('Dosya yolu yok.')
+    // The download folder is the one path that may legitimately not exist yet.
+    if (p === store.getState().settings.downloadDir) store.ensureDownloadDir()
     const err = await shell.openPath(p)
     if (err) throw new Error(err)
     return true
