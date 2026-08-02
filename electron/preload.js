@@ -46,6 +46,10 @@ contextBridge.exposeInMainWorld('api', {
   pickDownloadDir: () => ipcRenderer.invoke('settings:pickDir'),
   resetSettings: () => ipcRenderer.invoke('settings:reset'),
 
+  searchSubtitles: (payload) => ipcRenderer.invoke('subs:search', payload),
+  applySubtitle: (payload) => ipcRenderer.invoke('subs:apply', payload),
+  subtitleTools: () => ipcRenderer.invoke('subs:tools'),
+
   openFile: (p) => ipcRenderer.invoke('file:open', p),
   revealFile: (p) => ipcRenderer.invoke('file:reveal', p),
   openExternal: (url) => ipcRenderer.invoke('shell:external', url),

@@ -396,6 +396,8 @@ export default function App() {
                   setCategory(ALL)
                 }}
                 onGoToSources={() => setView('sources')}
+                onToast={pushToast}
+                onOpenSettings={() => setView('settings')}
               />
             ) : null}
 

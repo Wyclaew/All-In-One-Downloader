@@ -18,6 +18,9 @@ export default function Settings({ settings, tools, onRefreshTools, onToast }: P
   const [rate, setRate] = useState(settings.rateLimit)
   const [subLangs, setSubLangs] = useState(settings.subLangs)
   const [browsers, setBrowsers] = useState<BrowserOption[] | null>(null)
+  const [apiKey, setApiKey] = useState(settings.subtitleApiKey)
+  const [subtitleLangs, setSubtitleLangs] = useState(settings.subtitleLangs)
+  const [subsTools, setSubsTools] = useState<{ ffsubsync: boolean } | null>(null)
 
   // Only offer browsers whose cookie store actually exists on this machine —
   // picking a missing one used to fail every request with a cryptic error.
@@ -25,6 +28,9 @@ export default function Settings({ settings, tools, onRefreshTools, onToast }: P
     let alive = true
     api.listBrowsers().then((list) => {
       if (alive && list) setBrowsers(list)
+    })
+    api.subtitleTools().then((t) => {
+      if (alive && t) setSubsTools(t)
     })
     return () => {
       alive = false
@@ -248,6 +254,63 @@ export default function Settings({ settings, tools, onRefreshTools, onToast }: P
             ))}
           </select>
         </Row>
+      </Section>
+
+      <Section title={T.settings.sectionSubs}>
+        <Row label={T.settings.subsKey} hint={T.settings.subsKeyHint}>
+          <input
+            className="input wide"
+            type="password"
+            value={apiKey}
+            spellCheck={false}
+            placeholder="opensubtitles.com API key"
+            onChange={(e) => setApiKey(e.target.value)}
+            onBlur={() => patch({ subtitleApiKey: apiKey.trim() })}
+          />
+        </Row>
+
+        <Row label={T.settings.subsLangs} hint={T.settings.subsLangsHint}>
+          <input
+            className="input"
+            style={{ width: 160 }}
+            value={subtitleLangs}
+            spellCheck={false}
+            onChange={(e) => setSubtitleLangs(e.target.value)}
+            onBlur={() => patch({ subtitleLangs: subtitleLangs.trim() || 'tr,en' })}
+          />
+        </Row>
+
+        <Row label="">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <Toggle
+              checked={settings.autoFetchSubtitles}
+              onChange={(v) => patch({ autoFetchSubtitles: v })}
+              label={T.settings.subsAuto}
+            />
+            <Toggle
+              checked={settings.syncSubtitles}
+              onChange={(v) => patch({ syncSubtitles: v })}
+              label={T.settings.subsSync}
+            />
+            <Toggle
+              checked={settings.embedSubtitleFile}
+              onChange={(v) => patch({ embedSubtitleFile: v })}
+              label={T.settings.subsEmbed}
+            />
+          </div>
+        </Row>
+
+        {settings.syncSubtitles ? (
+          <Row label="">
+            <div className="set-hint" style={{ marginTop: 0 }}>
+              {subsTools === null
+                ? '…'
+                : subsTools.ffsubsync
+                  ? T.settings.subsSyncReady
+                  : T.settings.subsSyncMissing}
+            </div>
+          </Row>
+        ) : null}
       </Section>
 
       <Section title={T.settings.sectionApp}>

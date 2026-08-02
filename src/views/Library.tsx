@@ -4,7 +4,8 @@ import * as fmt from '../format'
 import { describe } from '../quality'
 import { T } from '../strings'
 import type { AppState, Category, Download } from '../types'
-import { Btn, Chip, Empty, IconBtn, Menu, MenuItem, Meter, Modal, Thumb } from '../components/ui'
+import { Btn, Chip, Empty, Icon, IconBtn, Menu, MenuItem, Meter, Modal, Thumb } from '../components/ui'
+import SubtitlePicker from '../components/SubtitlePicker'
 
 const ACTIVE = new Set(['running', 'queued', 'paused'])
 const PROBLEM = new Set(['error', 'canceled'])
@@ -16,6 +17,8 @@ interface Props {
   query: string
   onClearFilters: () => void
   onGoToSources: () => void
+  onToast: (message: string, kind?: 'info' | 'warn' | 'error' | 'ok') => void
+  onOpenSettings: () => void
 }
 
 const STAGE_LABEL: Record<string, string> = {
@@ -31,9 +34,12 @@ export default function Library({
   query,
   onClearFilters,
   onGoToSources,
+  onToast,
+  onOpenSettings,
 }: Props) {
   const [pendingRemove, setPendingRemove] = useState<Download | null>(null)
   const [alsoDeleteFile, setAlsoDeleteFile] = useState(false)
+  const [subtitleFor, setSubtitleFor] = useState<Download | null>(null)
 
   const categoryById = useMemo(() => {
     const map = new Map<string, Category>()
@@ -93,6 +99,7 @@ export default function Library({
       setAlsoDeleteFile(false)
       setPendingRemove(d)
     },
+    onFindSubtitle: (d: Download) => setSubtitleFor(d),
   }
 
   return (
@@ -135,6 +142,15 @@ export default function Library({
             <Row key={d.id} download={d} {...rowProps} />
           ))}
         </Section>
+      ) : null}
+
+      {subtitleFor ? (
+        <SubtitlePicker
+          download={subtitleFor}
+          onClose={() => setSubtitleFor(null)}
+          onToast={onToast}
+          onOpenSettings={onOpenSettings}
+        />
       ) : null}
 
       {pendingRemove ? (
@@ -204,11 +220,13 @@ function Row({
   categories,
   categoryById,
   onRemove,
+  onFindSubtitle,
 }: {
   download: Download
   categories: Category[]
   categoryById: Map<string, Category>
   onRemove: (d: Download) => void
+  onFindSubtitle: (d: Download) => void
 }) {
   const category = d.categoryId ? categoryById.get(d.categoryId) : null
   const running = d.status === 'running'
@@ -287,6 +305,13 @@ function Row({
           <span className="dl-path">{T.library.fileMissing}</span>
         ) : null}
 
+        {d.subtitlePath ? (
+          <span className="dl-sub mono">
+            <Icon name="captions" size={12} />
+            {(d.subtitleLanguage || 'srt').toUpperCase()} altyazı eklendi
+          </span>
+        ) : null}
+
         {d.error ? <span className="dl-error">{d.error}</span> : null}
       </div>
 
@@ -340,6 +365,17 @@ function Row({
                 </MenuItem>
               ))}
               <div className="menu-sep" />
+              {d.status === 'done' && d.filePath ? (
+                <MenuItem
+                  icon="captions"
+                  onClick={() => {
+                    onFindSubtitle(d)
+                    close()
+                  }}
+                >
+                  {T.subs.find}
+                </MenuItem>
+              ) : null}
               <MenuItem
                 icon="external"
                 onClick={() => {

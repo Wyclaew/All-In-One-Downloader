@@ -75,6 +75,8 @@ export interface Download {
   /** Set after a cookie-related failure so the retry runs without cookies. */
   noCookies?: boolean
   resolved?: Resolved | null
+  subtitlePath?: string | null
+  subtitleLanguage?: string | null
   status: DownloadStatus
   stage: DownloadStage
   percent: number | null
@@ -127,6 +129,32 @@ export interface Settings {
   autoFetchSubtitles: boolean
   syncSubtitles: boolean
   embedSubtitleFile: boolean
+}
+
+export interface SubtitleHit {
+  fileId: number
+  fileName: string
+  language: string
+  release: string
+  downloads: number
+  hearingImpaired: boolean
+  fps: number | null
+  /** Timed against this exact file — already in sync. */
+  hashMatch: boolean
+  uploader: string
+}
+
+export interface SubtitleSearch {
+  results: SubtitleHit[]
+  parsed: { title: string; season: number | null; episode: number | null }
+  hashed: boolean
+}
+
+export interface SubtitleOutcome {
+  path: string
+  synced: boolean
+  embedded: boolean
+  notes: string[]
 }
 
 /** A browser whose cookie store we found on this machine. */

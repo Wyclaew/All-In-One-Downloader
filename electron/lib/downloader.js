@@ -410,6 +410,9 @@ function start(downloadId) {
       })
       sendProgress(download, true)
       store.send('finished', { id: download.id, title: download.title })
+      if (settings.autoFetchSubtitles && finalPath) {
+        autoSubtitles(download, finalPath, settings).catch(() => {})
+      }
       if (settings.notifyOnFinish && Notification.isSupported()) {
         new Notification({ title: 'İndirme tamamlandı', body: download.title || '' }).show()
       }
@@ -443,6 +446,59 @@ function start(downloadId) {
     }
     pump_queue()
   })
+}
+
+/**
+ * Best-effort subtitle right after a download. Only takes a hash match — those
+ * were timed against this exact file, so they need no alignment and can't be
+ * the wrong release. Anything less certain is left for the user to choose.
+ */
+async function autoSubtitles(download, filePath, settings) {
+  const subtitles = require('./subtitles')
+  let found
+  try {
+    found = await subtitles.search({
+      filePath,
+      title: download.title,
+      languages: settings.subtitleLangs,
+      apiKey: settings.subtitleApiKey,
+    })
+  } catch (err) {
+    if (err && err.code === 'NO_KEY') return
+    store.toast(`Altyazı aranamadı: ${err.message}`, 'warn')
+    return
+  }
+
+  const wanted = String(settings.subtitleLangs || 'tr,en')
+    .split(',')
+    .map((l) => l.trim().toLowerCase())
+    .filter(Boolean)
+
+  let pick = null
+  for (const lang of wanted) {
+    pick = found.results.find((r) => r.hashMatch && r.language.toLowerCase() === lang)
+    if (pick) break
+  }
+  if (!pick) return
+
+  try {
+    const outcome = await subtitles.apply({
+      videoPath: filePath,
+      fileId: pick.fileId,
+      language: pick.language,
+      hashMatch: true,
+      apiKey: settings.subtitleApiKey,
+      sync: false,
+      embedTrack: settings.embedSubtitleFile,
+    })
+    store.commit(() => {
+      download.subtitlePath = outcome.path
+      download.subtitleLanguage = pick.language
+    })
+    store.toast(`Altyazı eklendi (${pick.language}): ${download.title}`, 'ok')
+  } catch (err) {
+    store.toast(`Altyazı eklenemedi: ${err.message}`, 'warn')
+  }
 }
 
 /** Start queued transfers up to the concurrency limit. */

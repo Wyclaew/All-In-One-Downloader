@@ -4,6 +4,8 @@ import type {
   Category,
   DownloadRequest,
   Settings,
+  SubtitleOutcome,
+  SubtitleSearch,
   Toast,
   Tools,
 } from './types'
@@ -44,6 +46,14 @@ interface Bridge {
   updateSettings(patch: Partial<Settings>): Promise<Result<Settings>>
   pickDownloadDir(): Promise<Result<string | null>>
   resetSettings(): Promise<Result<Settings>>
+  searchSubtitles(payload: { downloadId?: string; query?: string }): Promise<Result<SubtitleSearch>>
+  applySubtitle(payload: {
+    downloadId: string
+    fileId: number
+    language: string
+    hashMatch: boolean
+  }): Promise<Result<SubtitleOutcome>>
+  subtitleTools(): Promise<Result<{ ffsubsync: boolean }>>
   openFile(path: string): Promise<Result<boolean>>
   revealFile(path: string): Promise<Result<boolean>>
   openExternal(url: string): Promise<Result<boolean>>
@@ -122,6 +132,16 @@ export const api = {
   updateSettings: (patch: Partial<Settings>) => call(bridge.updateSettings(patch)),
   pickDownloadDir: () => call(bridge.pickDownloadDir()),
   resetSettings: () => call(bridge.resetSettings()),
+
+  searchSubtitles: (payload: { downloadId?: string; query?: string }) =>
+    call(bridge.searchSubtitles(payload)),
+  applySubtitle: (payload: {
+    downloadId: string
+    fileId: number
+    language: string
+    hashMatch: boolean
+  }) => call(bridge.applySubtitle(payload)),
+  subtitleTools: () => call(bridge.subtitleTools()),
 
   openFile: (p: string) => call(bridge.openFile(p)),
   revealFile: (p: string) => call(bridge.revealFile(p)),

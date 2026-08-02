@@ -108,7 +108,20 @@ export const T = {
     sectionTransfer: 'Aktarım',
     sectionMedia: 'Biçim',
     sectionAccess: 'Erişim',
+    sectionSubs: 'Altyazı',
     sectionApp: 'Uygulama',
+
+    subsKey: 'OpenSubtitles API anahtarı',
+    subsKeyHint:
+      'opensubtitles.com hesabından ücretsiz alınır (Consumers → New Consumer). Anahtar olmadan altyazı araması çalışmaz.',
+    subsLangs: 'Altyazı dilleri',
+    subsLangsHint: 'Sırayla denenir. Örn. tr,en',
+    subsAuto: 'İndirme bitince uygun altyazıyı kendiliğinden ekle',
+    subsSync: 'Ada göre bulunan altyazıyı sesle hizala',
+    subsEmbed: 'Altyazıyı video dosyasına göm',
+    subsSyncReady: 'ffsubsync bulundu — hizalama yapılabilir.',
+    subsSyncMissing:
+      'ffsubsync kurulu değil; imza eşleşmesi olmayan altyazılar olduğu gibi kaydedilir. Kurmak için: pip3 install ffsubsync',
     sectionTools: 'Araçlar',
 
     downloadDir: 'İndirme klasörü',
@@ -162,6 +175,26 @@ export const T = {
     updateEngine: 'Motoru güncelle',
     reset: 'Ayarları sıfırla',
     version: 'Sürüm',
+  },
+
+  subs: {
+    find: 'Altyazı bul',
+    title: 'Altyazı',
+    searching: 'Aranıyor…',
+    inSync: 'SENKRON',
+    hearing: 'İşitme engelli',
+    downloads: 'indirme',
+    apply: 'Ekle',
+    applying: 'Ekleniyor…',
+    none: 'Bu dosya için altyazı bulunamadı.',
+    noKey: 'Altyazı araması için bir OpenSubtitles API anahtarı gerekiyor.',
+    noKeyHow: 'opensubtitles.com üzerinden ücretsiz alınır, sonra Ayarlar → Altyazı bölümüne yapıştır.',
+    openSettings: 'Ayarlara git',
+    hashNote:
+      'Dosya imzasıyla eşleşen altyazılar bu sürüm için zamanlanmıştır; ek hizalama gerekmez.',
+    queryNote: 'İmza eşleşmesi yok — sonuçlar ada göre bulundu, zamanlama kayabilir.',
+    added: 'Altyazı eklendi',
+    searchAgain: 'Başka adla ara',
   },
 
   confirm: {

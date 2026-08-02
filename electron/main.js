@@ -8,6 +8,7 @@ const probe = require('./lib/probe')
 const downloader = require('./lib/downloader')
 const binaries = require('./lib/binaries')
 const browsers = require('./lib/browsers')
+const subtitles = require('./lib/subtitles')
 const { uid, extractUrls, isProbablyUrl } = require('./lib/util')
 
 // Load from the Vite dev server only when we were actually started by `npm run
@@ -410,6 +411,41 @@ function registerIpc() {
   })
 
   handle('clipboard:read', () => clipboard.readText())
+
+  handle('subs:search', async ({ downloadId, query }) => {
+    const settings = store.getState().settings
+    const download = downloadId ? store.findDownload(downloadId) : null
+    return subtitles.search({
+      filePath: download && download.filePath ? download.filePath : null,
+      title: query || (download ? download.title : ''),
+      languages: settings.subtitleLangs,
+      apiKey: settings.subtitleApiKey,
+    })
+  })
+
+  handle('subs:apply', async ({ downloadId, fileId, language, hashMatch }) => {
+    const settings = store.getState().settings
+    const download = downloadId ? store.findDownload(downloadId) : null
+    if (!download || !download.filePath) throw new Error('Altyazı eklenecek dosya bulunamadı.')
+
+    const outcome = await subtitles.apply({
+      videoPath: download.filePath,
+      fileId,
+      language,
+      hashMatch,
+      apiKey: settings.subtitleApiKey,
+      sync: settings.syncSubtitles,
+      embedTrack: settings.embedSubtitleFile,
+    })
+
+    store.commit(() => {
+      download.subtitlePath = outcome.path
+      download.subtitleLanguage = language || null
+    })
+    return outcome
+  })
+
+  handle('subs:tools', () => ({ ffsubsync: !!subtitles.ffsubsyncPath() }))
 }
 
 // ---- lifecycle -----------------------------------------------------------
