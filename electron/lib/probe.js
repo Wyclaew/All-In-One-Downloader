@@ -12,7 +12,7 @@ const { spawn } = require('child_process')
 const store = require('./store')
 const { toolEnv, ytdlpPathOrThrow } = require('./binaries')
 const { resolveCookieArg, exportCookieJar } = require('./browsers')
-const { resolvePage } = require('./resolver')
+const { resolvePage, assistedCapture } = require('./resolver')
 const { describeStream } = require('./mediainfo')
 const { uid, siteLabel, hostOf, num, resolvedArgs } = require('./util')
 
@@ -408,10 +408,19 @@ async function tryResolve(source, settings, fallbackError) {
     browserCookieJar = await exportCookieJar(settings.cookiesBrowser).catch(() => null)
   }
 
+  const host = hostOf(source.url)
+  const profile = store.getHostProfile(host)
+  const startedAt = Date.now()
+
   let result = null
   try {
     result = await resolvePage(source.url, {
       browserCookieJar,
+      preferEngine: profile ? profile.engine : null,
+      blockRules: {
+        extraBlockedHosts: settings.extraBlockedHosts,
+        blockTrackers: settings.blockTrackers,
+      },
       minStreamSeconds: Math.max(0, Number(settings.minStreamSeconds) ?? 120),
       timeoutMs: Math.max(8000, Number(settings.resolverTimeout) || 45000),
       onProgress: (message) => {
@@ -423,6 +432,24 @@ async function tryResolve(source, settings, fallbackError) {
     console.error('[resolver]', err)
   }
 
+  // Remember which engine did the work so the next page on this site skips
+  // straight to it.
+  if (result && result.candidates && result.candidates.length) {
+    store.rememberHostProfile(host, {
+      engine: result.engine,
+      ads: (result.adsSkipped || 0) > 0,
+      ms: Date.now() - startedAt,
+    })
+  }
+
+  applyResolution(source, result, fallbackError)
+}
+
+/**
+ * Turn a resolver result into media items, or into an error the user can act on.
+ * Shared by the automatic path and by assisted capture.
+ */
+function applyResolution(source, result, fallbackError) {
   const candidates = (result && result.candidates) || []
 
   if (!candidates.length) {
@@ -461,7 +488,12 @@ async function tryResolve(source, settings, fallbackError) {
     source.error = drmOnly ? 'Bulunan akışlar DRM korumalı — indirilemez.' : null
     source.stage = null
     source.note = null
-    source.resolvedBy = result.engine === 'browser' ? 'tarayıcı motoru' : 'sayfa taraması'
+    source.resolvedBy =
+      result.engine === 'assisted'
+        ? 'tarayıcıda yakalandı'
+        : result.engine === 'browser'
+          ? 'tarayıcı motoru'
+          : 'sayfa taraması'
     source.probedAt = Date.now()
     s.items.push(...items)
   })
@@ -611,4 +643,57 @@ function killAll() {
   running.clear()
 }
 
-module.exports = { createSource, probeUrl, cancelProbe, killAll, readableError, isCookieFailure }
+/**
+ * Open the page in a visible window so the user can clear whatever gate it puts
+ * up, and take whatever plays. Replaces the found media for that source.
+ */
+async function captureSource(sourceId) {
+  const source = store.findSource(sourceId)
+  if (!source) return null
+  const settings = store.getState().settings
+
+  store.commit((s) => {
+    source.status = 'probing'
+    source.stage = 'resolver'
+    source.note = 'tarayıcı penceresi açılıyor'
+    source.error = null
+    s.items = s.items.filter((i) => i.sourceId !== source.id)
+  })
+
+  let browserCookieJar = null
+  if (settings.cookiesBrowser) {
+    browserCookieJar = await exportCookieJar(settings.cookiesBrowser).catch(() => null)
+  }
+
+  let result = null
+  try {
+    result = await assistedCapture(source.url, {
+      browserCookieJar,
+      blockRules: {
+        extraBlockedHosts: settings.extraBlockedHosts,
+        blockTrackers: settings.blockTrackers,
+      },
+      minStreamSeconds: Math.max(0, Number(settings.minStreamSeconds) ?? 120),
+      timeoutMs: 300000,
+      onProgress: (message) => {
+        const live = store.findSource(sourceId)
+        if (live) store.commit(() => { live.note = message })
+      },
+    })
+  } catch (err) {
+    console.error('[assisted]', err)
+  }
+
+  applyResolution(source, result, 'Pencere kapatıldı, akış yakalanmadı.')
+  return source
+}
+
+module.exports = {
+  createSource,
+  probeUrl,
+  captureSource,
+  cancelProbe,
+  killAll,
+  readableError,
+  isCookieFailure,
+}

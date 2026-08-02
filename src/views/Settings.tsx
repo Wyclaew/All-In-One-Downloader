@@ -21,6 +21,7 @@ export default function Settings({ settings, tools, onRefreshTools, onToast }: P
   const [apiKey, setApiKey] = useState(settings.subtitleApiKey)
   const [subtitleLangs, setSubtitleLangs] = useState(settings.subtitleLangs)
   const [subsTools, setSubsTools] = useState<{ ffsubsync: boolean } | null>(null)
+  const [blockedHosts, setBlockedHosts] = useState(settings.extraBlockedHosts)
 
   // Only offer browsers whose cookie store actually exists on this machine —
   // picking a missing one used to fail every request with a cryptic error.
@@ -253,6 +254,26 @@ export default function Settings({ settings, tools, onRefreshTools, onToast }: P
               </option>
             ))}
           </select>
+        </Row>
+
+        <Row label={T.settings.blocker} hint={T.settings.blockerHint}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
+            <Toggle
+              checked={settings.blockTrackers}
+              onChange={(v) => patch({ blockTrackers: v })}
+              label={T.settings.blockTrackers}
+            />
+            <textarea
+              className="input wide"
+              rows={3}
+              value={blockedHosts}
+              spellCheck={false}
+              placeholder={'ornek-reklam.com\nbaska-reklam.net'}
+              style={{ resize: 'vertical', paddingTop: 7, paddingBottom: 7, lineHeight: 1.5 }}
+              onChange={(e) => setBlockedHosts(e.target.value)}
+              onBlur={() => patch({ extraBlockedHosts: blockedHosts })}
+            />
+          </div>
         </Row>
 
         <Row label={T.settings.enrichLimit} hint={T.settings.enrichHint}>

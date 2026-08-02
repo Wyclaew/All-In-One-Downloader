@@ -228,6 +228,12 @@ export default function Sources({ state, downloads, onGoToLibrary }: Props) {
                   onClick={() => rescan(source)}
                 />
                 <IconBtn
+                  icon="target"
+                  title={T.source.capture}
+                  disabled={probing}
+                  onClick={() => api.captureSource(source.id)}
+                />
+                <IconBtn
                   icon="external"
                   title={T.source.openPage}
                   onClick={() => api.openSource(source.id)}

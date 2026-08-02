@@ -3,7 +3,7 @@
  * language a matter of swapping this one file.
  */
 export const T = {
-  appName: 'Everything Downloader',
+  appName: 'All in One Downloader',
 
   nav: {
     sources: 'Kaynaklar',
@@ -39,6 +39,8 @@ export const T = {
     itemsOne: 'öğe',
     downloaded: 'indi',
     rescan: 'Yeniden tara',
+    capture:
+      'Tarayıcıda yakala — pencere açılır, reklamı/doğrulamayı sen geçersin, akışı ben yakalarım',
     openPage: 'Sayfayı aç',
     removeSource: 'Kaynağı kaldır',
     downloadAll: 'Tümünü indir',
@@ -120,6 +122,10 @@ export const T = {
     subsSync: 'Ada göre bulunan altyazıyı sesle hizala',
     subsEmbed: 'Altyazıyı video dosyasına göm',
     subsSkipSame: 'Videonun sesi zaten o dildeyse altyazı ekleme',
+    blocker: 'Reklam ve izleyici engelleme',
+    blockerHint:
+      'Çözümleyicinin tarayıcısı, bilinen reklam ağlarına ve izleyicilere yapılan istekleri iptal eder — pop-up açılmaz ve sayfa daha hızlı yüklenir. Reklam sayacı ve analytics bilerek engellenmez, çünkü bazı oynatıcılar kendini onların üzerinden başlatıyor. Aşağıya kendi engellemek istediğin alan adlarını satır satır ekleyebilirsin.',
+    blockTrackers: 'Bilinen reklam ağlarını ve izleyicileri engelle',
     minStream: 'En kısa video süresi',
     minStreamHint:
       'Reklam filtresi. Bir sayfada birden fazla akış bulunursa, bundan kısa olanlar reklam sayılıp atılır — ama yalnızca daha uzun bir akış da bulunduysa. "Yok" seçersen süre bakılmaz.',

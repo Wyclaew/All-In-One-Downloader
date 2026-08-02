@@ -1,39 +1,54 @@
-"""App icon: a graphite instrument tile with a descending stack of amber
-segments — the download direction and the level meter in one mark."""
+"""App icon for All in One Downloader.
+
+The mark has to say two things and survive 16 pixels: many sources, one file,
+coming down. Three narrowing bars read as a list of things funnelling in; a bold
+arrow beneath them reads as the download. Nothing else — detail disappears at tab
+size, and a tile that stays legible small is worth more than one that looks
+clever large.
+
+Run: python3 build/make-icon.py
+"""
 
 import os
 import subprocess
 from PIL import Image, ImageDraw
 
-OUT = "/Users/erne/Desktop/everything downloader/build"
-S = 2048            # render at 2x the master, then downscale for clean edges
+OUT = os.path.dirname(os.path.abspath(__file__))
+S = 2048          # render at 2x the master, then downscale for clean edges
 MASTER = 1024
 
-# macOS icon geometry: art inset inside the 1024 canvas, squircle-ish radius.
-MARGIN = int(S * 0.088)
+# macOS icon geometry: art inset inside the canvas, squircle-ish corner.
+MARGIN = int(S * 0.086)
 RADIUS = int(S * 0.185)
 
-TOP = (0x22, 0x2B, 0x35)
-BOTTOM = (0x0D, 0x11, 0x16)
-EDGE = (0x33, 0x3F, 0x4C)
-AMBER_TOP = (0xF7, 0xB8, 0x60)
-AMBER_BOTTOM = (0xC0, 0x72, 0x1A)
+INK_TOP = (0x22, 0x2C, 0x38)
+INK_BOTTOM = (0x11, 0x18, 0x20)
+EDGE = (0x36, 0x43, 0x52)
+PAPER = (0xF2, 0xEE, 0xE8)
+VERMILION = (0xE0, 0x50, 0x24)
+VERMILION_DEEP = (0xB8, 0x37, 0x14)
 
 
 def lerp(a, b, t):
     return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
 
 
-def main():
-    os.makedirs(OUT, exist_ok=True)
+def rounded_bar(draw, cx, y, width, height, colour):
+    half = width / 2
+    draw.rounded_rectangle(
+        [cx - half, y, cx + half, y + height], radius=height * 0.34, fill=colour + (255,)
+    )
 
+
+def main():
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
 
-    # --- tile: vertical graphite gradient clipped to a rounded square --------
-    grad = Image.new("RGB", (1, S - 2 * MARGIN))
-    for y in range(grad.height):
-        grad.putpixel((0, y), lerp(TOP, BOTTOM, y / (grad.height - 1)))
-    grad = grad.resize((S - 2 * MARGIN, S - 2 * MARGIN))
+    # ---- tile: deep ink with a soft vertical gradient ----------------------
+    inner = S - 2 * MARGIN
+    grad = Image.new("RGB", (1, inner))
+    for y in range(inner):
+        grad.putpixel((0, y), lerp(INK_TOP, INK_BOTTOM, y / (inner - 1)))
+    grad = grad.resize((inner, inner))
 
     mask = Image.new("L", (S, S), 0)
     ImageDraw.Draw(mask).rounded_rectangle(
@@ -41,42 +56,53 @@ def main():
     )
     img.paste(grad, (MARGIN, MARGIN), mask.crop((MARGIN, MARGIN, S - MARGIN, S - MARGIN)))
 
-    # a hairline panel edge, the same device the UI uses everywhere
     edge = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     ImageDraw.Draw(edge).rounded_rectangle(
         [MARGIN, MARGIN, S - MARGIN, S - MARGIN],
         radius=RADIUS,
         outline=EDGE + (255,),
-        width=max(2, S // 340),
+        width=max(2, S // 330),
     )
     img.alpha_composite(edge)
 
-    # --- mark: four bars narrowing downwards --------------------------------
-    bars = 4
-    widths = [0.52, 0.40, 0.28, 0.16]
-    bar_h = int(S * 0.088)
-    gap = int(S * 0.046)
-    block = bars * bar_h + (bars - 1) * gap
-    y = (S - block) // 2
-    cx = S // 2
-    # Barely-rounded ends, matching the 3px radius the interface uses.
-    r = max(2, int(bar_h * 0.17))
-
     layer = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
-    for i, w in enumerate(widths):
-        half = int(S * w / 2)
-        colour = lerp(AMBER_TOP, AMBER_BOTTOM, i / (bars - 1))
-        draw.rounded_rectangle(
-            [cx - half, y, cx + half, y + bar_h], radius=r, fill=colour + (255,)
-        )
+    cx = S / 2
+
+    # ---- the sources: three bars, narrowing as they funnel in --------------
+    bar_h = S * 0.052
+    gap = S * 0.034
+    y = S * 0.198
+    for width in (S * 0.42, S * 0.315, S * 0.21):
+        rounded_bar(draw, cx, y, width, bar_h, PAPER)
         y += bar_h + gap
+
+    # ---- the download: one bold arrow -------------------------------------
+    # The shaft needs real length or the head swallows it and the mark reads as
+    # a triangle rather than an arrow.
+    shaft_w = S * 0.108
+    shaft_top = y + S * 0.004
+    shaft_bottom = S * 0.638
+    draw.rounded_rectangle(
+        [cx - shaft_w / 2, shaft_top, cx + shaft_w / 2, shaft_bottom],
+        radius=shaft_w * 0.2,
+        fill=VERMILION + (255,),
+    )
+
+    head_w = S * 0.30
+    head_top = shaft_bottom - S * 0.004
+    head_bottom = S * 0.80
+    draw.polygon(
+        [(cx - head_w / 2, head_top), (cx + head_w / 2, head_top), (cx, head_bottom)],
+        fill=VERMILION_DEEP + (255,),
+    )
+
     img.alpha_composite(layer)
 
     master = img.resize((MASTER, MASTER), Image.LANCZOS)
     master.save(os.path.join(OUT, "icon.png"))
 
-    # --- .icns via iconutil -------------------------------------------------
+    # ---- .icns via iconutil -----------------------------------------------
     iconset = os.path.join(OUT, "icon.iconset")
     os.makedirs(iconset, exist_ok=True)
     for size, name in [
@@ -94,17 +120,16 @@ def main():
         master.resize((size, size), Image.LANCZOS).save(os.path.join(iconset, name))
 
     subprocess.run(
-        ["iconutil", "-c", "icns", iconset, "-o", os.path.join(OUT, "icon.icns")],
-        check=True,
+        ["iconutil", "-c", "icns", iconset, "-o", os.path.join(OUT, "icon.icns")], check=True
     )
     subprocess.run(["rm", "-rf", iconset], check=True)
 
-    # A 256px ico keeps electron-builder from having to guess on Windows.
     master.resize((256, 256), Image.LANCZOS).save(
-        os.path.join(OUT, "icon.ico"), sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
+        os.path.join(OUT, "icon.ico"),
+        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
 
-    print("yazıldı:", sorted(os.listdir(OUT)))
+    print("yazıldı:", sorted(f for f in os.listdir(OUT) if f.startswith("icon.")))
 
 
 if __name__ == "__main__":

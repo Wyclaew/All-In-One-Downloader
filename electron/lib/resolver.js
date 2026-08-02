@@ -26,8 +26,23 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { BrowserWindow, session } = require('electron')
+const { createBlocker } = require('./blocklist')
 const { describeStream } = require('./mediainfo')
 const { uid, hostOf } = require('./util')
+
+/**
+ * The active request blocker. Swapped at the start of each resolve so the user's
+ * own extra rules apply; resolves are serialised by the caller, so a single
+ * module-level matcher is enough and keeps the per-request path cheap.
+ */
+let blocker = createBlocker({})
+
+function configureBlocker(settings = {}) {
+  blocker = createBlocker({
+    extraBlocked: settings.extraBlockedHosts || '',
+    allowTrackers: settings.blockTrackers === false,
+  })
+}
 
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
@@ -48,46 +63,15 @@ const NON_MEDIA_EXT =
 const MEDIA_URL_RE =
   /https?:\/\/[^\s"'`<>()\\]{8,}?\.(?:m3u8|mpd|mp4|webm|m4v|mkv|mov|flv|mp3|m4a)(?:\?[^\s"'`<>()\\]*)?/gi
 
-/**
- * Pop-under and malvertising networks worth cancelling: they open windows and
- * slow the load without ever carrying the media.
- *
- * Deliberately narrow. Tag managers and analytics stay allowed — some players
- * initialise through them, and blocking those was enough to stop a player from
- * ever building its source.
- */
-const JUNK_HOST =
-  /(doubleclick|googlesyndication|googleadservices|popads|popcash|propellerads|onclickads|adsterra|exoclick|juicyads|hilltopads|clickadu|clicksgear|mgid\.com|taboola|outbrain|zedo|revcontent|trafficjunky|adsco\.re|luckyorange|hotjar)/i
+// What gets blocked lives in blocklist.js. Tag managers and analytics are
+// deliberately allowed through: some players initialise via them, and blocking
+// those was enough to stop a player from ever building its source.
 
 const CONTENT_TYPE_MEDIA =
   /(application\/(?:vnd\.apple\.mpegurl|x-mpegurl|dash\+xml)|video\/(?:mp4|webm|x-matroska)|audio\/(?:mp4|mpeg|webm))/i
 
-/**
- * Video-ad delivery networks. A pre-roll is a real video stream on a real CDN,
- * so nothing about its shape distinguishes it — but its host does.
- */
-const AD_MEDIA_HOST =
-  /(connatix|imasdk\.googleapis|securepubads|pubads\.g\.doubleclick|springserve|spotx|spotxchange|teads|adsafeprotected|aniview|unrulymedia|vidoomy|primis\.tech|viralize|onnetwork|smartclip|videoplaza|tremorhub|telaria|beachfront|sekindo|playwire|freewheel|fwmrm|yieldmo|adnxs|adform|dotomi|contextweb|ex\.co|minutemedia|vidazoo|adplayer|admatic|adhood|reklamstore)/i
-
-/**
- * Ad paths, delimiter-anchored on purpose: a bare "ads" substring also matches
- * innocent paths like /uploads/.
- */
-const AD_PATH =
-  /(\/ads?\/|(?:^|[/_.-])(?:vast|vmap|preroll|pre-roll|midroll|postroll|advert|adserver|adserve|adbreak)(?:[/_.-]|$))/i
-
 /** How long to keep listening after the last useful stream shows up. */
 const SETTLE_MS = 5000
-
-function looksLikeAd(url) {
-  let pathname = ''
-  try {
-    pathname = new URL(url).pathname
-  } catch {
-    pathname = String(url)
-  }
-  return AD_MEDIA_HOST.test(url) || AD_PATH.test(pathname)
-}
 
 /* ========================================================================== *
  * shared helpers
@@ -274,9 +258,9 @@ function collectFromText(text, baseUrl) {
   const found = []
   const push = (url, confident) => {
     const clean = String(url).replace(/[",';)\]}]+$/, '').trim()
-    if (!isHttp(clean) || JUNK_HOST.test(clean)) return
+    if (!isHttp(clean) || blocker.shouldBlock(clean)) return
     if (NON_MEDIA_EXT.test(clean)) return
-    if (looksLikeAd(clean)) return
+    if (blocker.isAdMedia(clean)) return
     const kind = kindOf(clean)
     if (kind === 'segment') return
     if (kind === 'unknown' && !confident) return
@@ -333,7 +317,7 @@ function collectScripts(html, baseUrl) {
     } catch {
       continue
     }
-    if (!/^https?:$/.test(abs.protocol) || JUNK_HOST.test(abs.href)) continue
+    if (!/^https?:$/.test(abs.protocol) || blocker.shouldBlock(abs.href)) continue
     const sameSite = host && (abs.hostname === host || abs.hostname.endsWith(`.${host}`))
     const looksLikePlayer = /player|embed|stream|video|hls|jwplayer|clappr|plyr|source/i.test(abs.pathname)
     // Skip the usual framework bulk; it never holds a stream URL.
@@ -341,6 +325,52 @@ function collectScripts(html, baseUrl) {
     if (sameSite || looksLikePlayer) urls.push(abs.href)
   }
   return urls
+}
+
+/** Seconds, or ISO-8601 like PT45M12S. */
+function parseDurationValue(raw) {
+  const text = String(raw || '').trim()
+  if (/^\d+(\.\d+)?$/.test(text)) {
+    const n = Number(text)
+    return n > 0 ? Math.round(n) : null
+  }
+  const m = text.match(/^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?$/i)
+  if (!m) return null
+  const total =
+    (Number(m[1]) || 0) * 86400 +
+    (Number(m[2]) || 0) * 3600 +
+    (Number(m[3]) || 0) * 60 +
+    (Number(m[4]) || 0)
+  return total > 0 ? Math.round(total) : null
+}
+
+/**
+ * How long the page says its video is.
+ *
+ * This is the one signal that works the same on every site, because it comes
+ * from the page rather than from guessing about hosts or ad vendors. If a page
+ * declares a 45-minute episode, a 15-second stream is an advert — no host list,
+ * no comparison against other candidates, no per-site rule needed.
+ */
+function pageDurationOf(html) {
+  const meta = html.match(
+    /<meta[^>]+(?:property|itemprop|name)=["'](?:og:video:duration|video:duration|duration)["'][^>]+content=["']([^"']+)["']/i
+  )
+  if (meta) {
+    const value = parseDurationValue(meta[1])
+    if (value) return value
+  }
+
+  for (const block of html.matchAll(
+    /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
+  )) {
+    const found = block[1].match(/"duration"\s*:\s*"([^"]+)"/i)
+    if (found) {
+      const value = parseDurationValue(found[1])
+      if (value) return value
+    }
+  }
+  return null
 }
 
 function pageImageOf(html) {
@@ -382,7 +412,7 @@ function collectIframes(html, baseUrl) {
   while ((match = re.exec(html)) !== null) {
     try {
       const abs = new URL(normaliseText(match[1]), baseUrl).href
-      if (isHttp(abs) && !JUNK_HOST.test(abs)) urls.push(abs)
+      if (isHttp(abs) && !blocker.shouldBlock(abs)) urls.push(abs)
     } catch {
       /* malformed src */
     }
@@ -416,6 +446,7 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
   const candidates = []
   let title = ''
   let thumbnail = ''
+  let expectedDuration = null
   let fetches = 0
   const visited = new Set()
   let queue = [{ url: pageUrl, referer: '', depth: 0, kind: 'page' }]
@@ -434,6 +465,7 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
       if (job.kind === 'page') {
         if (!title) title = pageTitleOf(text)
         if (!thumbnail) thumbnail = pageImageOf(text)
+        if (!expectedDuration) expectedDuration = pageDurationOf(text)
       }
 
       const { candidates: found } = collectFromText(text, finalUrl)
@@ -457,7 +489,7 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
     queue = next
   }
 
-  return { title, thumbnail, candidates: dedupe(candidates), engine: 'static' }
+  return { title, thumbnail, expectedDuration, candidates: dedupe(candidates), engine: 'static' }
 }
 
 /* ========================================================================== *
@@ -551,7 +583,7 @@ async function injectCookieJar(ses, jarFile) {
 }
 
 function writeCookieJar(cookies, file) {
-  const lines = ['# Netscape HTTP Cookie File', '# Everything Downloader', '']
+  const lines = ['# Netscape HTTP Cookie File', '# All in One Downloader', '']
   const fallbackExpiry = Math.floor(Date.now() / 1000) + 7 * 86400
   for (const c of cookies) {
     if (!c.name) continue
@@ -577,10 +609,45 @@ function writeCookieJar(cookies, file) {
  * Load the page offscreen and record every media request it makes.
  * Resolves as soon as a manifest or progressive file shows up, or on timeout.
  */
+/** Shown in the assisted window so the user knows what is expected of them. */
+const ASSIST_BANNER = `(() => {
+  try {
+    if (document.getElementById('__aio_banner')) return;
+    var d = document.createElement('div');
+    d.id = '__aio_banner';
+    d.textContent = 'All in One Downloader — reklamı geç ve videoyu başlat. Akış yakalandığında bu pencere kendiliğinden kapanır.';
+    d.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:2147483647;' +
+      'background:#17202a;color:#f2eee8;font:600 13px -apple-system,system-ui,sans-serif;' +
+      'padding:11px 16px;text-align:center;letter-spacing:.01em;box-shadow:0 2px 12px rgba(0,0,0,.45)';
+    document.documentElement.appendChild(d);
+  } catch (e) {}
+})()`
+
+/**
+ * Watch a page's network for media.
+ *
+ * `assisted` shows the window and stops driving the player: the person clears
+ * whatever gate the site puts up — an ad wall, a consent screen, a bot check —
+ * and presses play themselves, while this only listens. That is the honest way
+ * to handle a page that demands a human, and it generalises to every site
+ * without the app pretending to be one.
+ */
 function browserScan(
   pageUrl,
-  { timeoutMs = 45000, onProgress = null, browserCookieJar = null, minStreamSeconds = 120 } = {}
+  {
+    timeoutMs = 45000,
+    onProgress = null,
+    browserCookieJar = null,
+    minStreamSeconds = 120,
+    assisted = false,
+    expectedDuration = null,
+  } = {}
 ) {
+  // A page-declared runtime raises the bar for "long enough to be the feature".
+  const featureFloor =
+    expectedDuration && expectedDuration > 0
+      ? Math.max(minStreamSeconds, expectedDuration * 0.5)
+      : minStreamSeconds
   return new Promise((resolve) => {
     const partition = `resolver-${uid('s')}` // no persist: prefix -> in-memory
     const ses = session.fromPartition(partition)
@@ -605,7 +672,7 @@ function browserScan(
     }
 
     const record = (url, referer, why) => {
-      if (!isHttp(url) || JUNK_HOST.test(url)) return
+      if (!isHttp(url) || blocker.shouldBlock(url)) return
       const kind = kindOf(url)
       if (kind === 'unknown' && why !== 'content-type') return
       if (kind === 'segment') return
@@ -615,7 +682,7 @@ function browserScan(
       // A pre-roll loads before the feature does. Naming it here and refusing to
       // settle on it is the whole point: stopping at the first stream we saw was
       // how an advert ended up being downloaded instead of the video.
-      if (looksLikeAd(url)) {
+      if (blocker.isAdMedia(url)) {
         skipped.add(key)
         adCount += 1
         note(`reklam akışı atlandı (${hostOf(url) || 'reklam ağı'}) — video bekleniyor`)
@@ -653,11 +720,33 @@ function browserScan(
       describeStream(hit.url, resolved)
         .then((info) => {
           hit.info = info
-          if (minStreamSeconds > 0 && info && info.duration && info.duration < minStreamSeconds) {
+          // Declared runtime matched: this is the feature, stop listening now
+          // instead of waiting out the settle window.
+          if (
+            expectedDuration &&
+            info &&
+            info.duration &&
+            Math.abs(info.duration - expectedDuration) <= Math.max(30, expectedDuration * 0.15)
+          ) {
+            note('sayfanın bildirdiği süreyle eşleşti')
+            clearTimeout(settleTimer)
+            settleTimer = setTimeout(finish, 400)
+            return
+          }
+          // Long enough to be the feature: no reason to hold the window open for
+          // the full settle window waiting for something better.
+          if (info && info.duration && info.duration >= Math.max(featureFloor, minStreamSeconds)) {
+            clearTimeout(settleTimer)
+            settleTimer = setTimeout(finish, 1500)
+            return
+          }
+          if (featureFloor > 0 && info && info.duration && info.duration < featureFloor) {
             hit.short = true
             adCount += 1
             note(
-              `${Math.round(info.duration)} sn'lik kısa akış — reklam olabilir, video bekleniyor`
+              expectedDuration
+                ? `${Math.round(info.duration)} sn'lik akış — sayfa ${Math.round(expectedDuration)} sn diyor, bu reklam. Video bekleniyor`
+                : `${Math.round(info.duration)} sn'lik kısa akış — reklam olabilir, video bekleniyor`
             )
             return
           }
@@ -731,7 +820,7 @@ function browserScan(
       ses.setUserAgent(UA)
 
       ses.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, callback) => {
-        if (JUNK_HOST.test(details.url)) return callback({ cancel: true })
+        if (blocker.shouldBlock(details.url)) return callback({ cancel: true })
         // Popunders arrive as top-level navigations in fresh windows; the window
         // open handler denies those, but block the obvious ones early too.
         record(details.url, details.referrer, 'request')
@@ -747,22 +836,30 @@ function browserScan(
       })
 
       win = new BrowserWindow({
-        show: false,
+        show: assisted,
         width: 1280,
-        height: 720,
+        height: assisted ? 820 : 720,
+        title: assisted ? 'Tarayıcıda yakala' : undefined,
         webPreferences: {
           partition,
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: true,
-          images: false,
+          // The person has to see the page they are being asked to click through.
+          images: assisted,
           webSecurity: true,
           backgroundThrottling: false,
           autoplayPolicy: 'no-user-gesture-required',
         },
       })
 
-      win.webContents.setAudioMuted(true)
+      // Closing the window is a legitimate way to give up.
+      win.on('closed', () => {
+        win = null
+        finish()
+      })
+
+      win.webContents.setAudioMuted(!assisted)
       win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
       // Never let the page ask for anything.
       ses.setPermissionRequestHandler((_wc, _permission, cb) => cb(false))
@@ -775,6 +872,15 @@ function browserScan(
 
       let scheduled = false
       win.webContents.on('did-finish-load', () => {
+        if (assisted) {
+          note('pencere açık — reklamı geç ve videoyu başlat')
+          try {
+            win.webContents.mainFrame.executeJavaScript(ASSIST_BANNER, true).catch(() => {})
+          } catch {
+            /* frame gone */
+          }
+          return
+        }
         if (scheduled) return
         scheduled = true
         note('sayfa yüklendi, oynatıcı tetikleniyor')
@@ -898,6 +1004,23 @@ async function verifyCandidates(candidates, { limit = 12, concurrency = 3 } = {}
 }
 
 /**
+ * A master playlist already contains its variants, so offering those separately
+ * just clutters the list with duplicates of the same video at fixed qualities —
+ * yt-dlp picks the variant from the master anyway.
+ */
+function dropVariantDuplicates(candidates) {
+  const children = new Set()
+  for (const c of candidates) {
+    for (const variant of (c.info && c.info.variants) || []) {
+      if (variant.url) children.add(variant.url.split('#')[0])
+    }
+  }
+  if (!children.size) return candidates
+  const kept = candidates.filter((c) => !children.has(c.url.split('#')[0]))
+  return kept.length ? kept : candidates
+}
+
+/**
  * Second line of defence against adverts, for the ones served from a host we
  * don't recognise: a pre-roll runs for seconds, a feature for many minutes. Once
  * we know the durations, anything dwarfed by the longest stream is dropped.
@@ -905,16 +1028,32 @@ async function verifyCandidates(candidates, { limit = 12, concurrency = 3 } = {}
  * Only applies when something long was actually found — otherwise the page may
  * genuinely hold a short clip, and dropping it would be wrong.
  */
-function dropShortStreams(candidates, minSeconds) {
+function dropShortStreams(candidates, minSeconds, expected = null) {
   const timed = candidates.filter((c) => c.info && c.info.duration)
   if (!timed.length) return { kept: candidates, dropped: 0 }
 
-  const longest = Math.max(...timed.map((c) => c.info.duration))
-  if (longest < minSeconds) return { kept: candidates, dropped: 0 }
+  let floor
+  if (expected && expected > 0) {
+    // The page told us the runtime; trust it over any relative comparison.
+    floor = expected * 0.5
+  } else {
+    const longest = Math.max(...timed.map((c) => c.info.duration))
+    if (longest < minSeconds) return { kept: candidates, dropped: 0 }
+    floor = Math.max(minSeconds / 2, longest * 0.25)
+  }
 
-  const floor = Math.max(minSeconds / 2, longest * 0.25)
   const kept = candidates.filter((c) => c.info && c.info.duration && c.info.duration >= floor)
-  return { kept: kept.length ? kept : candidates, dropped: candidates.length - kept.length }
+
+  // Without a declared runtime, an empty result more likely means our guess was
+  // wrong than that everything was an advert — so keep what we had.
+  if (!kept.length && !expected) return { kept: candidates, dropped: 0 }
+
+  if (expected) {
+    kept.sort(
+      (a, b) => Math.abs(a.info.duration - expected) - Math.abs(b.info.duration - expected)
+    )
+  }
+  return { kept, dropped: candidates.length - kept.length }
 }
 
 /**
@@ -929,16 +1068,33 @@ async function resolvePage(
     staticOnly = false,
     browserCookieJar = null,
     minStreamSeconds = 120,
+    blockRules = null,
+    preferEngine = null,
   } = {}
 ) {
   if (!isHttp(pageUrl)) return { title: '', candidates: [], engine: 'none' }
+  if (blockRules) configureBlocker(blockRules)
 
-  if (onProgress) onProgress('sayfa ve oynatıcı kodları taranıyor')
-  const fast = await staticScan(pageUrl, { onProgress })
+  // A host we've resolved before tells us which engine actually works. Going
+  // straight there skips a full crawl and its verification round — the single
+  // biggest saving available, because the static pass is wasted effort on any
+  // site whose player builds its source in JavaScript.
+  const skipStatic = preferEngine === 'browser'
 
-  if (fast.candidates.length) {
-    const verified = await verifyCandidates(fast.candidates)
-    const { kept, dropped } = dropShortStreams(verified, minStreamSeconds)
+  if (onProgress) {
+    onProgress(skipStatic ? 'bu site için oynatıcı taraması' : 'sayfa ve oynatıcı kodları taranıyor')
+  }
+  const fast = skipStatic
+    ? await staticScan(pageUrl, { maxFetches: 1, maxDepth: 0 })
+    : await staticScan(pageUrl, { onProgress })
+
+  if (fast.expectedDuration && onProgress) {
+    onProgress(`sayfa videoyu ${Math.round(fast.expectedDuration / 60)} dk diye bildiriyor`)
+  }
+
+  if (fast.candidates.length && !skipStatic) {
+    const verified = dropVariantDuplicates(await verifyCandidates(fast.candidates))
+    const { kept, dropped } = dropShortStreams(verified, minStreamSeconds, fast.expectedDuration)
     if (kept.length) {
       if (dropped && onProgress) onProgress(`${dropped} kısa akış (reklam) atlandı`)
       return {
@@ -960,12 +1116,13 @@ async function resolvePage(
     onProgress,
     browserCookieJar,
     minStreamSeconds,
+    expectedDuration: fast.expectedDuration,
   })
   const verified = deep.candidates.length ? await verifyCandidates(deep.candidates) : []
   // Keep browser finds even if verification couldn't read them: the session that
   // captured them is gone, so a fresh fetch may legitimately fail.
-  const pool = verified.length ? verified : deep.candidates
-  const { kept, dropped } = dropShortStreams(pool, minStreamSeconds)
+  const pool = dropVariantDuplicates(verified.length ? verified : deep.candidates)
+  const { kept, dropped } = dropShortStreams(pool, minStreamSeconds, fast.expectedDuration)
   if (dropped && onProgress) onProgress(`${dropped} kısa akış (reklam) atlandı`)
 
   return {
@@ -978,4 +1135,50 @@ async function resolvePage(
   }
 }
 
-module.exports = { resolvePage, unpackPacked, UA }
+/**
+ * Open the page visibly and record whatever the user manages to play.
+ * The escape hatch for ad walls, consent gates and bot checks: a person clears
+ * them, the app only listens.
+ */
+async function assistedCapture(
+  pageUrl,
+  {
+    onProgress = null,
+    browserCookieJar = null,
+    minStreamSeconds = 120,
+    timeoutMs = 300000,
+    blockRules = null,
+  } = {}
+) {
+  if (!isHttp(pageUrl)) return { title: '', candidates: [], engine: 'assisted' }
+  if (blockRules) configureBlocker(blockRules)
+
+  // One cheap fetch for the page's own title, poster and declared runtime — the
+  // runtime is what lets us tell the feature from a pre-roll here too.
+  const meta = await staticScan(pageUrl, { maxFetches: 1, maxDepth: 0 })
+
+  const result = await browserScan(pageUrl, {
+    assisted: true,
+    timeoutMs,
+    onProgress,
+    browserCookieJar,
+    minStreamSeconds,
+    expectedDuration: meta.expectedDuration,
+  })
+
+  const verified = result.candidates.length ? await verifyCandidates(result.candidates) : []
+  const pool = dropVariantDuplicates(verified.length ? verified : result.candidates)
+  const { kept, dropped } = dropShortStreams(pool, minStreamSeconds, meta.expectedDuration)
+
+  return {
+    ...result,
+    engine: 'assisted',
+    candidates: kept,
+    adsSkipped: (result.adsSkipped || 0) + dropped,
+    title: cleanTitle(result.title || meta.title, hostOf(pageUrl)),
+    thumbnail: meta.thumbnail || '',
+    userAgent: UA,
+  }
+}
+
+module.exports = { resolvePage, assistedCapture, unpackPacked, UA }

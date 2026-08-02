@@ -83,7 +83,7 @@ function buildMenu() {
           {
             label: app.name,
             submenu: [
-              { role: 'about', label: 'Everything Downloader Hakkında' },
+              { role: 'about', label: `${app.name} Hakkında` },
               { type: 'separator' },
               { label: 'Ayarlar…', accelerator: 'Cmd+,', click: () => toRenderer('settings') },
               { type: 'separator' },
@@ -233,6 +233,13 @@ function registerIpc() {
     const src = store.findSource(id)
     if (!src) return false
     await probe.probeUrl(src.url, { sourceId: id })
+    return true
+  })
+
+  handle('source:capture', async (id) => {
+    const src = store.findSource(id)
+    if (!src) return false
+    await probe.captureSource(id)
     return true
   })
 

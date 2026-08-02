@@ -13,7 +13,7 @@ const STATE_VERSION = 1
 
 function defaultSettings() {
   return {
-    downloadDir: path.join(app.getPath('downloads'), 'Everything Downloader'),
+    downloadDir: path.join(app.getPath('downloads'), 'All in One Downloader'),
     concurrency: 2,
     defaultQuality: 1080, // 0 = en iyi
     container: 'mp4',
@@ -38,6 +38,8 @@ function defaultSettings() {
     resolverTimeout: 45000,
     // Streams shorter than this are treated as adverts when a longer one exists.
     minStreamSeconds: 120,
+    blockTrackers: true,
+    extraBlockedHosts: '',
 
     // subtitles fetched from a provider, separate from yt-dlp's own --write-subs
     subtitleLangs: 'tr,en',
@@ -57,6 +59,9 @@ function emptyState() {
     items: [],
     downloads: [],
     categories: [],
+    // host -> { engine, ads, ms, at }. What worked last time on this site, so a
+    // repeat visit doesn't re-derive it from scratch.
+    hostProfiles: {},
     settings: defaultSettings(),
   }
 }
@@ -66,8 +71,30 @@ let stateFile = ''
 let saveTimer = null
 let broadcastTimer = null
 
+/**
+ * userData is derived from the product name, so renaming the app points it at an
+ * empty directory. Carry the old library across once rather than losing it.
+ */
+function migrateLegacyState(target) {
+  if (fs.existsSync(target)) return
+  const legacyNames = ['Everything Downloader', 'everything-downloader']
+  for (const name of legacyNames) {
+    const candidate = path.join(app.getPath('appData'), name, 'library.json')
+    try {
+      if (!fs.existsSync(candidate)) continue
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.copyFileSync(candidate, target)
+      console.log(`[store] kitaplık taşındı: ${candidate} -> ${target}`)
+      return
+    } catch (err) {
+      console.error('[store] eski kitaplık taşınamadı', err)
+    }
+  }
+}
+
 function init() {
   stateFile = path.join(app.getPath('userData'), 'library.json')
+  migrateLegacyState(stateFile)
   const loaded = readJson(stateFile, null)
   if (loaded && typeof loaded === 'object') {
     state = {
@@ -78,6 +105,8 @@ function init() {
       items: Array.isArray(loaded.items) ? loaded.items : [],
       downloads: Array.isArray(loaded.downloads) ? loaded.downloads : [],
       categories: Array.isArray(loaded.categories) ? loaded.categories : [],
+      hostProfiles:
+        loaded.hostProfiles && typeof loaded.hostProfiles === 'object' ? loaded.hostProfiles : {},
     }
   }
   migrateCookieBrowser()
@@ -180,6 +209,23 @@ const findItem = (id) => state.items.find((i) => i.id === id) || null
 const findDownload = (id) => state.downloads.find((d) => d.id === id) || null
 const itemsOfSource = (sourceId) => state.items.filter((i) => i.sourceId === sourceId)
 
+/** What worked on this host before, if it was recent enough to still be true. */
+function getHostProfile(host) {
+  if (!host) return null
+  const profile = state.hostProfiles[host]
+  if (!profile) return null
+  const AGE_LIMIT = 30 * 24 * 3600 * 1000
+  if (Date.now() - (profile.at || 0) > AGE_LIMIT) return null
+  return profile
+}
+
+function rememberHostProfile(host, data) {
+  if (!host) return
+  commit((s) => {
+    s.hostProfiles[host] = { ...(s.hostProfiles[host] || {}), ...data, at: Date.now() }
+  })
+}
+
 function ensureDownloadDir() {
   const dir = state.settings.downloadDir
   fs.mkdirSync(dir, { recursive: true })
@@ -199,6 +245,8 @@ module.exports = {
   findItem,
   findDownload,
   itemsOfSource,
+  getHostProfile,
+  rememberHostProfile,
   ensureDownloadDir,
   defaultSettings,
 }

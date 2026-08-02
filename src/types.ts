@@ -129,6 +129,8 @@ export interface Settings {
   useResolver: boolean
   resolverTimeout: number
   minStreamSeconds: number
+  blockTrackers: boolean
+  extraBlockedHosts: string
 
   subtitleLangs: string
   subtitleApiKey: string

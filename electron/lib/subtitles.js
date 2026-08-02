@@ -20,7 +20,7 @@ const { execFile } = require('child_process')
 const { toolEnv, ffmpegPath, locate } = require('./binaries')
 
 const API = 'https://api.opensubtitles.com/api/v1'
-const APP_UA = 'EverythingDownloader v0.1'
+const APP_UA = 'AllInOneDownloader v0.2'
 const CHUNK = 65536
 
 /* -------------------------------------------------------------------------- */

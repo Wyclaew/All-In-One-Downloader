@@ -36,6 +36,7 @@ export type IconName =
   | 'pencil'
   | 'captions'
   | 'minus'
+  | 'target'
 
 const PATHS: Record<IconName, ReactNode> = {
   chevron: <path d="M6 3.5l4.5 4.5L6 12.5" />,
@@ -62,6 +63,13 @@ const PATHS: Record<IconName, ReactNode> = {
   ),
   plus: <path d="M8 3.4v9.2M3.4 8h9.2" />,
   minus: <path d="M3.6 8h8.8" />,
+  target: (
+    <>
+      <circle cx="8" cy="8" r="5.4" />
+      <circle cx="8" cy="8" r="1.7" />
+      <path d="M8 1.2v1.6M8 13.2v1.6M1.2 8h1.6M13.2 8h1.6" />
+    </>
+  ),
   check: <path d="M3.2 8.4l3.2 3.2 6.4-7.2" />,
   alert: (
     <>

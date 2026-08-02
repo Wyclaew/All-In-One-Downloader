@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('api', {
   removeSource: (id) => ipcRenderer.invoke('source:remove', id),
   toggleSource: (id, collapsed) => ipcRenderer.invoke('source:toggle', { id, collapsed }),
   rescanSource: (id) => ipcRenderer.invoke('source:rescan', id),
+  captureSource: (id) => ipcRenderer.invoke('source:capture', id),
   openSource: (id) => ipcRenderer.invoke('source:open', id),
   downloadSource: (payload) => ipcRenderer.invoke('source:downloadAll', payload),
 

@@ -116,7 +116,7 @@ export default function App() {
       <div className="shell">
         <div className={`titlebar${api.platform === 'darwin' ? ' mac' : ''}`}>
           <span className="wordmark" lang="en">
-            <b>Everything</b>
+            <b>All in One</b>
             <span>Downloader</span>
           </span>
         </div>
@@ -148,7 +148,7 @@ export default function App() {
       {/* ---- title bar ---- */}
       <header className={`titlebar${api.platform === 'darwin' ? ' mac' : ''}`}>
         <span className="wordmark" lang="en">
-          <b>Everything</b>
+          <b>All in One</b>
           <span>Downloader</span>
         </span>
 
