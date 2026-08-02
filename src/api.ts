@@ -1,4 +1,12 @@
-import type { AppState, Category, DownloadRequest, Settings, Toast, Tools } from './types'
+import type {
+  AppState,
+  BrowserOption,
+  Category,
+  DownloadRequest,
+  Settings,
+  Toast,
+  Tools,
+} from './types'
 
 type Result<T> = { ok: true; data: T } | { ok: false; error: string }
 
@@ -8,6 +16,7 @@ interface Bridge {
   getTools(): Promise<Result<Tools>>
   refreshTools(): Promise<Result<Tools>>
   updateYtdlp(): Promise<Result<{ ok: boolean; message: string }>>
+  listBrowsers(): Promise<Result<BrowserOption[]>>
   addSource(url: string): Promise<Result<{ added: number }>>
   removeSource(id: string): Promise<Result<boolean>>
   toggleSource(id: string, collapsed?: boolean): Promise<Result<boolean>>
@@ -83,6 +92,7 @@ export const api = {
   getTools: () => call(bridge.getTools()),
   refreshTools: () => call(bridge.refreshTools()),
   updateEngine: () => call(bridge.updateYtdlp()),
+  listBrowsers: () => call(bridge.listBrowsers()),
 
   addSource: (url: string) => call(bridge.addSource(url)),
   removeSource: (id: string) => call(bridge.removeSource(id)),

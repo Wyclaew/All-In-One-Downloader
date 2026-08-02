@@ -39,9 +39,16 @@ const SEGMENT_EXT = /\.(ts|m4s|aac|init)(\?|#|$)/i
 const MEDIA_URL_RE =
   /https?:\/\/[^\s"'`<>()\\]{8,}?\.(?:m3u8|mpd|mp4|webm|m4v|mkv|mov|flv|mp3|m4a)(?:\?[^\s"'`<>()\\]*)?/gi
 
-/** Ad and tracker hosts: blocking them kills pop-unders and speeds the load. */
+/**
+ * Pop-under and malvertising networks worth cancelling: they open windows and
+ * slow the load without ever carrying the media.
+ *
+ * Deliberately narrow. Tag managers and analytics stay allowed — some players
+ * initialise through them, and blocking those was enough to stop a player from
+ * ever building its source.
+ */
 const JUNK_HOST =
-  /(doubleclick|googlesyndication|googletagmanager|google-analytics|googleadservices|adservice|popads|popcash|propellerads|propeller|onclickads|adsterra|exoclick|juicyads|hilltopads|clickadu|clicksgear|mgid\.com|taboola|outbrain|zedo|adnxs|criteo|histats|statcounter|yandex\.[a-z]+\/(?:watch|metrika)|scorecardresearch|quantserve|adform|bidswitch|smartadserver|revcontent|trafficjunky|adsco\.re|luckyorange|hotjar)/i
+  /(doubleclick|googlesyndication|googleadservices|popads|popcash|propellerads|onclickads|adsterra|exoclick|juicyads|hilltopads|clickadu|clicksgear|mgid\.com|taboola|outbrain|zedo|revcontent|trafficjunky|adsco\.re|luckyorange|hotjar)/i
 
 const CONTENT_TYPE_MEDIA =
   /(application\/(?:vnd\.apple\.mpegurl|x-mpegurl|dash\+xml)|video\/(?:mp4|webm|x-matroska)|audio\/(?:mp4|mpeg|webm))/i
@@ -280,19 +287,91 @@ async function staticScan(pageUrl, { maxDepth = 2, maxFetches = 7 } = {}) {
  * engine 2 — hidden browser, watching the network
  * ========================================================================== */
 
+/**
+ * Start playback without breaking it. Two rules learned the hard way:
+ *   - once a <video> exists, only ever call play() on it; clicking again toggles
+ *     a playing player back to paused
+ *   - never match play buttons with a wildcard: `[class*=play]` also matches the
+ *     `jw-state-playing` class on the player root
+ */
 const PLAY_NUDGE = `(() => {
   try {
     const v = document.querySelector('video');
-    if (v) { v.muted = true; const p = v.play(); if (p && p.catch) p.catch(() => {}); }
-    const hints = ['.vjs-big-play-button','.jw-icon-display','.plyr__control--overlaid',
-      '#play','.play-button','.playbutton','.btn-play','[class*="bigplay"]','[id*="playbtn"]'];
-    for (const sel of hints) {
-      const el = document.querySelector(sel);
-      if (el) { el.click(); return 'clicked:' + sel; }
+    if (v) {
+      v.muted = true;
+      if (v.paused) { const p = v.play(); if (p && p.catch) p.catch(function(){}); }
+      return v.paused ? 'video:paused' : 'video:playing';
     }
-    return v ? 'video' : 'none';
+    var hints = ['.vjs-big-play-button','.jw-icon-display','.jw-icon-playback',
+      '.plyr__control--overlaid','#play','#playbtn','.play-button','.playbutton',
+      '.btn-play','.play_button','[aria-label="Play"]','[title="Play"]'];
+    for (var i = 0; i < hints.length; i++) {
+      var el = document.querySelector(hints[i]);
+      if (el) { el.click(); return 'clicked'; }
+    }
+    return 'none';
   } catch (e) { return 'err'; }
 })()`
+
+/** Players build their source at their own pace; poke on a schedule, not on events. */
+const NUDGE_SCHEDULE = [700, 2500, 5000, 8500, 13000, 18000, 24000]
+
+/**
+ * Load a Netscape cookie jar into a session, so the offscreen browser carries
+ * the user's real sign-in state instead of arriving as an anonymous visitor.
+ */
+async function injectCookieJar(ses, jarFile) {
+  let text = ''
+  try {
+    text = fs.readFileSync(jarFile, 'utf8')
+  } catch {
+    return 0
+  }
+
+  const jobs = []
+  for (const raw of text.split('\n')) {
+    let line = raw.trim()
+    if (!line) continue
+    let httpOnly = false
+    if (line.startsWith('#HttpOnly_')) {
+      httpOnly = true
+      line = line.slice('#HttpOnly_'.length)
+    } else if (line.startsWith('#')) {
+      continue
+    }
+
+    const parts = line.split('\t')
+    if (parts.length < 7) continue
+    const [domain, , cookiePath, secureFlag, expiry, name] = parts
+    const value = parts.slice(6).join('\t')
+    if (!domain || !name) continue
+
+    const secure = String(secureFlag).toUpperCase() === 'TRUE'
+    const host = domain.replace(/^\./, '')
+    const expires = Number(expiry)
+
+    jobs.push(
+      ses.cookies
+        .set({
+          url: `${secure ? 'https' : 'http'}://${host}${cookiePath || '/'}`,
+          name,
+          value,
+          domain: domain.startsWith('.') ? domain : undefined,
+          path: cookiePath || '/',
+          secure,
+          httpOnly,
+          expirationDate: Number.isFinite(expires) && expires > 0 ? expires : undefined,
+        })
+        .then(
+          () => true,
+          () => false
+        )
+    )
+  }
+
+  const results = await Promise.all(jobs)
+  return results.filter(Boolean).length
+}
 
 function writeCookieJar(cookies, file) {
   const lines = ['# Netscape HTTP Cookie File', '# Everything Downloader', '']
@@ -321,11 +400,12 @@ function writeCookieJar(cookies, file) {
  * Load the page offscreen and record every media request it makes.
  * Resolves as soon as a manifest or progressive file shows up, or on timeout.
  */
-function browserScan(pageUrl, { timeoutMs = 30000, onProgress = null } = {}) {
+function browserScan(pageUrl, { timeoutMs = 30000, onProgress = null, browserCookieJar = null } = {}) {
   return new Promise((resolve) => {
     const partition = `resolver-${uid('s')}` // no persist: prefix -> in-memory
     const ses = session.fromPartition(partition)
     const hits = new Map()
+    const timers = []
     let encrypted = false
     let title = ''
     let win = null
@@ -369,6 +449,7 @@ function browserScan(pageUrl, { timeoutMs = 30000, onProgress = null } = {}) {
       done = true
       clearTimeout(settleTimer)
       clearTimeout(hardStop)
+      for (const t of timers) clearTimeout(t)
 
       let cookieFile = null
       try {
@@ -453,45 +534,62 @@ function browserScan(pageUrl, { timeoutMs = 30000, onProgress = null } = {}) {
         if (/encrypted|widevine|playready|\bdrm\b/i.test(String(text))) encrypted = true
       })
 
+      let scheduled = false
       win.webContents.on('did-finish-load', () => {
+        if (scheduled) return
+        scheduled = true
         note('sayfa yüklendi, oynatıcı tetikleniyor')
-        nudge()
-        // Players often build their source a beat after load.
-        setTimeout(nudge, 2500)
-        setTimeout(nudge, 6000)
+        // Fixed schedule rather than per-frame events: ad iframes finish loading
+        // dozens of times and would burn every attempt in the first second.
+        NUDGE_SCHEDULE.forEach((delay, index) => {
+          timers.push(setTimeout(() => nudge(index === 0), delay))
+        })
       })
 
-      win.webContents.on('did-frame-finish-load', () => nudge())
-
-      let nudges = 0
-      function nudge() {
-        // Runs from webContents events: anything thrown here would take down the
-        // main process, so the whole body is guarded.
+      function nudge(allowClick) {
+        // Runs from timers: anything thrown here would take down the main
+        // process, so the whole body is guarded.
         try {
-          if (done || nudges > 6 || !win || win.isDestroyed()) return
-          nudges += 1
+          if (done || !win || win.isDestroyed()) return
 
           const main = win.webContents.mainFrame
           const frames = main ? [main, ...(main.framesInSubtree || [])] : []
+          let sawVideo = false
           for (const frame of frames) {
             try {
               const result = frame.executeJavaScript(PLAY_NUDGE, true)
-              if (result && result.catch) result.catch(() => {})
+              if (result && result.then) {
+                result.then((r) => {
+                  if (typeof r === 'string' && r.startsWith('video')) sawVideo = true
+                }).catch(() => {})
+              }
             } catch {
               /* frame detached mid-walk */
             }
           }
 
-          // A real click starts players that ignore programmatic play().
-          win.webContents.sendInputEvent({ type: 'mouseDown', x: 640, y: 360, button: 'left', clickCount: 1 })
-          win.webContents.sendInputEvent({ type: 'mouseUp', x: 640, y: 360, button: 'left', clickCount: 1 })
+          // One real gesture, only on the first pass: players that need a click
+          // get one, and a playing player never gets clicked back to paused.
+          if (allowClick && !sawVideo) {
+            win.webContents.sendInputEvent({ type: 'mouseDown', x: 640, y: 360, button: 'left', clickCount: 1 })
+            win.webContents.sendInputEvent({ type: 'mouseUp', x: 640, y: 360, button: 'left', clickCount: 1 })
+          }
         } catch (err) {
           note(`oynatıcı tetiklenemedi: ${err.message}`)
         }
       }
 
-      win.loadURL(pageUrl, { userAgent: UA, httpReferrer: originOf(pageUrl) }).catch(() => {})
-      note('sayfa açılıyor')
+      // Carry the user's own session in before the first request goes out.
+      const boot = async () => {
+        if (browserCookieJar) {
+          const count = await injectCookieJar(ses, browserCookieJar)
+          if (count) note(`tarayıcı oturumun yüklendi (${count} çerez)`)
+        }
+        if (done || !win || win.isDestroyed()) return
+        note('sayfa açılıyor')
+        win.loadURL(pageUrl, { userAgent: UA, httpReferrer: originOf(pageUrl) }).catch(() => {})
+      }
+      boot().catch(() => finish())
     } catch (err) {
       note(`tarayıcı motoru başlatılamadı: ${err.message}`)
       finish()
@@ -507,7 +605,10 @@ function browserScan(pageUrl, { timeoutMs = 30000, onProgress = null } = {}) {
  * Resolve a page to playable media.
  * Returns { title, candidates: [{url, kind, referer, origin, cookieFile}], engine }
  */
-async function resolvePage(pageUrl, { onProgress = null, timeoutMs = 30000, staticOnly = false } = {}) {
+async function resolvePage(
+  pageUrl,
+  { onProgress = null, timeoutMs = 30000, staticOnly = false, browserCookieJar = null } = {}
+) {
   if (!isHttp(pageUrl)) return { title: '', candidates: [], engine: 'none' }
 
   if (onProgress) onProgress('sayfa taranıyor')
@@ -518,7 +619,7 @@ async function resolvePage(pageUrl, { onProgress = null, timeoutMs = 30000, stat
   }
 
   if (onProgress) onProgress('oynatıcı çalıştırılıyor')
-  const deep = await browserScan(pageUrl, { timeoutMs, onProgress })
+  const deep = await browserScan(pageUrl, { timeoutMs, onProgress, browserCookieJar })
   return {
     ...deep,
     title: deep.title || fast.title,

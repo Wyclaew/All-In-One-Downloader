@@ -35,6 +35,7 @@ export const T = {
   source: {
     probing: 'Çözümlüyor…',
     waiting: 'Sırada — önündeki bağlantı bitince başlıyor.',
+    resolving: 'yt-dlp tanımadı, kendi çözümleyicim deniyor',
     itemsOne: 'öğe',
     downloaded: 'indi',
     rescan: 'Yeniden tara',
@@ -136,6 +137,12 @@ export const T = {
     cookiesHint:
       'Giriş gerektiren sayfalar için seçtiğin tarayıcının çerezlerini kullanır. Yok = çerez kullanılmaz.',
     cookiesNone: 'Yok',
+
+    resolver: 'Kendi çözümleyicim',
+    resolverHint:
+      'yt-dlp bir sayfayı tanımazsa devreye girer: sayfayı ve gömülü oynatıcıları tarar, gerekirse sayfayı görünmez bir tarayıcıda çalıştırıp akışı yakalar. Yukarıda bir tarayıcı seçtiysen o oturumu kullanır, yani sitelere yeniden giriş yapman gerekmez.',
+    resolverOn: 'Tanınmayan siteler için çözümleyiciyi kullan',
+    resolverWait: 'En fazla bekleme:',
 
     theme: 'Tema',
     themeDark: 'Koyu',

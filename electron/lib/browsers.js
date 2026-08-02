@@ -10,7 +10,10 @@
 // BROWSER:PROFILE_PATH form, pointing at the real profile directory.
 
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
+const { execFile } = require('child_process')
+const { toolEnv, ytdlpPathOrThrow } = require('./binaries')
 
 const HOME = process.env.HOME || process.env.USERPROFILE || ''
 const IS_WIN = process.platform === 'win32'
@@ -194,4 +197,67 @@ function resolveCookieArg(id) {
   return id
 }
 
-module.exports = { detectBrowsers, resolveCookieArg }
+/**
+ * Dump the selected browser's cookies to a Netscape jar.
+ *
+ * yt-dlp already knows how to decrypt every browser's cookie store (including
+ * asking macOS Keychain for the Chromium key), and it writes the jar out on
+ * exit even when the URL it was handed fails to extract. That makes it the
+ * cheapest way to hand the user's real session to our own page resolver, so
+ * pages that need them to be signed in work without a second login.
+ *
+ * Cached for a few minutes — the keychain round trip isn't free.
+ */
+let jarCache = { arg: null, file: null, at: 0 }
+const JAR_TTL = 5 * 60 * 1000
+
+function exportCookieJar(browserId) {
+  const arg = resolveCookieArg(browserId)
+  if (!arg) return Promise.resolve(null)
+
+  if (jarCache.arg === arg && jarCache.file && Date.now() - jarCache.at < JAR_TTL) {
+    try {
+      if (fs.existsSync(jarCache.file)) return Promise.resolve(jarCache.file)
+    } catch {
+      /* fall through and re-export */
+    }
+  }
+
+  return new Promise((resolve) => {
+    let bin
+    try {
+      bin = ytdlpPathOrThrow()
+    } catch {
+      return resolve(null)
+    }
+    const file = path.join(os.tmpdir(), `edl-browser-cookies-${Date.now()}.txt`)
+    execFile(
+      bin,
+      [
+        '--ignore-config',
+        '--no-warnings',
+        '--cookies-from-browser',
+        arg,
+        '--cookies',
+        file,
+        '--simulate',
+        // Any URL works: the jar is written on exit regardless of extraction.
+        'https://example.com',
+      ],
+      { env: toolEnv(), timeout: 60000, windowsHide: true },
+      () => {
+        try {
+          if (fs.existsSync(file) && fs.statSync(file).size > 0) {
+            jarCache = { arg, file, at: Date.now() }
+            return resolve(file)
+          }
+        } catch {
+          /* nothing written */
+        }
+        resolve(null)
+      }
+    )
+  })
+}
+
+module.exports = { detectBrowsers, resolveCookieArg, exportCookieJar }

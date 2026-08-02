@@ -15,6 +15,22 @@ export interface Source {
   probedAt?: number
   count: number
   enriching: number
+  /** What the source is doing right now, and a human line about it. */
+  stage?: 'ytdlp' | 'resolver' | null
+  note?: string | null
+  /** 'yt-dlp' | 'sayfa taraması' | 'tarayıcı motoru' */
+  resolvedBy?: string | null
+}
+
+/** A stream our own resolver found, plus what yt-dlp needs to fetch it. */
+export interface Resolved {
+  pageUrl: string
+  referer: string
+  origin: string
+  userAgent: string
+  cookieFile: string | null
+  kind: 'hls' | 'dash' | 'file'
+  engine?: string
 }
 
 export interface MediaItem {
@@ -34,6 +50,7 @@ export interface MediaItem {
   addedAt: number
   enriched: boolean
   downloadId?: string | null
+  resolved?: Resolved | null
 }
 
 export type DownloadStatus = 'queued' | 'running' | 'paused' | 'done' | 'error' | 'canceled'
@@ -53,6 +70,7 @@ export interface Download {
   categoryId: string | null
   /** Set after a cookie-related failure so the retry runs without cookies. */
   noCookies?: boolean
+  resolved?: Resolved | null
   status: DownloadStatus
   stage: DownloadStage
   percent: number | null
@@ -96,6 +114,24 @@ export interface Settings {
   autoStartDownloads: boolean
   enrichLimit: number
   notifyOnFinish: boolean
+
+  useResolver: boolean
+  resolverTimeout: number
+
+  subtitleLangs: string
+  subtitleApiKey: string
+  autoFetchSubtitles: boolean
+  syncSubtitles: boolean
+  embedSubtitleFile: boolean
+}
+
+/** A browser whose cookie store we found on this machine. */
+export interface BrowserOption {
+  id: string
+  label: string
+  profile: string
+  arg: string
+  available: boolean
 }
 
 export interface AppState {

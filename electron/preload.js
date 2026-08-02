@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('api', {
   getTools: () => ipcRenderer.invoke('tools:get'),
   refreshTools: () => ipcRenderer.invoke('tools:refresh'),
   updateYtdlp: () => ipcRenderer.invoke('tools:update'),
+  listBrowsers: () => ipcRenderer.invoke('browsers:list'),
 
   addSource: (url) => ipcRenderer.invoke('source:add', url),
   removeSource: (id) => ipcRenderer.invoke('source:remove', id),

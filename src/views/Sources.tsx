@@ -133,6 +133,10 @@ export default function Sources({ state, downloads, onGoToLibrary }: Props) {
                   ) : null}
                   <span className="sep" />
                   <span>{fmt.relativeTime(source.addedAt)}</span>
+                  {source.resolvedBy && source.resolvedBy !== 'yt-dlp' ? <span className="sep" /> : null}
+                  {source.resolvedBy && source.resolvedBy !== 'yt-dlp' ? (
+                    <span style={{ color: 'var(--signal)' }}>{source.resolvedBy}</span>
+                  ) : null}
                   {source.enriching ? <span className="sep" /> : null}
                   {source.enriching ? (
                     <span style={{ color: 'var(--signal)' }}>{T.source.enriching(source.enriching)}</span>
@@ -189,7 +193,13 @@ export default function Sources({ state, downloads, onGoToLibrary }: Props) {
             {open ? (
               <div className="group-body">
                 {probing ? (
-                  <div className="group-note">{waiting ? T.source.waiting : T.source.probing}</div>
+                  <div className="group-note">
+                    {waiting
+                      ? T.source.waiting
+                      : source.stage === 'resolver'
+                        ? `${T.source.resolving}${source.note ? ` — ${source.note}` : ''}`
+                        : T.source.probing}
+                  </div>
                 ) : source.error ? (
                   <div className="group-note bad">{source.error}</div>
                 ) : null}

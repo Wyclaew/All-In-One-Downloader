@@ -11,7 +11,7 @@
 const { spawn } = require('child_process')
 const store = require('./store')
 const { toolEnv, ytdlpPathOrThrow } = require('./binaries')
-const { resolveCookieArg } = require('./browsers')
+const { resolveCookieArg, exportCookieJar } = require('./browsers')
 const { resolvePage } = require('./resolver')
 const { uid, siteLabel, hostOf, num, resolvedArgs } = require('./util')
 
@@ -393,9 +393,18 @@ async function tryResolve(source, settings, fallbackError) {
     source.error = null
   })
 
+  // Hand the resolver the user's browser session so pages that want them signed
+  // in behave the same as in their own browser.
+  let browserCookieJar = null
+  if (settings.cookiesBrowser) {
+    store.commit(() => { source.note = 'tarayıcı oturumu alınıyor' })
+    browserCookieJar = await exportCookieJar(settings.cookiesBrowser).catch(() => null)
+  }
+
   let result = null
   try {
     result = await resolvePage(source.url, {
+      browserCookieJar,
       timeoutMs: Math.max(8000, Number(settings.resolverTimeout) || 30000),
       onProgress: (message) => {
         const live = store.findSource(source.id)

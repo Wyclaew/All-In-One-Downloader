@@ -7,6 +7,7 @@ const path = require('path')
 const fs = require('fs')
 const { app, BrowserWindow } = require('electron')
 const { atomicWrite, readJson, uid } = require('./util')
+const { detectBrowsers } = require('./browsers')
 
 const STATE_VERSION = 1
 
@@ -73,6 +74,8 @@ function init() {
       categories: Array.isArray(loaded.categories) ? loaded.categories : [],
     }
   }
+  migrateCookieBrowser()
+
   // Nothing survives a quit mid-transfer: park those so the user restarts them.
   for (const s of state.sources) {
     if (s.status === 'probing' || s.status === 'queued') {
@@ -89,6 +92,24 @@ function init() {
   }
   save()
   return state
+}
+
+/**
+ * A stored cookie-browser choice can go stale — most often "opera" picked before
+ * we knew about Opera GX, whose profile lives somewhere yt-dlp never looks.
+ * Point it at the closest browser we can actually read, or clear it.
+ */
+function migrateCookieBrowser() {
+  const chosen = state.settings.cookiesBrowser
+  if (!chosen) return
+  const available = detectBrowsers()
+  if (available.some((b) => b.id === chosen)) return
+
+  const relative = available.find((b) => b.id.startsWith(chosen) || chosen.startsWith(b.id))
+  state.settings.cookiesBrowser = relative ? relative.id : ''
+  console.log(
+    `[store] çerez tarayıcısı "${chosen}" bulunamadı, ${relative ? `"${relative.id}" ile değiştirildi` : 'temizlendi'}`
+  )
 }
 
 function getState() {

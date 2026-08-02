@@ -1,20 +1,9 @@
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import { api } from '../api'
 import { QUALITY_OPTIONS } from '../quality'
 import { T } from '../strings'
-import type { Settings as SettingsShape, Tools } from '../types'
+import type { BrowserOption, Settings as SettingsShape, Tools } from '../types'
 import { Btn, Icon, Toggle } from '../components/ui'
-
-const COOKIE_BROWSERS = [
-  { value: '', label: T.settings.cookiesNone },
-  { value: 'chrome', label: 'Chrome' },
-  { value: 'safari', label: 'Safari' },
-  { value: 'firefox', label: 'Firefox' },
-  { value: 'edge', label: 'Edge' },
-  { value: 'brave', label: 'Brave' },
-  { value: 'opera', label: 'Opera' },
-  { value: 'vivaldi', label: 'Vivaldi' },
-]
 
 interface Props {
   settings: SettingsShape
@@ -28,6 +17,19 @@ export default function Settings({ settings, tools, onRefreshTools, onToast }: P
   const [template, setTemplate] = useState(settings.filenameTemplate)
   const [rate, setRate] = useState(settings.rateLimit)
   const [subLangs, setSubLangs] = useState(settings.subLangs)
+  const [browsers, setBrowsers] = useState<BrowserOption[] | null>(null)
+
+  // Only offer browsers whose cookie store actually exists on this machine —
+  // picking a missing one used to fail every request with a cryptic error.
+  useEffect(() => {
+    let alive = true
+    api.listBrowsers().then((list) => {
+      if (alive && list) setBrowsers(list)
+    })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   const patch = (next: Partial<SettingsShape>) => api.updateSettings(next)
 
@@ -189,12 +191,48 @@ export default function Settings({ settings, tools, onRefreshTools, onToast }: P
             value={settings.cookiesBrowser}
             onChange={(e) => patch({ cookiesBrowser: e.target.value })}
           >
-            {COOKIE_BROWSERS.map((b) => (
-              <option key={b.value} value={b.value}>
+            <option value="">{T.settings.cookiesNone}</option>
+            {(browsers || []).map((b) => (
+              <option key={b.id} value={b.id}>
                 {b.label}
               </option>
             ))}
+            {/* A previously stored choice we can no longer find on disk. */}
+            {settings.cookiesBrowser &&
+            browsers &&
+            !browsers.some((b) => b.id === settings.cookiesBrowser) ? (
+              <option value={settings.cookiesBrowser}>
+                {settings.cookiesBrowser} — bulunamadı
+              </option>
+            ) : null}
           </select>
+          {browsers && !browsers.length ? (
+            <div className="set-hint">Bu makinede çerez deposu olan bir tarayıcı bulunamadı.</div>
+          ) : null}
+        </Row>
+
+        <Row label={T.settings.resolver} hint={T.settings.resolverHint}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <Toggle
+              checked={settings.useResolver}
+              onChange={(v) => patch({ useResolver: v })}
+              label={T.settings.resolverOn}
+            />
+            <div className="set-inline">
+              <span style={{ fontSize: 12.5, color: 'var(--dim)' }}>{T.settings.resolverWait}</span>
+              <select
+                className="select"
+                value={settings.resolverTimeout}
+                onChange={(e) => patch({ resolverTimeout: Number(e.target.value) })}
+              >
+                {[15000, 30000, 45000, 60000, 90000].map((ms) => (
+                  <option key={ms} value={ms}>
+                    {ms / 1000} sn
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
         </Row>
 
         <Row label={T.settings.enrichLimit} hint={T.settings.enrichHint}>
