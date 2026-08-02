@@ -14,7 +14,7 @@ const { toolEnv, ytdlpPathOrThrow } = require('./binaries')
 const { resolveCookieArg, exportCookieJar } = require('./browsers')
 const { resolvePage, assistedCapture } = require('./resolver')
 const { describeStream } = require('./mediainfo')
-const { uid, siteLabel, hostOf, num, resolvedArgs } = require('./util')
+const { uid, siteLabel, hostOf, num, resolvedArgs, settingNumber } = require('./util')
 
 const MAX_JSON = 64 * 1024 * 1024 // channels can dump a lot of JSON
 
@@ -92,7 +92,11 @@ const FRIENDLY = [
   [/unsupported url/i, () => 'Bu bağlantıda tanınan bir video bulunamadı.'],
   [/no video formats found|requested format is not available/i, () => 'İndirilebilir bir video akışı bulunamadı.'],
   [/http error 404/i, () => 'Sayfa bulunamadı (404).'],
-  [/http error 403/i, () => 'Erişim reddedildi (403). Giriş gerekiyor olabilir.'],
+  [
+    /http error 403/i,
+    () =>
+      'Erişim reddedildi (403). Çerezsiz de denendi; giriş gerekiyor olabilir veya bağlantının süresi geçmiş olabilir — kaynağı yeniden tara.',
+  ],
   [/http error 429|too many requests/i, () => 'Site çok fazla istek gördü (429). Biraz bekle.'],
   [/not available (?:from )?your (?:location|country)|geo.?restricted/i, () => 'Bu içerik bölgesel olarak kısıtlı.'],
   [/is not a valid url/i, () => 'Geçersiz bağlantı.'],
@@ -127,6 +131,21 @@ function isCookieFailure(text) {
   return /cookies? (?:database|file)|cookiesfrombrowser|could not find .* cookies|çerez veritaban/i.test(
     String(text || '')
   )
+}
+
+/**
+ * Failures a cookie-free retry can fix.
+ *
+ * Beyond an unreadable cookie store, sending cookies can itself be the problem:
+ * given a signed-in session YouTube hands out format URLs from a different
+ * client which then answer 403 when actually fetched, where an anonymous request
+ * downloads fine. So a 403/401 or a bot-check prompt is worth one more attempt
+ * without them before giving up.
+ */
+function isRetryableWithoutCookies(text) {
+  const blob = String(text || '')
+  if (isCookieFailure(blob)) return true
+  return /http error 40[13]\b|\b403 forbidden|\b401 unauthorized|sign in to confirm/i.test(blob)
 }
 
 function bestThumb(node) {
@@ -421,8 +440,8 @@ async function tryResolve(source, settings, fallbackError) {
         extraBlockedHosts: settings.extraBlockedHosts,
         blockTrackers: settings.blockTrackers,
       },
-      minStreamSeconds: Math.max(0, Number(settings.minStreamSeconds) ?? 120),
-      timeoutMs: Math.max(8000, Number(settings.resolverTimeout) || 45000),
+      minStreamSeconds: settingNumber(settings.minStreamSeconds, 120),
+      timeoutMs: Math.max(8000, settingNumber(settings.resolverTimeout, 45000)),
       onProgress: (message) => {
         const live = store.findSource(source.id)
         if (live) store.commit(() => { live.note = message })
@@ -673,7 +692,7 @@ async function captureSource(sourceId) {
         extraBlockedHosts: settings.extraBlockedHosts,
         blockTrackers: settings.blockTrackers,
       },
-      minStreamSeconds: Math.max(0, Number(settings.minStreamSeconds) ?? 120),
+      minStreamSeconds: settingNumber(settings.minStreamSeconds, 120),
       timeoutMs: 300000,
       onProgress: (message) => {
         const live = store.findSource(sourceId)
@@ -696,4 +715,5 @@ module.exports = {
   killAll,
   readableError,
   isCookieFailure,
+  isRetryableWithoutCookies,
 }

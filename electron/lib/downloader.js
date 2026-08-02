@@ -12,7 +12,7 @@ const store = require('./store')
 const { toolEnv, ytdlpPathOrThrow, ffmpegPath } = require('./binaries')
 const { resolveCookieArg } = require('./browsers')
 const { uid, num, clamp, fileSizeOf, resolvedArgs, safeName } = require('./util')
-const { readableError, isCookieFailure } = require('./probe')
+const { readableError, isRetryableWithoutCookies } = require('./probe')
 
 const TAG = '@P@'
 const PROGRESS_TEMPLATE =
@@ -89,7 +89,7 @@ function buildArgs(download, settings, printFile) {
     args.push('--merge-output-format', settings.container)
   }
 
-  if (settings.embedThumbnail) args.push('--embed-thumbnail')
+  if (settings.embedThumbnail && !download.noEmbedThumbnail) args.push('--embed-thumbnail')
   if (settings.embedMetadata) args.push('--embed-metadata')
   if (settings.writeSubs) {
     args.push('--write-subs', '--write-auto-subs', '--sub-langs', settings.subLangs || 'tr,en')
@@ -179,6 +179,11 @@ const RE_MERGING = /^\[Merger\] Merging formats into "(.+)"$/
 const RE_ALREADY = /^\[download\]\s+(.+?)\s+has already been downloaded/
 const RE_MOVING = /^\[MoveFiles\] Moving file .* to "(.+)"$/
 const RE_POST = /^\[(ExtractAudio|EmbedThumbnail|Metadata|FixupM4a|FixupM3u8|VideoConvertor|EmbedSubtitle|SponsorBlock)\]/
+
+/** ffmpeg refusing to write cover art into this container. */
+function isThumbnailFailure(text) {
+  return /unable to embed.*(?:ffmpeg|ffprobe)|embedthumbnail/i.test(String(text || ''))
+}
 
 function handleLine(line, job, download) {
   if (!line) return
@@ -422,15 +427,33 @@ function start(downloadId) {
         : readableError(job.stderrTail, code)
       cleanupTemp(job)
 
-      // Same rule as probing: a bad cookie setting gets one silent retry
-      // without cookies rather than failing the transfer outright.
-      if (!download.noCookies && settings.cookiesBrowser && isCookieFailure(job.stderrTail || message)) {
+      // Cover art is decoration. When ffmpeg refuses to write it into a
+      // particular container the whole transfer was being marked failed, even
+      // though the video itself had downloaded — retry without it instead.
+      if (!download.noEmbedThumbnail && settings.embedThumbnail && isThumbnailFailure(message)) {
+        store.commit(() => {
+          download.noEmbedThumbnail = true
+          download.status = 'queued'
+          download.error = null
+        })
+        store.toast('Kapak görseli gömülemedi; kapaksız yeniden deneniyor.', 'warn')
+        pump_queue()
+        return
+      }
+
+      // One retry without cookies. Covers an unreadable cookie store and, just
+      // as often, a 403 caused by sending cookies in the first place.
+      if (
+        !download.noCookies &&
+        settings.cookiesBrowser &&
+        isRetryableWithoutCookies(job.stderrTail || message)
+      ) {
         store.commit(() => {
           download.noCookies = true
           download.status = 'queued'
           download.error = null
         })
-        store.toast(`${message} Çerezsiz yeniden denendi.`, 'warn')
+        store.toast(`${message} Çerezsiz yeniden deneniyor.`, 'warn')
         pump_queue()
         return
       }
@@ -561,6 +584,7 @@ function enqueue({ item, url, title, site, sourceId, quality, audioOnly, categor
     audioOnly: !!audioOnly,
     categoryId: categoryId || null,
     noCookies: false,
+    noEmbedThumbnail: false,
     status: 'queued',
     stage: null,
     percent: 0,

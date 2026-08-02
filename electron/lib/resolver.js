@@ -574,6 +574,31 @@ const AD_SKIP = `(() => {
 /** How often to look for an advert to get past. */
 const AD_SKIP_INTERVAL = 1200
 
+/**
+ * Electron has no way to destroy a session, so minting a fresh partition per
+ * resolve leaves one behind every time — a slow leak that a long session of
+ * pasted links would keep growing. Reuse a small pool instead, wiping storage on
+ * release so runs never inherit each other's cookies.
+ */
+const partitionPool = []
+let partitionsMade = 0
+
+function acquirePartition() {
+  const name = partitionPool.pop()
+  if (name) return name
+  partitionsMade += 1
+  return `resolver-${partitionsMade}`
+}
+
+async function releasePartition(name, ses) {
+  try {
+    await ses.clearStorageData()
+  } catch {
+    /* best effort — the slot is still reusable */
+  }
+  if (partitionPool.length < 8) partitionPool.push(name)
+}
+
 /** Players build their source at their own pace; poke on a schedule, not on events. */
 const NUDGE_SCHEDULE = [700, 2500, 5000, 8500, 13000, 18000, 24000, 30000, 36000, 42000]
 
@@ -701,7 +726,9 @@ function browserScan(
       ? Math.max(minStreamSeconds, expectedDuration * 0.5)
       : minStreamSeconds
   return new Promise((resolve) => {
-    const partition = `resolver-${uid('s')}` // no persist: prefix -> in-memory
+    // No persist: prefix, so the partition is in-memory; taken from a pool
+    // because Electron cannot destroy a session once created.
+    const partition = acquirePartition()
     const ses = session.fromPartition(partition)
     const hits = new Map()
     const skipped = new Set()
@@ -845,11 +872,7 @@ function browserScan(
       } catch {
         /* already gone */
       }
-      try {
-        await ses.clearStorageData()
-      } catch {
-        /* best effort */
-      }
+      await releasePartition(partition, ses)
 
       const all = [...hits.values()]
       const keepers = all.filter((h) => !h.short)
