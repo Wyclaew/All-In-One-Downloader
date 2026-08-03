@@ -751,6 +751,77 @@ const AD_SKIP = `(() => {
 const AD_SKIP_INTERVAL = 1200
 
 /**
+ * Listen to the player's code, not just its traffic.
+ *
+ * Watching the network tells you what was requested but not what the player
+ * *meant*: a manifest fetched by XHR with no telling extension and a generic
+ * content type looks like any other request, and a URL assembled at runtime from
+ * a decrypted blob never appears anywhere in the page source. Wrapping fetch,
+ * XMLHttpRequest and the media `src` setter catches all three, because it reads
+ * the argument the player passed.
+ *
+ * Installed with executeJavaScript in the page world rather than through a
+ * preload, so context isolation stays on — the page can hand us wrong strings at
+ * worst, and every candidate is verified before it is offered.
+ */
+const HOOK_SCRIPT = `(() => {
+  try {
+    if (window.__aioHooked) return 1;
+    window.__aioHooked = true;
+    window.__aioSeen = [];
+
+    var interesting = /\\.(m3u8|mpd|mp4|webm|m4v|mkv|mov|flv|mp3|m4a)(\\?|#|$)|\\/(?:manifest|playlist|config|master|index|source|stream|video)(?:[./?]|$)/i;
+
+    var note = function (value) {
+      try {
+        if (typeof value !== 'string' || value.slice(0, 4) !== 'http') return;
+        if (!interesting.test(value)) return;
+        if (window.__aioSeen.length < 80 && window.__aioSeen.indexOf(value) === -1) {
+          window.__aioSeen.push(value);
+        }
+      } catch (e) {}
+    };
+
+    var originalFetch = window.fetch;
+    if (typeof originalFetch === 'function') {
+      window.fetch = function (input) {
+        try { note(typeof input === 'string' ? input : input && input.url); } catch (e) {}
+        return originalFetch.apply(this, arguments);
+      };
+    }
+
+    var originalOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (method, url) {
+      try { note(url); } catch (e) {}
+      return originalOpen.apply(this, arguments);
+    };
+
+    var descriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+    if (descriptor && descriptor.set) {
+      Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        get: descriptor.get,
+        set: function (value) {
+          try { note(value); } catch (e) {}
+          return descriptor.set.call(this, value);
+        },
+      });
+    }
+    return 0;
+  } catch (e) { return -1; }
+})()`
+
+/** Take what the hooks have collected and clear it for the next pass. */
+const HOOK_DRAIN = `(() => {
+  try {
+    var seen = window.__aioSeen || [];
+    window.__aioSeen = [];
+    return seen;
+  } catch (e) { return []; }
+})()`
+
+/**
  * Electron has no way to destroy a session, so minting a fresh partition per
  * resolve leaves one behind every time — a slow leak that a long session of
  * pasted links would keep growing. Reuse a small pool instead, wiping storage on
@@ -1244,6 +1315,22 @@ function browserScan(
             const main = win.webContents.mainFrame
             const frames = main ? [main, ...(main.framesInSubtree || [])] : []
             for (const frame of frames) {
+              // Hook the player's own calls, then read what they carried. Runs on
+              // the same pass as ad-skipping: no extra timer, every frame covered.
+              try {
+                frame.executeJavaScript(HOOK_SCRIPT, true).catch(() => {})
+                const drained = frame.executeJavaScript(HOOK_DRAIN, true)
+                if (drained && drained.then) {
+                  drained
+                    .then((urls) => {
+                      if (!Array.isArray(urls)) return
+                      for (const url of urls) record(url, frame.url || pageUrl, 'content-type')
+                    })
+                    .catch(() => {})
+                }
+              } catch {
+                /* frame detached */
+              }
               try {
                 const result = frame.executeJavaScript(AD_SKIP, true)
                 if (result && result.then) {
@@ -1265,6 +1352,19 @@ function browserScan(
           }
         }, AD_SKIP_INTERVAL)
       }
+
+      // Get the hooks in as early as possible: a player that builds its source
+      // immediately would otherwise do it before the first pass comes round.
+      win.webContents.on('dom-ready', () => {
+        try {
+          const main = win.webContents.mainFrame
+          for (const frame of main ? [main, ...(main.framesInSubtree || [])] : []) {
+            frame.executeJavaScript(HOOK_SCRIPT, true).catch(() => {})
+          }
+        } catch {
+          /* frame not ready */
+        }
+      })
 
       let scheduled = false
       win.webContents.on('did-finish-load', () => {
