@@ -12,7 +12,7 @@ const { spawn } = require('child_process')
 const store = require('./store')
 const { toolEnv, ytdlpPathOrThrow } = require('./binaries')
 const { resolveCookieArg, exportCookieJar } = require('./browsers')
-const { resolvePage, assistedCapture } = require('./resolver')
+const { resolvePage, assistedCapture, embedCandidatesFor } = require('./resolver')
 const { describeStream } = require('./mediainfo')
 const { uid, siteLabel, hostOf, num, resolvedArgs, settingNumber } = require('./util')
 
@@ -299,6 +299,17 @@ async function runProbe(source, playlistEnd) {
     }
   }
   running.delete(source.id)
+
+  /*
+   * A watch page and its embed page are different documents served by different
+   * code, so when yt-dlp fails on one the other is often fine — Vimeo answers a
+   * watch URL with an OAuth 401 but hands over sixteen formats for
+   * player.vimeo.com/video/ID. Cheap enough to always try before the resolver.
+   */
+  if (failure && !missingTool) {
+    const derived = embedCandidatesFor(source.url)
+    if (derived.length && (await probeEmbeds(source, derived, effective))) return source
+  }
 
   if (missingTool) {
     store.commit(() => {

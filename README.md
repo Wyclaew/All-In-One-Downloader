@@ -161,11 +161,16 @@ başlayarak:
    - `eval(function(p,a,c,k,e,d))` ile paketlenmiş script'lerin açılması
    - base64 blob'lar, `\x68\x74…` hex kaçışları, `%68%74…` yüzde kaçışları,
      **tersten yazılmış** adresler (`//:sptth`) ve `String.fromCharCode(…)` dizileri
-2. **Gömülü oynatıcı devri.** Sayfada yt-dlp'nin tanıdığı bir oynatıcı (YouTube,
+2. **Watch → embed dönüşümü.** Bir sitenin izleme sayfası ile embed sayfası farklı
+   belgelerdir ve biri bozulduğunda diğeri sıklıkla çalışır. Vimeo bunun standart
+   örneği: yt-dlp `vimeo.com/ID` için OAuth `401` veriyor ama
+   `player.vimeo.com/video/ID` için on altı format döndürüyor. Adres biçiminden
+   embed adresi türetilip yt-dlp'ye verilir.
+3. **Gömülü oynatıcı devri.** Sayfada yt-dlp'nin tanıdığı bir oynatıcı (YouTube,
    Vimeo, Dailymotion, Twitch, JW, Kaltura, Brightcove, Wistia, VK, OK.ru…)
    gömülüyse o adres yt-dlp'ye geri verilir — kendi kazıdığımız çıplak bir akış
    yerine tam format listesi, altyazılar ve künye gelir.
-3. **Tarayıcı motoru.** Sayfa görünmez bir pencerede **gerçekten çalıştırılır** ve
+4. **Tarayıcı motoru.** Sayfa görünmez bir pencerede **gerçekten çalıştırılır** ve
    ağ istekleri dinlenir. Obfuscate edilmiş ve `blob:`/MSE ile beslenen oynatıcılar
    böyle çözülür. Ayrıca:
    - oynatıcıya benzeyen bir **JSON belgesi** yanıtı açılıp içi taranır (bazı
@@ -173,7 +178,13 @@ başlayarak:
    - yalnızca segment görülürse, segmentin klasöründen yukarı çıkarak
      **manifest türetilir** (`master.m3u8`, `index.m3u8`, `manifest.mpd`…)
    - reklam SDK'larına bilerek izin verilir, reklam otomatik geçilir
-4. **Tarayıcıda yakala.** Reklam duvarı veya doğrulama isteyen sayfalar için
+5. **İç oynatıcıyı doğrudan açma.** Bir sitenin sarmalayıcı sayfasındaki kapı,
+   oynatıcının kapısı değildir: ön-reklam, onay ekranı, bot kontrolü ve
+   inceleme-engelleyici script hep **dış sayfada** durur; oynatıcı çerçevesinde
+   hiçbiri yoktur. O çerçeveyi ebeveyni Referer olarak vererek doğrudan açmak —
+   dış sayfanın yaptığı isteğin aynısı — sarmalayıcının hiç vermediği akışı
+   saniyeler içinde verir.
+6. **Tarayıcıda yakala.** Reklam duvarı veya doğrulama isteyen sayfalar için
    görünür pencere: kapıyı sen geçersin, akışı uygulama yakalar.
 
 Bulunan her aday **doğrulanır**: manifest ayrıştırılır, gerekirse `ffprobe`
@@ -187,19 +198,10 @@ biriktirilir ve metre asla geri gitmez.
 
 ## Bilinen sınırlar
 
-- **Vimeo çalışmıyor.** yt-dlp'nin Vimeo çıkarıcısı `Failed to fetch macos OAuth
-  token: 401` veriyor; 2026.07.04 sürümünde de aynı, yani güncelleme çözmüyor.
-  Kendi çözümleyicim de yakalayamıyor: Vimeo oynatıcısı manifest'ini JSON olarak
-  alıp MSE ile besliyor ve otomatik tarayıcıda hiç başlamıyor. Tarayıcıda yakala
-  ile deneyebilirsin.
-- **Reklam duvarı olan bazı siteler** (ör. dizibox) akışı otomatik tarayıcıya
-  vermiyor. Ön-reklam artık asla indirilmiyor; ama asıl videoyu almak için
-  Tarayıcıda yakala gerekebilir.
-- DRM korumalı akışlar (Widevine/PlayReady/FairPlay) indirilmez. Düz AES-128 HLS
-  DRM değildir ve normal indirilir.
-- Giriş gerektiren içerik için **Ayarlar → Erişim → Tarayıcı çerezleri**'ni seç.
-  Seçtiğin tarayıcının çerez veritabanı yoksa uygulama bir kez çerezsiz yeniden
-  dener ve uyarır; ama her istekte boşa bir deneme yapmamak için ayarı düzeltmek
-  daha iyidir.
+- DRM korumalı akışlar (Widevine/PlayReady/FairPlay) indirilmez ve indirilmeyecek.
+  Ama HLS'te sık görülen düz `AES-128` şifreleme **DRM değildir**; uygulama ikisini
+  ayırt eder ve AES-128'i normal indirir.
+- Bot doğrulaması (captcha) isteyen sayfalar otomatik çözülmez. Bunun için
+  **Tarayıcıda yakala** var: doğrulamayı sen geçersin, akışı uygulama yakalar.
 - Duraklatma yt-dlp sürecini durdurup `.part` dosyasını bırakır; sürdürme oradan
   devam eder. Sunucu byte-range desteklemiyorsa baştan başlar.

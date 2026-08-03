@@ -235,6 +235,54 @@ function decodeHexEscapes(text) {
 const EMBED_HOST =
   /^https?:\/\/(?:[\w-]+\.)*(?:youtube\.com\/embed|youtube-nocookie\.com\/embed|youtu\.be|player\.vimeo\.com|dailymotion\.com\/(?:embed|player)|ok\.ru\/videoembed|vk\.com\/video_ext|facebook\.com\/plugins\/video|player\.twitch\.tv|streamable\.com|sproutvideo\.com|wistia\.(?:com|net)|players\.brightcove\.net|cdn\.jwplayer\.com|content\.jwplatform\.com|kaltura\.com|rutube\.ru\/play|bitchute\.com\/embed|odysee\.com\/\$\/embed|archive\.org\/embed|w\.soundcloud\.com\/player|iframe\.mediadelivery\.net|embed\.redtube|players\.akamai)/i
 
+/**
+ * Watch URL -> embed URL.
+ *
+ * A site's watch page and its embed page are different documents served by
+ * different code, and when one breaks the other often still works. Vimeo is the
+ * standing example: yt-dlp's extractor fails on `vimeo.com/ID` with an OAuth 401
+ * but handles `player.vimeo.com/video/ID` perfectly, because that path never asks
+ * for a token. Rewriting is cheap, so it is always worth a try.
+ */
+const EMBED_REWRITES = [
+  [/^https?:\/\/(?:www\.)?vimeo\.com\/(\d+)/i, (m) => `https://player.vimeo.com/video/${m[1]}`],
+  [
+    /^https?:\/\/(?:www\.)?dailymotion\.com\/video\/([a-z0-9]+)/i,
+    (m) => `https://www.dailymotion.com/embed/video/${m[1]}`,
+  ],
+  [
+    /^https?:\/\/(?:www\.|m\.)?youtube\.com\/watch\?(?:.*&)?v=([\w-]{6,})/i,
+    (m) => `https://www.youtube.com/embed/${m[1]}`,
+  ],
+  [/^https?:\/\/youtu\.be\/([\w-]{6,})/i, (m) => `https://www.youtube.com/embed/${m[1]}`],
+  [/^https?:\/\/(?:www\.)?ok\.ru\/video\/(\d+)/i, (m) => `https://ok.ru/videoembed/${m[1]}`],
+  [
+    /^https?:\/\/(?:www\.)?bitchute\.com\/video\/([\w-]+)/i,
+    (m) => `https://www.bitchute.com/embed/${m[1]}/`,
+  ],
+  [/^https?:\/\/rutube\.ru\/video\/(\w+)/i, (m) => `https://rutube.ru/play/embed/${m[1]}`],
+  [
+    /^https?:\/\/(?:www\.)?twitch\.tv\/videos\/(\d+)/i,
+    (m) => `https://player.twitch.tv/?video=${m[1]}&parent=twitch.tv`,
+  ],
+  [
+    /^https?:\/\/(?:www\.)?archive\.org\/details\/([\w.-]+)/i,
+    (m) => `https://archive.org/embed/${m[1]}`,
+  ],
+]
+
+/** Embed URLs derivable from a watch URL's shape. */
+function embedCandidatesFor(url) {
+  const out = []
+  for (const [pattern, build] of EMBED_REWRITES) {
+    const match = String(url).match(pattern)
+    if (!match) continue
+    const embed = build(match)
+    if (isHttp(embed) && embed !== url) out.push(embed)
+  }
+  return out
+}
+
 /** `'8u3m.tsefinam//:sptth'` — the URL stored backwards. */
 function decodeReversed(text) {
   if (!/\/\/:s?ptth/.test(text)) return ''
@@ -542,6 +590,7 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
   let thumbnail = ''
   let expectedDuration = null
   const embeds = new Set()
+  const frames = []
   let fetches = 0
   const visited = new Set()
   let queue = [{ url: pageUrl, referer: '', depth: 0, kind: 'page' }]
@@ -595,6 +644,11 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
         }
         if (job.depth < maxDepth) {
           for (const frame of collectIframes(text, finalUrl)) {
+            // Worth revisiting on its own later: a nested player is served
+            // without the wrapper page's ad wall or bot check.
+            if (!/recaptcha|about:blank/i.test(frame)) {
+              frames.push({ url: frame, referer: finalUrl, depth: job.depth + 1 })
+            }
             next.push({ url: frame, referer: finalUrl, depth: job.depth + 1, kind: 'page' })
           }
         }
@@ -608,6 +662,7 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
     thumbnail,
     expectedDuration,
     embeds: [...embeds],
+    frames,
     candidates: dedupe(candidates),
     engine: 'static',
   }
@@ -839,6 +894,7 @@ function browserScan(
     minStreamSeconds = 120,
     assisted = false,
     expectedDuration = null,
+    referer = null,
   } = {}
 ) {
   // A page-declared runtime raises the bar for "long enough to be the feature".
@@ -855,6 +911,7 @@ function browserScan(
     const skipped = new Set()
     const jsonScanned = new Set()
     const segments = new Set()
+    const measuring = new Set()
     const timers = []
     let adSkipTimer = null
     let adSkips = 0
@@ -925,7 +982,10 @@ function browserScan(
         userAgent: UA,
         kind: hit.kind,
       }
-      describeStream(hit.url, resolved)
+      const pending = describeStream(hit.url, resolved)
+      measuring.add(pending)
+      pending.finally(() => measuring.delete(pending)).catch(() => {})
+      pending
         .then((info) => {
           hit.info = info
           // Declared runtime matched: this is the feature, stop listening now
@@ -1065,6 +1125,16 @@ function browserScan(
         /* already gone */
       }
       await releasePartition(partition, ses)
+
+      // A stream is only judged once it has been measured. Ending the scan while
+      // a measurement was still in flight let an unmeasured pre-roll through as
+      // though it were the feature.
+      if (measuring.size) {
+        await Promise.race([
+          Promise.allSettled([...measuring]),
+          new Promise((r) => setTimeout(r, 5000)),
+        ])
+      }
 
       const all = [...hits.values()]
       let keepers = all.filter((h) => !h.short)
@@ -1261,7 +1331,9 @@ function browserScan(
         }
         if (done || !win || win.isDestroyed()) return
         note('sayfa açılıyor')
-        win.loadURL(pageUrl, { userAgent: UA, httpReferrer: originOf(pageUrl) }).catch(() => {})
+        win
+          .loadURL(pageUrl, { userAgent: UA, httpReferrer: referer || originOf(pageUrl) })
+          .catch(() => {})
       }
       boot().catch(() => finish())
     } catch (err) {
@@ -1449,13 +1521,44 @@ async function resolvePage(
   }
 
   if (onProgress) onProgress('oynatıcı görünmez tarayıcıda çalıştırılıyor')
-  const deep = await browserScan(pageUrl, {
-    timeoutMs,
+  // With a nested player to fall back on there is no reason to sit out the full
+  // window waiting for a wrapper page that may never yield.
+  const nestedFrames = [...(fast.frames || [])].sort((a, b) => b.depth - a.depth).slice(0, 3)
+  let deep = await browserScan(pageUrl, {
+    timeoutMs: nestedFrames.length ? Math.min(timeoutMs, 22000) : timeoutMs,
     onProgress,
     browserCookieJar,
     minStreamSeconds,
     expectedDuration: fast.expectedDuration,
   })
+
+  /*
+   * A wrapper page's gate is not the player's gate.
+   *
+   * When a site nests its player two frames deep, the pre-roll, the consent
+   * screen, the bot check and the anti-inspection script all live on the outer
+   * page — the player frame has none of them. Asking that frame directly, with
+   * its parent as Referer, is the same request the outer page makes, and it
+   * routinely succeeds in seconds where the wrapper never yields at all.
+   */
+  if (!deep.candidates.length && nestedFrames.length) {
+    for (const frame of nestedFrames) {
+      if (onProgress) onProgress(`gömülü oynatıcı doğrudan açılıyor: ${hostOf(frame.url)}`)
+      const inner = await browserScan(frame.url, {
+        timeoutMs: Math.min(timeoutMs, 30000),
+        onProgress,
+        browserCookieJar,
+        minStreamSeconds,
+        expectedDuration: fast.expectedDuration,
+        referer: frame.referer,
+      })
+      if (inner.candidates.length) {
+        deep = { ...inner, title: deep.title || inner.title }
+        break
+      }
+    }
+  }
+
   const verified = deep.candidates.length ? await verifyCandidates(deep.candidates) : []
   // Keep browser finds even if verification couldn't read them: the session that
   // captured them is gone, so a fresh fetch may legitimately fail.
@@ -1520,4 +1623,4 @@ async function assistedCapture(
   }
 }
 
-module.exports = { resolvePage, assistedCapture, unpackPacked, UA }
+module.exports = { resolvePage, assistedCapture, embedCandidatesFor, unpackPacked, UA }
