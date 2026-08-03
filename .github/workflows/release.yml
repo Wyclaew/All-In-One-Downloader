@@ -17,10 +17,8 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            target: --mac
             name: macOS (dmg + zip, arm64 & x64)
           - os: windows-latest
-            target: --win
             name: Windows (nsis installer)
 
     name: ${{ matrix.name }}
@@ -43,13 +41,42 @@ jobs:
       - name: Build renderer
         run: npm run build
 
-      - name: Build and publish installer
-        run: npx electron-builder ${{ matrix.target }} --publish always
+      - name: Build and publish installer (Windows)
+        if: runner.os == 'Windows'
+        run: npx electron-builder --win --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # The app ships unsigned; without this electron-builder hunts for a
-          # certificate on the runner and fails when it finds none.
-          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      # Two paths on purpose. With a Developer ID certificate in the secrets the
+      # build is signed and notarised, and macOS opens it without a word. Without
+      # one it is ad-hoc signed (build/after-pack.js) so it still launches on both
+      # architectures — the user only has to confirm the first open.
+      #
+      # To switch to the signed path, set all five secrets:
+      #   MAC_CERTIFICATE_P12          base64 of the exported Developer ID .p12
+      #   MAC_CERTIFICATE_PASSWORD     password used when exporting it
+      #   APPLE_ID                     Apple ID that owns the developer account
+      #   APPLE_APP_SPECIFIC_PASSWORD  app-specific password from appleid.apple.com
+      #   APPLE_TEAM_ID                10-character team ID
+      - name: Build and publish installer (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          if [ -n "$CSC_LINK" ]; then
+            echo "Developer ID certificate present — signing and notarising."
+            # A null identity skips signing outright, so it has to be overridden.
+            # The team ID is a valid qualifier and picks the imported certificate.
+            npx electron-builder --mac --publish always -c.mac.identity="$APPLE_TEAM_ID"
+          else
+            echo "No signing certificate in secrets — publishing an ad-hoc signed build."
+            CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --publish always
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.MAC_CERTIFICATE_P12 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Keep the installers as build artifacts too
         uses: actions/upload-artifact@v7
@@ -60,3 +87,21 @@ jobs:
             release/*.dmg
             release/*.zip
             release/*.exe
+
+  # electron-builder creates the release but never writes a body, so the first-open
+  # instructions would be missing exactly where people download the build.
+  notes:
+    name: Install notes
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Attach the install notes to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --notes-file build/release-notes.md

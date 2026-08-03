@@ -8,6 +8,32 @@ macOS için yazıldı; Windows altyapısı baştan hazır (aşağıya bak).
 
 ---
 
+## macOS'ta ilk açılış
+
+Hazır `.dmg`'yi indirip açtığında macOS şunu der:
+
+> **"Apple, 'All in One Downloader' uygulamasının kötü amaçlı yazılım içermediğini
+> doğrulayamadı."**
+
+Bu bir virüs uyarısı değil ve uygulamanın içeriğine bakılarak verilmiş bir karar
+değil. macOS, ücretli bir Apple geliştirici sertifikasıyla imzalanıp Apple'a
+notarization için gönderilmemiş **her** uygulamaya aynı uyarıyı gösterir. Bir kez
+geçmen yeterli:
+
+1. Uygulamayı **Applications** klasörüne sürükle, çift tıkla, uyarıyı kapat.
+2. **Sistem Ayarları → Gizlilik ve Güvenlik**, aşağı in.
+3. *"All in One Downloader engellendi"* satırındaki **Yine de Aç** → onayla.
+
+Tek satırlık hali:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/All in One Downloader.app"
+```
+
+`npm run dist:mac` ile kendi makinende ürettiğin build'de bu uyarı hiç çıkmaz:
+karantina bayrağını dosyaya tarayıcı koyar, derleyici koymaz.
+
+
 ## Gereksinimler
 
 İndirme motoru iki komut satırı aracına dayanır:
@@ -76,6 +102,33 @@ sürüme ekler. Actions sekmesinden elle de başlatabilirsin.
 
 `resources/bin/` klasörüne `yt-dlp` / `ffmpeg` ikililerini koyarsan uygulamayla
 birlikte paketlenirler ve kullanıcının ayrıca kurmasına gerek kalmaz.
+
+## İmzalama ve notarization
+
+Uygulama sertifikasız dağıtılıyor. `mac.identity: null` electron-builder'da
+imzalamayı **tamamen** atlar, ve hiç imzası olmayan bir arm64 paketi çekirdek
+tarafından Gatekeeper'a gelmeden reddedilir ("uygulama zarar görmüş"). Bu yüzden
+`build/after-pack.js` paketi **ad-hoc** imzalar: sertifika değildir, uyarıyı
+susturmaz, ama paketi geçerli koda çevirir — böylece *Yine de Aç* gerçekten açar ve
+tek build hem Apple Silicon'da hem Intel'de çalışır. `resources/bin/` içine konan
+yardımcı ikililer de ayrıca imzalanır, çünkü `codesign --deep` Resources'a inmez.
+
+Uyarıyı tamamen kaldırmak yıllık ücretli bir Apple Developer hesabı gerektirir.
+Altyapı hazır: depo ayarlarına şu beş sırrı eklediğin an akış imzalı + notarize
+edilmiş build üretmeye başlar, başka değişiklik gerekmez.
+
+| Sır | Ne |
+|---|---|
+| `MAC_CERTIFICATE_P12` | Developer ID sertifikasının `.p12` hâlinin base64'ü |
+| `MAC_CERTIFICATE_PASSWORD` | `.p12`'yi çıkarırken verdiğin şifre |
+| `APPLE_ID` | Geliştirici hesabının Apple ID'si |
+| `APPLE_APP_SPECIFIC_PASSWORD` | appleid.apple.com'dan alınan uygulamaya özel şifre |
+| `APPLE_TEAM_ID` | 10 karakterlik takım kimliği |
+
+Bu değerleri ben yazamam ve uydurmam — hesabı olan sen ekleyeceksin. Windows
+tarafındaki SmartScreen uyarısının sebebi de aynı: ayrı bir kod imzalama
+sertifikası. `.exe` için de sertifika alırsan `CSC_LINK` / `CSC_KEY_PASSWORD`
+Windows işine aynı şekilde bağlanır.
 
 ## Kullanım
 

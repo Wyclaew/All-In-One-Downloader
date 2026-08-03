@@ -1,0 +1,25 @@
+All in One Downloader — ilk açılış (macOS)
+
+1. Uygulamayı soldaki simgeden sağdaki Applications klasörüne sürükle.
+2. Applications içinde uygulamaya çift tıkla.
+3. "Apple, ... kötü amaçlı yazılım içermediğini doğrulayamadı" uyarısı çıkarsa
+   pencereyi kapat, sonra:
+      Sistem Ayarları  ->  Gizlilik ve Güvenlik
+   Aşağı in, "All in One Downloader engellendi" satırının yanındaki
+   "Yine de Aç" düğmesine bas ve onayla.
+4. Bir daha sormaz.
+
+Bu uyarı bir virüs uyarısı değil. macOS, Apple'a para ödenerek alınan bir
+geliştirici sertifikasıyla imzalanıp Apple'a notarization için gönderilmemiş
+her uygulamaya aynı uyarıyı gösterir — uygulamanın içeriğine bakmaz.
+
+Terminal'i tercih edersen aynı işi tek satır yapar:
+
+   xattr -dr com.apple.quarantine "/Applications/All in One Downloader.app"
+
+İndirme motoru iki komut satırı aracına dayanır:
+
+   brew install yt-dlp ffmpeg
+
+Kaynak kod ve sorun bildirimi:
+https://github.com/Wyclaew/All-In-One-Downloader

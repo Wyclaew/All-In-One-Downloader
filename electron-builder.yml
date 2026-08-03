@@ -6,6 +6,10 @@ directories:
   buildResources: build
   output: release
 
+# Ad-hoc signs the macOS bundle when no Developer ID is configured. Without it the
+# app ships with no signature at all and Apple Silicon refuses to launch it.
+afterPack: ./build/after-pack.js
+
 publish:
   provider: github
   owner: Wyclaew
@@ -35,11 +39,31 @@ mac:
       arch: [arm64, x64]
     - target: zip
       arch: [arm64, x64]
-  # Ad-hoc signing keeps local builds runnable without a developer certificate.
+  # No Developer ID certificate: build/after-pack.js ad-hoc signs instead, which
+  # keeps the bundle launchable everywhere. Gatekeeper still asks the user to
+  # confirm the first open — only notarisation removes that, see README.
   identity: null
 
 dmg:
   artifactName: ${productName}-${version}-${arch}.dmg
+  # An unsigned build always trips Gatekeeper on first open, so the instructions
+  # ride along inside the disk image where the user is standing when it happens.
+  window:
+    width: 560
+    height: 400
+  contents:
+    - x: 150
+      y: 176
+      type: file
+    - x: 410
+      y: 176
+      type: link
+      path: /Applications
+    - x: 280
+      y: 320
+      type: file
+      path: dmg-first-run.txt
+      name: İLK AÇILIŞ - OKU.txt
 
 win:
   target:
