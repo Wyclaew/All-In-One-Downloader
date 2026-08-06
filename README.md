@@ -148,6 +148,58 @@ Windows işine aynı şekilde bağlanır.
   tamamlananlar ve hatalılar ayrı bölümlerde. Kategori ata, ara, dosyayı aç veya
   klasörde göster.
 
+- Her satırda **indirmeden önce boyut** görünür. Boyut tek bir sayı değil, seçtiğin
+  kaliteye göre değişir: açılır menüyü değiştirdiğinde rakam da değişir. Başında
+  `~` varsa bit hızı × süre üzerinden hesaplanmış tahmindir, sunucunun bildirdiği
+  kesin uzunluk değildir.
+- İnerken kalan süre gösterilir. Parçalı akışlarda yt-dlp `eta` vermez; o durumda
+  ölçülen hızla bilinen hedeften, ya da parça hızından hesaplanır.
+
+## Şifreli kasa
+
+**Kasa** sekmesi, içeriği *ve adı* şifreli duran bir klasör. Bir dosya adı çoğu
+zaman o dosyanın ne olduğunu söylemeye yeter, o yüzden ikisi birlikte şifrelenir.
+
+- Kitaplıkta tamamlanmış bir kaydın `⋯` menüsünden **Kasaya taşı**, ya da Kasa
+  sekmesinden doğrudan **Dosya ekle**. Şifreli kopya yazılıp doğrulandıktan sonra
+  şifresiz özgün dosya silinir — yarıda kalan bir işlem dosyayı kaybettirmez.
+- Diskte `~/Library/Application Support/All in One Downloader/vault/` altında
+  rastgele adlı bloklar durur. Gerçek adlar, başlıklar ve boyutlar yalnızca
+  şifreli dizinde.
+
+Katmanlar:
+
+| Katman | Ne yapar |
+|---|---|
+| AES-256-GCM | Her dosya kendi rastgele nonce'uyla şifrelenir; doğrulama etiketi iliştirilir, kurcalanan dosya açılmaz |
+| scrypt (N=32768, r=8) | Şifreden anahtar türetme; her deneme ~100 ms ve 32 MB ister |
+| Rastgele blok adları | Klasöre bakan biri ne olduğunu göremez |
+| Anahtar yalnızca bellekte | Diske yazılmaz, arayüze geçmez, kilitlenince üzerine sıfır yazılır |
+| Otomatik kilit | Ayarlanan süre boyunca işlem olmazsa kilitlenir; çözülmüş geçici kopyalar silinir |
+
+Sınırlar açıkça söylenmeli: bir dosyayı oynatmak onu geçici olarak (yalnızca sana
+açık, `0700` bir klasöre) şifresiz kopyalamayı gerektirir; kasa açıkken
+bilgisayarının başındaki birine karşı koruma yoktur; ve şifreyi unutursan
+kurtarma yolu yoktur — bırakılmış bir kurtarma yolu şifreyi baştan anlamsız
+kılardı.
+
+## yt-dlp'yi kapatmak
+
+**Ayarlar → Erişim → İndirme motoru**'ndan yt-dlp kapatılabilir. Kapalıyken hiç
+çağrılmaz: her bağlantıyı kendi çözümleyicim çözer, indirmeyi de kendisi yapar.
+
+| Akış | Nasıl iner |
+|---|---|
+| Düz dosya | Parçalı HTTP (`Range`) — duraklat/sürdür gerçekten kaldığı yerden devam eder |
+| HLS / DASH | ffmpeg manifesti okur, tek kaba yazar; ilerleme videonun kendi zaman çizgisinden gelir |
+
+Kalite, master playlist'teki varyantlardan seçilir — istediğin yüksekliğe eşit ya
+da ondan küçük en iyi varyant doğrudan indirilir. Bu yolda ffmpeg zorunludur ve
+parçalı akışlarda duraklatma baştan başlamak demektir (ffmpeg çıktısı
+sürdürülemez). yt-dlp'nin kendi çıkarıcısı olan siteler (YouTube gibi) için
+kapalıyken elde kalan tek yol kendi çözümleyicim olur, yani bazı sayfalarda sonuç
+değişir.
+
 ### Kısayollar
 
 | Kısayol | İş |
@@ -187,6 +239,8 @@ electron/
     mediainfo.js       manifest ayrıştırma + ffprobe ile süre/çözünürlük
     blocklist.js       istek engelleme; reklam SDK'larına bilerek izin verir
     subtitles.js       OpenSubtitles arama, sese hizalama, gömme
+    ownengine.js       yt-dlp kapalıyken indirme: parçalı HTTP + ffmpeg
+    vault.js           şifreli kasa: AES-256-GCM, scrypt, şifreli dizin
 src/                   React arayüzü (görünümler, bileşenler, biçimleyiciler)
 ```
 
