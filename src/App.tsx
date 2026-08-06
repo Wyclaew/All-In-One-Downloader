@@ -3,18 +3,20 @@ import { api } from './api'
 import { Btn, Chip, Icon, IconBtn, Modal, Scope } from './components/ui'
 import * as fmt from './format'
 import { T } from './strings'
-import { useApp, useTheme, useThroughput, withProgress } from './store'
+import { useApp, useTheme, useThroughput, useVault, withProgress } from './store'
 import type { Category } from './types'
 import Library from './views/Library'
 import Settings from './views/Settings'
 import SourcesView from './views/Sources'
+import VaultView from './views/Vault'
 
-type View = 'sources' | 'library' | 'settings'
+type View = 'sources' | 'library' | 'vault' | 'settings'
 const ALL = null
 const UNCATEGORIZED = '__none__'
 
 export default function App() {
   const { state, tools, progress, toasts, pushToast, dismissToast, refreshTools, menuAction } = useApp()
+  const { vault } = useVault()
   const [view, setView] = useState<View>('sources')
   const [category, setCategory] = useState<string | null>(ALL)
   const [query, setQuery] = useState('')
@@ -255,6 +257,13 @@ export default function App() {
             onClick={() => goLibrary(ALL)}
           />
           <RailItem
+            icon={vault.unlocked ? 'unlock' : 'lock'}
+            label={T.nav.vault}
+            count={vault.unlocked ? vault.entries.length : undefined}
+            active={view === 'vault'}
+            onClick={() => setView('vault')}
+          />
+          <RailItem
             icon="sliders"
             label={T.nav.settings}
             active={view === 'settings'}
@@ -305,14 +314,26 @@ export default function App() {
         <main className="pane">
           <div className="pane-head">
             <span className="pane-title">
-              {view === 'sources' ? T.nav.sources : view === 'library' ? T.nav.library : T.settings.title}
+              {view === 'sources'
+                ? T.nav.sources
+                : view === 'library'
+                  ? T.nav.library
+                  : view === 'vault'
+                    ? T.nav.vault
+                    : T.settings.title}
             </span>
             <span className="pane-sub">
               {view === 'sources'
                 ? `${state.sources.length} kaynak · ${itemCount} öğe`
                 : view === 'library'
                   ? `${downloads.length} kayıt`
-                  : ''}
+                  : view === 'vault'
+                    ? vault.unlocked
+                      ? `${vault.entries.length} şifreli dosya`
+                      : vault.exists
+                        ? 'kilitli'
+                        : 'kurulmadı'
+                    : ''}
             </span>
 
             <span style={{ flex: 1 }} />
@@ -401,10 +422,19 @@ export default function App() {
               />
             ) : null}
 
+            {view === 'vault' ? (
+              <VaultView
+                vault={vault}
+                autoLockMinutes={state.settings.vaultAutoLockMinutes ?? 15}
+                onToast={pushToast}
+              />
+            ) : null}
+
             {view === 'settings' ? (
               <Settings
                 settings={state.settings}
                 tools={tools}
+                vaultExists={vault.exists}
                 onRefreshTools={refreshTools}
                 onToast={pushToast}
               />
@@ -446,7 +476,7 @@ function RailItem({
   onClick,
   swatch,
 }: {
-  icon?: 'layers' | 'archive' | 'sliders'
+  icon?: 'layers' | 'archive' | 'sliders' | 'lock' | 'unlock'
   label: string
   count?: number
   active: boolean

@@ -31,7 +31,16 @@ function defaultSettings() {
     autoStartDownloads: true,
     enrichLimit: 80,
     notifyOnFinish: true,
+    // Whether removing a library record also deletes the file: ask every time,
+    // always, or never. A checkbox that resets on every delete is a question the
+    // user has already answered.
+    deleteFileWithRecord: 'ask', // ask | always | never
+    // Minutes of inactivity before the vault locks itself. 0 = never.
+    vaultAutoLockMinutes: 15,
 
+    // yt-dlp does the probing and the fetching unless this is off, in which case
+    // the in-house resolver finds the stream and ffmpeg/HTTP fetches it.
+    useYtdlp: true,
     // in-house page resolver, for sites yt-dlp has no extractor for
     useResolver: true,
     // Long enough that a pre-roll can finish and the real stream can start.

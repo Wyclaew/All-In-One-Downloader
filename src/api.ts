@@ -8,6 +8,8 @@ import type {
   SubtitleSearch,
   Toast,
   Tools,
+  VaultEntry,
+  VaultState,
 } from './types'
 
 type Result<T> = { ok: true; data: T } | { ok: false; error: string }
@@ -55,11 +57,21 @@ interface Bridge {
     hashMatch: boolean
   }): Promise<Result<SubtitleOutcome>>
   subtitleTools(): Promise<Result<{ ffsubsync: boolean }>>
+  vaultStatus(): Promise<Result<VaultState>>
+  vaultCreate(passphrase: string): Promise<Result<VaultState>>
+  vaultUnlock(passphrase: string): Promise<Result<VaultState>>
+  vaultLock(): Promise<Result<VaultState>>
+  vaultTakeDownload(id: string): Promise<Result<VaultEntry>>
+  vaultAddFiles(): Promise<Result<{ added: number }>>
+  vaultOpen(id: string): Promise<Result<{ path: string }>>
+  vaultExport(id: string): Promise<Result<{ path: string } | null>>
+  vaultRemove(id: string): Promise<Result<boolean>>
   openFile(path: string): Promise<Result<boolean>>
   revealFile(path: string): Promise<Result<boolean>>
   openExternal(url: string): Promise<Result<boolean>>
   readClipboard(): Promise<Result<string>>
   onState(handler: (state: AppState) => void): () => void
+  onVault(handler: (state: VaultState) => void): () => void
   onProgress(handler: (p: unknown) => void): () => void
   onToast(handler: (t: Toast) => void): () => void
   onFinished(handler: (p: { id: string; title: string }) => void): () => void
@@ -144,6 +156,16 @@ export const api = {
     hashMatch: boolean
   }) => call(bridge.applySubtitle(payload)),
   subtitleTools: () => call(bridge.subtitleTools()),
+
+  vaultStatus: () => call(bridge.vaultStatus()),
+  vaultCreate: (passphrase: string) => call(bridge.vaultCreate(passphrase)),
+  vaultUnlock: (passphrase: string) => call(bridge.vaultUnlock(passphrase)),
+  vaultLock: () => call(bridge.vaultLock()),
+  vaultTakeDownload: (id: string) => call(bridge.vaultTakeDownload(id)),
+  vaultAddFiles: () => call(bridge.vaultAddFiles()),
+  vaultOpen: (id: string) => call(bridge.vaultOpen(id)),
+  vaultExport: (id: string) => call(bridge.vaultExport(id)),
+  vaultRemove: (id: string) => call(bridge.vaultRemove(id)),
 
   openFile: (p: string) => call(bridge.openFile(p)),
   revealFile: (p: string) => call(bridge.revealFile(p)),

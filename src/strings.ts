@@ -8,6 +8,7 @@ export const T = {
   nav: {
     sources: 'Kaynaklar',
     library: 'Kitaplık',
+    vault: 'Kasa',
     settings: 'Ayarlar',
     categories: 'Kategoriler',
     allCategories: 'Tümü',
@@ -63,6 +64,8 @@ export const T = {
     audioOnly: 'Sadece ses',
     quality: 'Kalite',
     unknownDuration: 'süre bilinmiyor',
+    sizeExact: 'Sunucunun bildirdiği dosya boyutu',
+    sizeEstimateHint: 'Tahmini boyut: bit hızı × süre. Seçtiğin kaliteye göre değişir.',
   },
 
   quality: {
@@ -83,6 +86,11 @@ export const T = {
     reveal: 'Klasörde göster',
     remove: 'Kayıttan sil',
     removeWithFile: 'Dosyayla birlikte sil',
+    toVault: 'Kasaya taşı',
+    movingToVault: 'Şifreleniyor…',
+    movedToVault: 'Dosya şifrelenip kasaya alındı.',
+    remaining: 'kaldı',
+    sizeEstimate: 'tahmini boyut',
     setCategory: 'Kategori',
     clearDone: 'Tamamlananları temizle',
     clearFailed: 'Hataları temizle',
@@ -161,6 +169,26 @@ export const T = {
       'Giriş gerektiren sayfalar için seçtiğin tarayıcının çerezlerini kullanır. Yok = çerez kullanılmaz.',
     cookiesNone: 'Yok',
 
+    engine: 'İndirme motoru',
+    engineHint:
+      'Açıkken sayfaları yt-dlp çözümler ve indirmeyi o yapar. Kapatırsan yt-dlp hiç çağrılmaz: her bağlantıyı kendi çözümleyicim çözer, indirmeyi de kendisi yapar — düz dosyalar için parçalı HTTP (duraklat/sürdür çalışır), HLS/DASH için ffmpeg. Kalite, master playlist içindeki varyantlardan seçilir. Kapalıyken yt-dlp\'nin bildiği siteler (YouTube gibi) için elde kalan tek yol kendi çözümleyicim olur, yani bazı sayfalarda sonuç değişir.',
+    engineOn: 'yt-dlp kullan',
+    engineOffNote:
+      'yt-dlp kapalı. Çözümleme ve indirme tamamen kendi motorumda; ffmpeg gerekli.',
+
+    deletePolicy: 'Kayıttan silerken dosya',
+    deletePolicyHint:
+      'Kitaplıktan bir kaydı silerken diskteki dosyanın da silinip silinmeyeceği. "Her seferinde sor" kutuyu işaretsiz açar; "her zaman sil" işaretli açar; "asla silme" kutuyu hiç göstermez. Onay penceresi üç durumda da çıkar — dosya silmek geri alınamaz.',
+    deletePolicyAsk: 'Her seferinde sor',
+    deletePolicyAlways: 'Her zaman dosyayı da sil',
+    deletePolicyNever: 'Asla dosyayı silme',
+
+    vaultSection: 'Kasa',
+    vaultAutoLock: 'Otomatik kilit',
+    vaultAutoLockHint:
+      'Kasada bu kadar süre işlem yapılmazsa kilitlenir ve oynatmak için çözülmüş geçici kopyalar silinir. "Yok" seçersen yalnızca elle kilitlenir ve uygulama kapanınca kilitlenir.',
+    vaultNotSet: 'Henüz kasa kurulmadı. Kasa sekmesinden kurabilirsin.',
+
     resolver: 'Kendi çözümleyicim',
     resolverHint:
       'yt-dlp bir sayfayı tanımazsa devreye girer: sayfayı ve gömülü oynatıcıları tarar, gerekirse sayfayı görünmez bir tarayıcıda çalıştırıp akışı yakalar. Yukarıda bir tarayıcı seçtiysen o oturumu kullanır, yani sitelere yeniden giriş yapman gerekmez.',
@@ -218,11 +246,56 @@ export const T = {
     searchAgain: 'Başka adla ara',
   },
 
+  vault: {
+    title: 'Şifreli kasa',
+    setupTitle: 'Şifreli kasa kur',
+    setupBody:
+      'Kasaya attığın videolar diskte şifreli durur: dosya adları rastgele kimliklere döner, içerikleri okunamaz. Sadece burada, şifreni girerek açabilirsin.',
+    passphrase: 'Şifre',
+    passphraseAgain: 'Şifre (yeniden)',
+    tooShort: 'En az 6 karakter.',
+    mismatch: 'İki şifre aynı değil.',
+    noRecovery:
+      'Bu şifrenin bir kopyası hiçbir yerde tutulmuyor. Unutursan kasadaki dosyalar kurtarılamaz — kurtarma yolu bırakmak, şifreyi baştan anlamsız kılardı.',
+    create: 'Kasayı kur',
+    created: 'Kasa kuruldu.',
+    lockedTitle: 'Kasa kilitli',
+    lockedBody: 'Şifreni gir; kasadaki dosyaların listesi ancak açıkken görünür.',
+    unlock: 'Kilidi aç',
+    unlocked: 'Kasa açıldı.',
+    lock: 'Kilitle',
+    open: 'Aç',
+    opened: 'Dosya şifresi çözülüp oynatıcıya verildi. Kasayı kilitleyince kopya silinir.',
+    export: 'Şifresiz kopya çıkar',
+    remove: 'Kasadan sil',
+    removeTitle: 'Kasadan silinsin mi?',
+    removeBody: (name: string) => `"${name}" kalıcı olarak silinecek. Şifresiz bir kopyası yoksa geri gelmez.`,
+    addFiles: 'Dosya ekle',
+    addedFiles: (n: number) => `${n} dosya kasaya alındı.`,
+    emptyTitle: 'Kasa boş',
+    emptyBody:
+      'Kitaplıkta tamamlanmış bir kaydın ⋯ menüsünden "Kasaya taşı" de, ya da yukarıdan doğrudan dosya ekle. Eklenen dosya şifrelenir ve şifresiz hâli silinir.',
+    autoLockNote: (n: number) => `${n} dk işlem olmazsa kendiliğinden kilitlenir`,
+    autoLockOff: 'otomatik kilit kapalı',
+    footer: (n: number, size: string) => `${n} dosya · ${size} şifreli olarak duruyor`,
+    howTitle: 'Güvenlik katmanları',
+    how: [
+      'Her dosya AES-256-GCM ile, kendine ait rastgele bir nonce ile şifrelenir. Doğrulama etiketi dosyaya iliştirilir: kurcalanan bir dosya bozuk çözülmez, hiç açılmaz.',
+      'Şifreden anahtar scrypt ile türetilir (N=32768, r=8) ve rastgele bir tuz kullanılır. Her deneme yaklaşık 100 ms ve 32 MB bellek ister — deneyerek bulmayı pahalı kılar.',
+      'Dosya adları diskte rastgele kimliklerdir. Gerçek adlar, başlıklar ve boyutlar yalnızca şifreli dizinde durur; klasöre bakan biri ne olduğunu göremez.',
+      'Anahtar sadece ana sürecin belleğinde, sadece kasa açıkken durur. Diske yazılmaz, arayüze geçmez; kilitlenince bellekteki kopya üzerine sıfır yazılır.',
+      'Şifre kontrolü kayıtlı bir özetle karşılaştırma değil: yanlış şifre GCM doğrulamasında düşer.',
+      'Bir dosyayı oynatmak, onu geçici ve yalnızca sana açık bir klasöre şifresiz kopyalamayı gerektirir. O kopyalar kasa kilitlenince, uygulama kapanınca ve boşta kalma süresi dolunca silinir. Kasa açıkken bilgisayarının başındaki birine karşı koruma sağlamaz.',
+    ],
+  },
+
   confirm: {
     removeSource: 'Bu kaynağı ve altındaki listeyi kaldır?',
     removeSourceBody: 'İndirilmiş dosyalar silinmez, sadece liste kaybolur.',
     removeDownload: 'Bu kaydı sil?',
     removeDownloadBody: 'Diskteki dosyayı da silmek istersen aşağıdaki kutuyu işaretle.',
+    removeRecordOnly:
+      'Yalnızca kayıt silinecek; diskteki dosya yerinde kalır. (Ayarlar → Aktarım\'da "asla dosyayı silme" seçili.)',
     deleteFile: 'Diskteki dosyayı da sil',
     cancel: 'Vazgeç',
     confirm: 'Kaldır',

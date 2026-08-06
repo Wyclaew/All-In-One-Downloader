@@ -51,12 +51,24 @@ contextBridge.exposeInMainWorld('api', {
   applySubtitle: (payload) => ipcRenderer.invoke('subs:apply', payload),
   subtitleTools: () => ipcRenderer.invoke('subs:tools'),
 
+  // The passphrase goes one way only: in. Nothing here can read it back out.
+  vaultStatus: () => ipcRenderer.invoke('vault:status'),
+  vaultCreate: (passphrase) => ipcRenderer.invoke('vault:create', passphrase),
+  vaultUnlock: (passphrase) => ipcRenderer.invoke('vault:unlock', passphrase),
+  vaultLock: () => ipcRenderer.invoke('vault:lock'),
+  vaultTakeDownload: (id) => ipcRenderer.invoke('vault:takeDownload', id),
+  vaultAddFiles: () => ipcRenderer.invoke('vault:addFiles'),
+  vaultOpen: (id) => ipcRenderer.invoke('vault:open', id),
+  vaultExport: (id) => ipcRenderer.invoke('vault:export', id),
+  vaultRemove: (id) => ipcRenderer.invoke('vault:remove', id),
+
   openFile: (p) => ipcRenderer.invoke('file:open', p),
   revealFile: (p) => ipcRenderer.invoke('file:reveal', p),
   openExternal: (url) => ipcRenderer.invoke('shell:external', url),
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
 
   onState: (handler) => on('state', handler),
+  onVault: (handler) => on('vault', handler),
   onProgress: (handler) => on('progress', handler),
   onToast: (handler) => on('toast', handler),
   onFinished: (handler) => on('finished', handler),

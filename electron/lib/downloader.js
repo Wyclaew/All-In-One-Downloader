@@ -13,6 +13,7 @@ const { toolEnv, ytdlpPathOrThrow, ffmpegPath } = require('./binaries')
 const { resolveCookieArg } = require('./browsers')
 const { uid, num, clamp, fileSizeOf, resolvedArgs, safeName } = require('./util')
 const { readableError, isRetryableWithoutCookies } = require('./probe')
+const ownengine = require('./ownengine')
 
 const TAG = '@P@'
 const PROGRESS_TEMPLATE =
@@ -120,6 +121,33 @@ function sendProgress(download, force = false) {
   })
 }
 
+/**
+ * How long is left, when the engine won't say.
+ *
+ * yt-dlp reports `eta` as NA for most of a segmented download — which is exactly
+ * the case where a two-hour film is being pulled in ten thousand pieces and the
+ * user most wants a number. Two ways to get one honestly:
+ *
+ *   bytes      a target we believe in, divided by the rate we just measured.
+ *   fragments  no byte total exists, but fragments land at a measurable rate.
+ */
+function estimateEta(job, download, fragIndex, fragCount) {
+  const target = download.total || download.expectedSize || null
+  if (target && download.speed > 0) {
+    const remaining = target - download.downloaded
+    if (remaining > 0) return Math.round(remaining / download.speed)
+  }
+
+  if (fragCount && fragIndex > 0 && job.fragmentsAt) {
+    const elapsed = (Date.now() - job.fragmentsAt) / 1000
+    const perFragment = elapsed / fragIndex
+    // Later phases (the audio track of a merge) fetch their own fragments too.
+    const remaining = fragCount - fragIndex + (job.phases - job.phase) * fragCount
+    if (perFragment > 0 && remaining > 0) return Math.round(perFragment * remaining)
+  }
+  return null
+}
+
 function parseProgressLine(line, job, download) {
   const raw = line.slice(line.indexOf(TAG) + TAG.length)
   const [status, dl, total, totalEst, speed, eta, fragIndex, fragCount] = raw.split('|')
@@ -128,6 +156,7 @@ function parseProgressLine(line, job, download) {
   const knownTotal = num(total) || num(totalEst)
   const fi = num(fragIndex)
   const fc = num(fragCount)
+  if (fc && fi && !job.fragmentsAt) job.fragmentsAt = Date.now()
 
   if (status === 'finished') {
     job.prevBytes += knownTotal || downloaded
@@ -141,7 +170,6 @@ function parseProgressLine(line, job, download) {
 
   download.stage = 'downloading'
   download.speed = num(speed)
-  download.eta = num(eta)
   download.downloaded = job.prevBytes + downloaded
   download.phase = job.phase
   download.phases = job.phases
@@ -157,7 +185,12 @@ function parseProgressLine(line, job, download) {
   } else if (fc) {
     percent = (job.phase - 1 + fi / fc) / job.phases
     download.total = null
+  } else if (download.expectedSize) {
+    // Nothing to measure against, but the item told us its size before we started.
+    percent = download.downloaded / download.expectedSize
   }
+
+  download.eta = num(eta) ?? estimateEta(job, download, fi, fc)
 
   if (percent === null) {
     download.percent = null
@@ -280,21 +313,125 @@ function deletePartials(job, settings) {
   }
 }
 
+/** Everything both engines need in place before the first byte moves. */
+function beginJob(download) {
+  const job = {
+    child: null,
+    printFile: path.join(os.tmpdir(), `edl-${download.id}-${Date.now()}.txt`),
+    paused: false,
+    canceled: false,
+    destinations: new Set(),
+    errorLines: [],
+    prevBytes: 0,
+    phase: 1,
+    phases: 1,
+    maxPercent: 0,
+    fragmentsAt: null,
+    alreadyPath: null,
+    stderrTail: '',
+  }
+  jobs.set(download.id, job)
+
+  store.commit(() => {
+    download.status = 'running'
+    download.stage = 'starting'
+    download.error = null
+    download.note = null
+    download.startedAt = download.startedAt || Date.now()
+    download.attempts = (download.attempts || 0) + 1
+    download.percent = download.percent && download.percent < 1 ? download.percent : 0
+    download.phase = 1
+    download.phases = 1
+  })
+  sendProgress(download, true)
+  return job
+}
+
+/**
+ * The terminal state of a transfer, whichever engine ran it. Kept in one place so
+ * "done" means the same thing — and cleans up the same way — for both.
+ */
+function settle(job, download, settings, outcome) {
+  // A failed spawn emits 'error' and then 'close', and both want to finish the
+  // job. Without this the second call overwrites the first, specific message
+  // ("spawn ENOENT") with the generic one derived from an empty stderr.
+  if (job.settled) return
+  job.settled = true
+  jobs.delete(download.id)
+
+  if (outcome.canceled) {
+    deletePartials(job, settings)
+    cleanupTemp(job)
+    store.commit(() => {
+      download.status = 'canceled'
+      download.stage = null
+      download.note = null
+      download.speed = null
+      download.eta = null
+    })
+    sendProgress(download, true)
+    pump_queue()
+    return
+  }
+
+  if (outcome.paused) {
+    cleanupTemp(job)
+    store.commit(() => {
+      download.status = 'paused'
+      download.stage = null
+      download.note = null
+      download.speed = null
+      download.eta = null
+    })
+    sendProgress(download, true)
+    pump_queue()
+    return
+  }
+
+  cleanupTemp(job)
+
+  if (outcome.ok) {
+    const finalPath = outcome.filePath
+    store.commit(() => {
+      download.status = 'done'
+      download.stage = null
+      download.note = null
+      download.percent = 1
+      download.speed = null
+      download.eta = null
+      download.filePath = finalPath
+      download.fileSize = finalPath ? fileSizeOf(finalPath) : null
+      download.finishedAt = Date.now()
+      download.error = finalPath ? null : 'İndirildi ama dosya yolu bulunamadı.'
+    })
+    sendProgress(download, true)
+    store.send('finished', { id: download.id, title: download.title })
+    if (settings.autoFetchSubtitles && finalPath) {
+      autoSubtitles(download, finalPath, settings).catch(() => {})
+    }
+    if (settings.notifyOnFinish && Notification.isSupported()) {
+      new Notification({ title: 'İndirme tamamlandı', body: download.title || '' }).show()
+    }
+    pump_queue()
+    return
+  }
+
+  store.commit(() => {
+    download.status = 'error'
+    download.stage = null
+    download.note = null
+    download.speed = null
+    download.eta = null
+    download.error = outcome.error || 'Aktarım başarısız.'
+  })
+  sendProgress(download, true)
+  pump_queue()
+}
+
 function start(downloadId) {
   const download = store.findDownload(downloadId)
   if (!download || jobs.has(downloadId)) return
   const settings = store.getState().settings
-
-  let bin
-  try {
-    bin = ytdlpPathOrThrow()
-  } catch {
-    store.commit(() => {
-      download.status = 'error'
-      download.error = 'yt-dlp bulunamadı. Ayarlar → Araçlar bölümünden kontrol et.'
-    })
-    return
-  }
 
   try {
     store.ensureDownloadDir()
@@ -306,36 +443,72 @@ function start(downloadId) {
     return
   }
 
-  const printFile = path.join(os.tmpdir(), `edl-${download.id}-${Date.now()}.txt`)
-  const job = {
-    child: null,
-    printFile,
-    paused: false,
-    canceled: false,
-    destinations: new Set(),
-    errorLines: [],
-    prevBytes: 0,
-    phase: 1,
-    phases: 1,
-    maxPercent: 0,
-    alreadyPath: null,
-    stderrTail: '',
+  if (settings.useYtdlp === false) return startOwn(download, settings)
+  return startYtdlp(download, settings)
+}
+
+/**
+ * The in-house engine: our resolver finds the stream, ffmpeg or a ranged GET
+ * fetches it. No yt-dlp anywhere in the path.
+ */
+function startOwn(download, settings) {
+  const job = beginJob(download)
+
+  ownengine
+    .transfer({
+      download,
+      settings,
+      onHandle: (handle) => {
+        job.child = handle
+      },
+      onDest: (dest) => job.destinations.add(dest),
+      onStage: (stage) => {
+        store.commit(() => {
+          download.stage = stage
+        })
+      },
+      onNote: (note) => {
+        store.commit(() => {
+          download.note = note
+        })
+      },
+      onProgress: ({ downloaded, total, speed, eta, percent }) => {
+        download.downloaded = downloaded || 0
+        download.total = total || download.expectedSize || null
+        download.speed = speed ?? null
+        download.stage = 'downloading'
+        if (percent !== null && percent !== undefined) {
+          job.maxPercent = Math.max(job.maxPercent, clamp(percent, 0, 0.999))
+          download.percent = job.maxPercent
+        }
+        download.eta = eta ?? estimateEta(job, download, 0, 0)
+        sendProgress(download)
+      },
+    })
+    .then(({ filePath }) => settle(job, download, settings, { ok: true, filePath }))
+    .catch((err) => {
+      if (job.canceled || (err && err.code === 'ABORTED' && !job.paused)) {
+        return settle(job, download, settings, { canceled: true })
+      }
+      if (job.paused) return settle(job, download, settings, { paused: true })
+      settle(job, download, settings, { error: (err && err.message) || String(err) })
+    })
+}
+
+function startYtdlp(download, settings) {
+  let bin
+  try {
+    bin = ytdlpPathOrThrow()
+  } catch {
+    store.commit(() => {
+      download.status = 'error'
+      download.error = 'yt-dlp bulunamadı. Ayarlar → Araçlar bölümünden kontrol et.'
+    })
+    return
   }
-  jobs.set(download.id, job)
 
-  store.commit(() => {
-    download.status = 'running'
-    download.stage = 'starting'
-    download.error = null
-    download.startedAt = download.startedAt || Date.now()
-    download.attempts = (download.attempts || 0) + 1
-    download.percent = download.percent && download.percent < 1 ? download.percent : 0
-    download.phase = 1
-    download.phases = 1
-  })
-  sendProgress(download, true)
-
-  const args = buildArgs(download, settings, printFile)
+  const job = beginJob(download)
+  const args = buildArgs(download, settings, job.printFile)
   const child = spawn(bin, args, { env: toolEnv(), windowsHide: true })
   job.child = child
 
@@ -359,87 +532,40 @@ function start(downloadId) {
     job.stderrTail = (job.stderrTail + chunk).slice(-8000)
   })
 
-  child.on('error', (err) => {
-    store.commit(() => {
-      download.status = 'error'
-      download.error = err.message
-      download.stage = null
-    })
-    jobs.delete(download.id)
-    cleanupTemp(job)
-    pump_queue()
-  })
+  child.on('error', (err) => settle(job, download, settings, { error: err.message }))
 
   child.on('close', (code) => {
-    jobs.delete(download.id)
-
-    if (job.canceled) {
-      deletePartials(job, settings)
-      cleanupTemp(job)
-      store.commit(() => {
-        download.status = 'canceled'
-        download.stage = null
-        download.speed = null
-        download.eta = null
-      })
-      sendProgress(download, true)
-      pump_queue()
-      return
-    }
-
-    if (job.paused) {
-      cleanupTemp(job)
-      store.commit(() => {
-        download.status = 'paused'
-        download.stage = null
-        download.speed = null
-        download.eta = null
-      })
-      sendProgress(download, true)
-      pump_queue()
-      return
-    }
+    if (job.canceled) return settle(job, download, settings, { canceled: true })
+    if (job.paused) return settle(job, download, settings, { paused: true })
 
     if (code === 0) {
-      const finalPath = resolveFinalPath(job, settings)
-      cleanupTemp(job)
-      store.commit(() => {
-        download.status = 'done'
-        download.stage = null
-        download.percent = 1
-        download.speed = null
-        download.eta = null
-        download.filePath = finalPath
-        download.fileSize = finalPath ? fileSizeOf(finalPath) : null
-        download.finishedAt = Date.now()
-        download.error = finalPath ? null : 'İndirildi ama dosya yolu bulunamadı.'
-      })
-      sendProgress(download, true)
-      store.send('finished', { id: download.id, title: download.title })
-      if (settings.autoFetchSubtitles && finalPath) {
-        autoSubtitles(download, finalPath, settings).catch(() => {})
-      }
-      if (settings.notifyOnFinish && Notification.isSupported()) {
-        new Notification({ title: 'İndirme tamamlandı', body: download.title || '' }).show()
-      }
+      settle(job, download, settings, { ok: true, filePath: resolveFinalPath(job, settings) })
     } else {
       const message = job.errorLines.length
         ? readableError(job.errorLines.join('\n'), code)
         : readableError(job.stderrTail, code)
-      cleanupTemp(job)
+
+      // A retry re-queues this download, and the queue refuses to start a job it
+      // is already tracking — so release it before either retry path.
+      const requeue = (reason) => {
+        if (job.settled) return
+        job.settled = true
+        jobs.delete(download.id)
+        cleanupTemp(job)
+        store.commit(() => {
+          download.status = 'queued'
+          download.error = null
+        })
+        store.toast(reason, 'warn')
+        pump_queue()
+      }
 
       // Cover art is decoration. When ffmpeg refuses to write it into a
       // particular container the whole transfer was being marked failed, even
       // though the video itself had downloaded — retry without it instead.
       if (!download.noEmbedThumbnail && settings.embedThumbnail && isThumbnailFailure(message)) {
-        store.commit(() => {
-          download.noEmbedThumbnail = true
-          download.status = 'queued'
-          download.error = null
-        })
-        store.toast('Kapak görseli gömülemedi; kapaksız yeniden deneniyor.', 'warn')
-        pump_queue()
-        return
+        download.noEmbedThumbnail = true
+        return requeue('Kapak görseli gömülemedi; kapaksız yeniden deneniyor.')
       }
 
       // One retry without cookies. Covers an unreadable cookie store and, just
@@ -449,26 +575,12 @@ function start(downloadId) {
         settings.cookiesBrowser &&
         isRetryableWithoutCookies(job.stderrTail || message)
       ) {
-        store.commit(() => {
-          download.noCookies = true
-          download.status = 'queued'
-          download.error = null
-        })
-        store.toast(`${message} Çerezsiz yeniden deneniyor.`, 'warn')
-        pump_queue()
-        return
+        download.noCookies = true
+        return requeue(`${message} Çerezsiz yeniden deneniyor.`)
       }
 
-      store.commit(() => {
-        download.status = 'error'
-        download.stage = null
-        download.speed = null
-        download.eta = null
-        download.error = message
-      })
-      sendProgress(download, true)
+      settle(job, download, settings, { error: message })
     }
-    pump_queue()
   })
 }
 
@@ -567,6 +679,27 @@ function pump_queue() {
   }
 }
 
+/**
+ * The size this download is expected to be, taken from what the item already
+ * knows. It gives the meter a target from the first byte and lets the estimate
+ * work on segmented streams, which report no total of their own.
+ */
+function expectedSizeFor(item, quality, audioOnly) {
+  if (!item) return null
+  if (audioOnly) return null
+  const sizes = item.sizes && typeof item.sizes === 'object' ? item.sizes : null
+  if (sizes) {
+    const cap = Number(quality) || 0
+    const heights = Object.keys(sizes)
+      .map(Number)
+      .filter((h) => Number.isFinite(h) && h > 0)
+      .sort((a, b) => b - a)
+    const pick = cap ? heights.find((h) => h <= cap) : heights[0]
+    if (pick && sizes[pick]) return sizes[pick]
+  }
+  return item.filesize || null
+}
+
 /** Create a download for a media item (or plain URL) and queue it. */
 function enqueue({ item, url, title, site, sourceId, quality, audioOnly, categoryId }) {
   const settings = store.getState().settings
@@ -588,9 +721,15 @@ function enqueue({ item, url, title, site, sourceId, quality, audioOnly, categor
     noEmbedThumbnail: false,
     status: 'queued',
     stage: null,
+    note: null,
     percent: 0,
     downloaded: 0,
     total: null,
+    expectedSize: expectedSizeFor(
+      item,
+      quality === undefined ? settings.defaultQuality : quality,
+      audioOnly
+    ),
     speed: null,
     eta: null,
     phase: 1,

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import * as fmt from '../format'
-import { QUALITY_OPTIONS, fromDefault, toRequest } from '../quality'
+import { QUALITY_OPTIONS, fromDefault, sizeFor, toRequest } from '../quality'
 import { T } from '../strings'
 import type { AppState, Download, MediaItem, Source } from '../types'
 import {
@@ -393,6 +393,8 @@ function Row({
   const audio = quality === 'audio'
   const status = download ? download.status : null
   const idle = !download || download.status === 'canceled'
+  // Answers for the quality picked on *this* row, and follows the dropdown.
+  const size = sizeFor(item, quality)
 
   return (
     <div className={`row${selected ? ' selected' : ''}`}>
@@ -413,8 +415,16 @@ function Row({
           {item.uploader ? <span className="sep" /> : null}
           {item.height ? <span>{fmt.qualityLabel(item.height)}</span> : null}
           {item.height ? <span className="sep" /> : null}
-          {item.filesize ? <span>{fmt.bytes(item.filesize)}</span> : null}
-          {item.filesize ? <span className="sep" /> : null}
+          {size ? (
+            <span
+              className={item.filesizeEstimated ? 'dim' : undefined}
+              title={item.filesizeEstimated ? T.item.sizeEstimateHint : T.item.sizeExact}
+            >
+              {item.filesizeEstimated ? '~' : ''}
+              {fmt.bytes(size)}
+            </span>
+          ) : null}
+          {size ? <span className="sep" /> : null}
           <span>{item.site}</span>
           {!item.enriched ? <span className="sep" /> : null}
           {!item.enriched ? <span style={{ color: 'var(--dimmer)' }}>{T.item.unknownDuration}</span> : null}
@@ -432,7 +442,11 @@ function Row({
             <div className="figures">
               <span>{fmt.percent(download.percent)}</span>
               <span>
-                {download.status === 'paused' ? T.library.pause : fmt.speed(download.speed)}
+                {download.status === 'paused'
+                  ? T.library.pause
+                  : download.eta !== null && download.eta !== undefined
+                    ? `${fmt.eta(download.eta)} ${T.library.remaining}`
+                    : fmt.speed(download.speed)}
               </span>
             </div>
           </div>

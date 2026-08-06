@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, bridge, setToastSink } from './api'
-import type { AppState, Download, ProgressEvent, Toast, Tools } from './types'
+import type { AppState, Download, ProgressEvent, Toast, Tools, VaultState } from './types'
 
 const SCOPE_SAMPLES = 48
 
@@ -74,6 +74,33 @@ export function useApp() {
   }, [])
 
   return { state, tools, progress, toasts, pushToast, dismissToast, refreshTools, menuAction }
+}
+
+/**
+ * Vault state, kept apart from the app state on purpose: entry names only exist
+ * in the main process while the vault is unlocked, so they can't live in the
+ * broadcast that gets written to disk.
+ */
+export function useVault() {
+  const [vault, setVault] = useState<VaultState>({
+    exists: false,
+    unlocked: false,
+    count: null,
+    autoLockMinutes: 15,
+    entries: [],
+  })
+
+  useEffect(() => {
+    let alive = true
+    api.vaultStatus().then((v) => alive && v && setVault(v))
+    const off = bridge.onVault((v) => setVault(v))
+    return () => {
+      alive = false
+      off()
+    }
+  }, [])
+
+  return { vault, setVault }
 }
 
 /** Merge persisted download fields with the live progress channel. */

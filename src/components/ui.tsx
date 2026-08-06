@@ -37,6 +37,8 @@ export type IconName =
   | 'captions'
   | 'minus'
   | 'target'
+  | 'lock'
+  | 'unlock'
 
 const PATHS: Record<IconName, ReactNode> = {
   chevron: <path d="M6 3.5l4.5 4.5L6 12.5" />,
@@ -106,6 +108,21 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <path d="M2.2 3.6h11.6v8.8H2.2z" />
       <path d="M6.4 7.1a1.7 1.7 0 100 1.8M11.4 7.1a1.7 1.7 0 100 1.8" />
+    </>
+  ),
+  lock: (
+    <>
+      <path d="M3.6 7.2h8.8v6.2H3.6z" />
+      <path d="M5.6 7.2V5.1a2.4 2.4 0 014.8 0v2.1" />
+      <circle cx="8" cy="10.3" r="0.7" fill="currentColor" stroke="none" />
+    </>
+  ),
+  unlock: (
+    <>
+      <path d="M3.6 7.2h8.8v6.2H3.6z" />
+      {/* The shackle swings clear of the body — open at a glance, even at 12px. */}
+      <path d="M5.6 7.2V5.1a2.4 2.4 0 014.8 0" />
+      <circle cx="8" cy="10.3" r="0.7" fill="currentColor" stroke="none" />
     </>
   ),
 }

@@ -8,11 +8,13 @@ import { Btn, Icon, Info, Toggle } from '../components/ui'
 interface Props {
   settings: SettingsShape
   tools: Tools | null
+  /** Null until the vault status has been read once. */
+  vaultExists: boolean | null
   onRefreshTools: () => void
   onToast: (message: string, kind?: 'info' | 'warn' | 'error' | 'ok') => void
 }
 
-export default function Settings({ settings, tools, onRefreshTools, onToast }: Props) {
+export default function Settings({ settings, tools, vaultExists, onRefreshTools, onToast }: Props) {
   const [updating, setUpdating] = useState(false)
   const [template, setTemplate] = useState(settings.filenameTemplate)
   const [rate, setRate] = useState(settings.rateLimit)
@@ -109,6 +111,20 @@ export default function Settings({ settings, tools, onRefreshTools, onToast }: P
             onChange={(v) => patch({ autoStartDownloads: v })}
             label={T.settings.autoStart}
           />
+        </Row>
+
+        <Row label={T.settings.deletePolicy} hint={T.settings.deletePolicyHint}>
+          <select
+            className="select"
+            value={settings.deleteFileWithRecord || 'ask'}
+            onChange={(e) =>
+              patch({ deleteFileWithRecord: e.target.value as SettingsShape['deleteFileWithRecord'] })
+            }
+          >
+            <option value="ask">{T.settings.deletePolicyAsk}</option>
+            <option value="always">{T.settings.deletePolicyAlways}</option>
+            <option value="never">{T.settings.deletePolicyNever}</option>
+          </select>
         </Row>
       </Section>
 
@@ -216,6 +232,21 @@ export default function Settings({ settings, tools, onRefreshTools, onToast }: P
           {browsers && !browsers.length ? (
             <div className="set-hint">Bu makinede çerez deposu olan bir tarayıcı bulunamadı.</div>
           ) : null}
+        </Row>
+
+        <Row label={T.settings.engine} hint={T.settings.engineHint}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <Toggle
+              checked={settings.useYtdlp !== false}
+              onChange={(v) => patch({ useYtdlp: v })}
+              label={T.settings.engineOn}
+            />
+            {settings.useYtdlp === false ? (
+              <div className="set-hint" style={{ marginTop: 0, color: 'var(--signal)' }}>
+                {T.settings.engineOffNote}
+              </div>
+            ) : null}
+          </div>
         </Row>
 
         <Row label={T.settings.resolver} hint={T.settings.resolverHint}>
@@ -367,6 +398,25 @@ export default function Settings({ settings, tools, onRefreshTools, onToast }: P
             </div>
           </Row>
         ) : null}
+      </Section>
+
+      <Section title={T.settings.vaultSection}>
+        <Row label={T.settings.vaultAutoLock} hint={T.settings.vaultAutoLockHint}>
+          <select
+            className="select"
+            value={settings.vaultAutoLockMinutes ?? 15}
+            onChange={(e) => patch({ vaultAutoLockMinutes: Number(e.target.value) })}
+          >
+            {[0, 5, 15, 30, 60, 120].map((n) => (
+              <option key={n} value={n}>
+                {n === 0 ? T.common.none : `${n} dk`}
+              </option>
+            ))}
+          </select>
+          {vaultExists === false ? (
+            <div className="set-hint">{T.settings.vaultNotSet}</div>
+          ) : null}
+        </Row>
       </Section>
 
       <Section title={T.settings.sectionApp}>

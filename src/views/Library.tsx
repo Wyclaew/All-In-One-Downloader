@@ -40,6 +40,11 @@ export default function Library({
   const [pendingRemove, setPendingRemove] = useState<Download | null>(null)
   const [alsoDeleteFile, setAlsoDeleteFile] = useState(false)
   const [subtitleFor, setSubtitleFor] = useState<Download | null>(null)
+  const [vaulting, setVaulting] = useState<string | null>(null)
+
+  // The choice of whether a delete takes the file with it is a setting, not a
+  // question to be re-answered every time.
+  const deletePolicy = state.settings.deleteFileWithRecord || 'ask'
 
   const categoryById = useMemo(() => {
     const map = new Map<string, Category>()
@@ -95,11 +100,18 @@ export default function Library({
   const rowProps = {
     categories: state.categories,
     categoryById,
+    vaultingId: vaulting,
     onRemove: (d: Download) => {
-      setAlsoDeleteFile(false)
+      setAlsoDeleteFile(deletePolicy === 'always' && !!d.filePath)
       setPendingRemove(d)
     },
     onFindSubtitle: (d: Download) => setSubtitleFor(d),
+    onToVault: async (d: Download) => {
+      setVaulting(d.id)
+      const entry = await api.vaultTakeDownload(d.id)
+      setVaulting(null)
+      if (entry) onToast(T.library.movedToVault, 'ok')
+    },
   }
 
   return (
@@ -172,17 +184,22 @@ export default function Library({
             </>
           }
         >
-          <p style={{ marginTop: 0 }}>{T.confirm.removeDownloadBody}</p>
-          <label className="toggle" style={{ marginTop: 10 }}>
-            <input
-              type="checkbox"
-              checked={alsoDeleteFile}
-              disabled={!pendingRemove.filePath}
-              onChange={(e) => setAlsoDeleteFile(e.target.checked)}
-            />
-            <span className="toggle-track" />
-            <span style={{ fontSize: 12.5, color: 'var(--text)' }}>{T.confirm.deleteFile}</span>
-          </label>
+          <p style={{ marginTop: 0 }}>
+            {deletePolicy === 'never' ? T.confirm.removeRecordOnly : T.confirm.removeDownloadBody}
+          </p>
+          {/* "Never" means the question is settled; showing the box would reopen it. */}
+          {deletePolicy === 'never' ? null : (
+            <label className="toggle" style={{ marginTop: 10 }}>
+              <input
+                type="checkbox"
+                checked={alsoDeleteFile}
+                disabled={!pendingRemove.filePath}
+                onChange={(e) => setAlsoDeleteFile(e.target.checked)}
+              />
+              <span className="toggle-track" />
+              <span style={{ fontSize: 12.5, color: 'var(--text)' }}>{T.confirm.deleteFile}</span>
+            </label>
+          )}
         </Modal>
       ) : null}
     </>
@@ -219,14 +236,18 @@ function Row({
   download: d,
   categories,
   categoryById,
+  vaultingId,
   onRemove,
   onFindSubtitle,
+  onToVault,
 }: {
   download: Download
   categories: Category[]
   categoryById: Map<string, Category>
+  vaultingId: string | null
   onRemove: (d: Download) => void
   onFindSubtitle: (d: Download) => void
+  onToVault: (d: Download) => void
 }) {
   const category = d.categoryId ? categoryById.get(d.categoryId) : null
   const running = d.status === 'running'
@@ -236,6 +257,10 @@ function Row({
   const stage = d.stage && d.stage !== 'downloading' ? STAGE_LABEL[d.stage] : null
 
   const tone = d.status === 'done' ? 'done' : failed ? 'bad' : paused ? 'paused' : 'running'
+
+  // A segmented stream reports no total of its own, but the item measured one
+  // before the transfer started — so the meter still has a figure to show.
+  const target = d.total ?? d.expectedSize ?? null
 
   return (
     <div className={`dl${running ? ' running' : ''}`}>
@@ -258,7 +283,10 @@ function Row({
           ) : null}
           <span>{describe(d.quality, d.audioOnly)}</span>
           <span className="sep" />
-          <span>{fmt.bytes(d.fileSize ?? d.total)}</span>
+          <span title={d.fileSize || d.total ? undefined : T.library.sizeEstimate}>
+            {d.fileSize || d.total ? '' : '~'}
+            {fmt.bytes(d.fileSize ?? target)}
+          </span>
           {d.finishedAt ? <span className="sep" /> : null}
           {d.finishedAt ? <span>{fmt.relativeTime(d.finishedAt)}</span> : null}
           {queued ? <span className="sep" /> : null}
@@ -271,14 +299,21 @@ function Row({
             <div className="dl-figures">
               <span className="pct">{fmt.percent(d.percent)}</span>
               <span>
-                {fmt.bytes(d.downloaded)} {T.library.of} {fmt.bytes(d.total)}
+                {fmt.bytes(d.downloaded)} {T.library.of} {fmt.bytes(target)}
               </span>
               {stage ? (
-                <span style={{ color: 'var(--signal)' }}>{stage}</span>
+                <span style={{ color: 'var(--signal)' }}>
+                  {stage}
+                  {d.note ? ` — ${d.note}` : ''}
+                </span>
               ) : (
                 <>
                   <span>{fmt.speed(d.speed)}</span>
-                  <span className="eta">{d.eta !== null ? `${fmt.eta(d.eta)} kaldı` : ''}</span>
+                  <span className="eta">
+                    {d.eta !== null && d.eta !== undefined
+                      ? `${fmt.eta(d.eta)} ${T.library.remaining}`
+                      : ''}
+                  </span>
                 </>
               )}
               {d.phases > 1 ? (
@@ -374,6 +409,17 @@ function Row({
                   }}
                 >
                   {T.subs.find}
+                </MenuItem>
+              ) : null}
+              {d.status === 'done' && d.filePath ? (
+                <MenuItem
+                  icon="lock"
+                  onClick={() => {
+                    onToVault(d)
+                    close()
+                  }}
+                >
+                  {vaultingId === d.id ? T.library.movingToVault : T.library.toVault}
                 </MenuItem>
               ) : null}
               <MenuItem

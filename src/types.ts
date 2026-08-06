@@ -45,6 +45,10 @@ export interface MediaItem {
   ext: string | null
   height: number | null
   filesize: number | null
+  /** The size came from bitrate × duration, not from a real byte length. */
+  filesizeEstimated?: boolean
+  /** height -> bytes, plus an optional `audio` key. Answers per quality. */
+  sizes?: Record<string, number>
   isLive: boolean
   site: string
   addedAt: number
@@ -84,9 +88,13 @@ export interface Download {
   audioLanguage?: string | null
   status: DownloadStatus
   stage: DownloadStage
+  /** A line about what the engine is doing right now, when it isn't obvious. */
+  note?: string | null
   percent: number | null
   downloaded: number
   total: number | null
+  /** Known before the first byte, from the item's own size. */
+  expectedSize?: number | null
   speed: number | null
   eta: number | null
   phase: number
@@ -126,12 +134,16 @@ export interface Settings {
   enrichLimit: number
   notifyOnFinish: boolean
 
+  useYtdlp: boolean
   useResolver: boolean
   resolverTimeout: number
   minStreamSeconds: number
   blockTrackers: boolean
   extraBlockedHosts: string
   resolverConcurrency: number
+
+  deleteFileWithRecord: 'ask' | 'always' | 'never'
+  vaultAutoLockMinutes: number
 
   subtitleLangs: string
   subtitleApiKey: string
@@ -165,6 +177,26 @@ export interface SubtitleOutcome {
   synced: boolean
   embedded: boolean
   notes: string[]
+}
+
+/** One encrypted file in the vault. Only ever populated while unlocked. */
+export interface VaultEntry {
+  id: string
+  name: string
+  title: string
+  site: string
+  duration: number | null
+  sourceUrl: string
+  size: number
+  addedAt: number
+}
+
+export interface VaultState {
+  exists: boolean
+  unlocked: boolean
+  count: number | null
+  autoLockMinutes: number
+  entries: VaultEntry[]
 }
 
 /** A browser whose cookie store we found on this machine. */

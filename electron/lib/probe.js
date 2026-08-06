@@ -182,8 +182,57 @@ function heightOf(node) {
   return null
 }
 
+/**
+ * How big each quality would be, worked out from yt-dlp's own format list.
+ *
+ * A page's answer to "how many GB is this" depends entirely on which rendition is
+ * taken, so one number per item would be a guess. This mirrors what the download
+ * selector picks — the tallest video within the cap, plus the best audio when the
+ * video track carries none — and records a size per height.
+ */
+function sizesFromFormats(node) {
+  const formats = Array.isArray(node.formats) ? node.formats : []
+  if (!formats.length) return {}
+  const duration = num(node.duration)
+
+  const sizeOf = (f) => {
+    const known = num(f.filesize) || num(f.filesize_approx)
+    if (known) return known
+    const tbr = num(f.tbr) // kbit/s
+    return tbr && duration ? Math.round((tbr * 1000 * duration) / 8) : null
+  }
+
+  const hasVideo = (f) => f.vcodec && f.vcodec !== 'none'
+  const hasAudio = (f) => f.acodec && f.acodec !== 'none'
+
+  let bestAudio = 0
+  for (const f of formats) {
+    if (hasVideo(f) || !hasAudio(f)) continue
+    const size = sizeOf(f)
+    if (size && size > bestAudio) bestAudio = size
+  }
+
+  const sizes = {}
+  for (const f of formats) {
+    if (!hasVideo(f)) continue
+    const height = num(f.height)
+    if (!height) continue
+    const size = sizeOf(f)
+    if (!size) continue
+    const total = hasAudio(f) ? size : size + bestAudio
+    if (total > (sizes[height] || 0)) sizes[height] = total
+  }
+  if (bestAudio) sizes.audio = bestAudio
+  return sizes
+}
+
 function itemFromNode(node, source, index) {
   const url = node.webpage_url || node.url || node.original_url || ''
+  const sizes = sizesFromFormats(node)
+  const heights = Object.keys(sizes)
+    .map(Number)
+    .filter((h) => Number.isFinite(h) && h > 0)
+  const best = heights.length ? sizes[Math.max(...heights)] : null
   return {
     id: uid('it'),
     sourceId: source.id,
@@ -195,7 +244,10 @@ function itemFromNode(node, source, index) {
     uploader: node.uploader || node.channel || node.playlist_uploader || null,
     ext: node.ext || null,
     height: heightOf(node),
-    filesize: num(node.filesize) || num(node.filesize_approx) || null,
+    filesize: num(node.filesize) || num(node.filesize_approx) || best,
+    // Sizes worked out from bitrate are estimates and are labelled as such.
+    filesizeEstimated: !num(node.filesize) && !!(num(node.filesize_approx) || best),
+    sizes,
     isLive: !!node.is_live,
     // Used later to avoid subtitling a video in the language it already speaks.
     language: node.language || null,
@@ -259,15 +311,23 @@ async function probeUrl(url, { sourceId = null, playlistEnd = 0 } = {}) {
 
 async function runProbe(source, playlistEnd) {
   const settings = store.getState().settings
+  const ytdlpOff = settings.useYtdlp === false
 
   store.commit((s) => {
     source.status = 'probing'
-    source.stage = 'ytdlp'
+    source.stage = ytdlpOff ? 'resolver' : 'ytdlp'
     source.note = null
     source.error = null
     // A rescan replaces the found media but leaves downloads alone.
     s.items = s.items.filter((i) => i.sourceId !== source.id)
   })
+
+  // yt-dlp switched off in settings: no probing, no embed hand-off, no
+  // enrichment through it. Every page goes to our own resolver.
+  if (ytdlpOff) {
+    await tryResolve(source, settings, null)
+    return source
+  }
 
   const extra = ['-J', '--flat-playlist']
   if (playlistEnd > 0) extra.push('--playlist-end', String(playlistEnd))
@@ -389,6 +449,8 @@ function itemFromCandidate(candidate, source, index, title, userAgent, total, th
     ext: candidate.kind === 'hls' ? 'm3u8' : candidate.kind === 'dash' ? 'mpd' : null,
     height: info ? info.height : null,
     filesize: info ? info.filesize : null,
+    filesizeEstimated: !!(info && info.filesizeEstimated),
+    sizes: (info && info.sizes) || {},
     isLive: info ? !!info.live : false,
     site: hostOf(source.url) || source.site,
     addedAt: Date.now(),
@@ -418,7 +480,10 @@ async function tryResolve(source, settings, fallbackError) {
       source.status = 'error'
       source.stage = null
       source.note = null
-      source.error = fallbackError || 'Bu sayfada indirilebilir bir şey bulunamadı.'
+      source.error =
+        settings.useYtdlp === false
+          ? 'Hem yt-dlp hem kendi çözümleyicim kapalı — çözümleyecek bir şey kalmadı. Ayarlar → Erişim.'
+          : fallbackError || 'Bu sayfada indirilebilir bir şey bulunamadı.'
     })
     return
   }
@@ -428,6 +493,7 @@ async function tryResolve(source, settings, fallbackError) {
     source.stage = 'resolver'
     source.note = 'sayfa taranıyor'
     source.error = null
+    source.resolvedBy = null
   })
 
   // Hand the resolver the user's browser session so pages that want them signed
@@ -475,7 +541,12 @@ async function tryResolve(source, settings, fallbackError) {
   // Best possible outcome on an unrecognised page: it embeds a player yt-dlp
   // already knows. Re-probing the embed gets the real format list, subtitles and
   // metadata instead of a bare stream URL we scraped ourselves.
-  if (result && !(result.candidates || []).length && (result.embeds || []).length) {
+  if (
+    settings.useYtdlp !== false &&
+    result &&
+    !(result.candidates || []).length &&
+    (result.embeds || []).length
+  ) {
     const viaEmbed = await probeEmbeds(source, result.embeds, settings)
     if (viaEmbed) return
   }
@@ -607,6 +678,8 @@ async function enrichResolved(sourceId) {
           live.duration = info.duration ?? live.duration
           live.height = info.height || live.height
           live.filesize = info.filesize || live.filesize
+          live.filesizeEstimated = info.filesize ? !!info.filesizeEstimated : live.filesizeEstimated
+          if (info.sizes && Object.keys(info.sizes).length) live.sizes = info.sizes
           live.isLive = !!info.live
           live.variants = (info.variants || []).map((v) => v.height).filter(Boolean)
           live.drm = !!info.drm
@@ -617,7 +690,14 @@ async function enrichResolved(sourceId) {
       /* fall through to yt-dlp */
     }
 
-    if (!filled) {
+    if (!filled && store.getState().settings.useYtdlp === false) {
+      // Nothing else to ask: with yt-dlp off, the manifest and ffprobe were the
+      // only sources. Mark it seen so the pass doesn't run again forever.
+      store.commit(() => {
+        const live = store.findItem(item.id)
+        if (live) live.enriched = true
+      })
+    } else if (!filled) {
       const bare = { ...store.getState().settings, cookiesBrowser: '' }
       try {
         const { json } = await runJson(
@@ -628,9 +708,11 @@ async function enrichResolved(sourceId) {
         store.commit(() => {
           const live = store.findItem(item.id)
           if (!live || !json) return
+          const sizes = sizesFromFormats(json)
           live.duration = num(json.duration) ?? live.duration
           live.height = heightOf(json) || live.height
           live.filesize = num(json.filesize) || num(json.filesize_approx) || live.filesize
+          if (Object.keys(sizes).length) live.sizes = sizes
           live.isLive = !!json.is_live
           live.enriched = true
         })
@@ -673,21 +755,27 @@ async function enrich(sourceId, settingsOverride = null) {
       const item = pending[cursor++]
       if (!store.findItem(item.id)) continue
       try {
-        const { json } = await runJson(
-          item.url,
-          ['-J', '--no-playlist', '--flat-playlist'],
-          settings
-        )
+        // Deliberately not --flat-playlist: --no-playlist already keeps this to
+        // the one video, and the flat pass suppresses the format list — which is
+        // the only place a size for each quality can come from.
+        const { json } = await runJson(item.url, ['-J', '--no-playlist'], settings)
         store.commit(() => {
           const live = store.findItem(item.id)
           if (!live) return
+          const sizes = sizesFromFormats(json)
+          const heights = Object.keys(sizes)
+            .map(Number)
+            .filter((h) => Number.isFinite(h) && h > 0)
+          const best = heights.length ? sizes[Math.max(...heights)] : null
           live.title = json.title || live.title
           live.duration = num(json.duration) ?? live.duration
           live.thumbnail = bestThumb(json) || live.thumbnail
           live.uploader = json.uploader || json.channel || live.uploader
           live.ext = json.ext || live.ext
           live.height = heightOf(json) || live.height
-          live.filesize = num(json.filesize) || num(json.filesize_approx) || live.filesize
+          live.filesize = num(json.filesize) || num(json.filesize_approx) || best || live.filesize
+          live.filesizeEstimated = !num(json.filesize) && !!(num(json.filesize_approx) || best)
+          if (Object.keys(sizes).length) live.sizes = sizes
           live.isLive = !!json.is_live
           live.site = siteLabel(json.webpage_url || live.url, json.extractor_key)
           live.enriched = true

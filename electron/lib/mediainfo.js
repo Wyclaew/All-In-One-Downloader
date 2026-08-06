@@ -193,6 +193,48 @@ async function fetchManifest(url, resolved) {
   }
 }
 
+/**
+ * Byte length of a plain file without fetching it.
+ *
+ * HEAD is the polite way to ask and plenty of media CDNs refuse it, so fall back
+ * to a one-byte ranged GET and read the total out of Content-Range.
+ */
+async function headSize(url, resolved) {
+  const headers = fetchHeaders(url, resolved)
+
+  const attempt = async (init) => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT)
+    try {
+      return await fetch(url, { redirect: 'follow', signal: controller.signal, ...init })
+    } catch {
+      return null
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  const head = await attempt({ method: 'HEAD', headers })
+  if (head && head.ok) {
+    const size = num(head.headers.get('content-length'))
+    if (size) return size
+  }
+
+  const ranged = await attempt({ method: 'GET', headers: { ...headers, Range: 'bytes=0-0' } })
+  if (ranged) {
+    // Read nothing: cancelling the body keeps this to one byte on the wire.
+    try {
+      await ranged.body?.cancel()
+    } catch {
+      /* already closed */
+    }
+    const total = num((ranged.headers.get('content-range') || '').split('/')[1])
+    if (total) return total
+    if (ranged.ok && ranged.status !== 206) return num(ranged.headers.get('content-length'))
+  }
+  return null
+}
+
 /** Key systems we will not try to work around. */
 const DRM_HINT = /widevine|playready|fairplay|streamingkeydelivery|clearkey|urn:uuid:edef8ba9|urn:uuid:9a04f079/i
 
@@ -296,10 +338,31 @@ function parseDash(text) {
     if (Number.isFinite(value) && value > height) height = value
   }
 
+  // Bitrates, split by adaptation set, so a size estimate can pair the right
+  // video rendition with the audio track that ships alongside it.
+  const variants = []
+  let audioBandwidth = 0
+  for (const chunk of text.split(/<AdaptationSet/i).slice(1)) {
+    const isAudio = /(?:mimeType|contentType)="?audio/i.test(chunk)
+    for (const rep of chunk.split(/<Representation/i).slice(1)) {
+      const bandwidth = Number((rep.match(/bandwidth="(\d+)"/i) || [])[1]) || 0
+      if (!bandwidth) continue
+      if (isAudio) {
+        if (bandwidth > audioBandwidth) audioBandwidth = bandwidth
+        continue
+      }
+      const repHeight = Number((rep.match(/height="(\d+)"/i) || [])[1]) || null
+      variants.push({ height: repHeight, width: null, bandwidth, url: null })
+    }
+  }
+  variants.sort((a, b) => (b.height || 0) - (a.height || 0) || b.bandwidth - a.bandwidth)
+
   const drm = /<ContentProtection[^>]*>/i.test(text) && DRM_HINT.test(text)
   return {
     duration,
     height: height || null,
+    variants,
+    audioBandwidth: audioBandwidth || null,
     drm,
     encrypted: /<ContentProtection/i.test(text),
   }
@@ -310,8 +373,20 @@ function parseDash(text) {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Bytes a stream of this bitrate and length will occupy. Manifests advertise
+ * BANDWIDTH in bits per second, which is exactly what a size estimate needs — and
+ * for a segmented stream it is the *only* thing that answers "how big is this"
+ * without fetching every segment.
+ */
+function sizeFromBitrate(bitsPerSecond, seconds) {
+  if (!bitsPerSecond || !seconds) return null
+  const bytes = Math.round((bitsPerSecond / 8) * seconds)
+  return bytes > 0 ? bytes : null
+}
+
+/**
  * Everything we can learn about a resolved stream without downloading it.
- * Returns { duration, height, width, filesize, variants, drm, encrypted, live }.
+ * Returns { duration, height, width, filesize, sizes, variants, drm, encrypted, live }.
  */
 async function describeStream(url, resolved) {
   const kind = resolved && resolved.kind ? resolved.kind : ''
@@ -320,6 +395,10 @@ async function describeStream(url, resolved) {
     width: null,
     height: null,
     filesize: null,
+    /** height -> bytes, so the row can answer for whichever quality is picked. */
+    sizes: {},
+    /** True when the figure came from bitrate × duration, not from a real length. */
+    filesizeEstimated: false,
     variants: [],
     encrypted: false,
     drm: false,
@@ -358,6 +437,8 @@ async function describeStream(url, resolved) {
       const dash = parseDash(text)
       info.duration = dash.duration
       info.height = dash.height
+      info.variants = dash.variants
+      info.audioBandwidth = dash.audioBandwidth
       info.drm = dash.drm
       info.encrypted = dash.encrypted
     }
@@ -375,6 +456,32 @@ async function describeStream(url, resolved) {
   }
 
   if (info.live) info.duration = null
+
+  // How big is it? A segmented stream has no Content-Length to ask for, so the
+  // manifest's own bitrate is the answer; a plain file has a real length, so ask
+  // the server for it rather than guessing.
+  if (!info.filesize && !info.live) {
+    if (info.variants.length && info.duration) {
+      const audio = info.audioBandwidth || 0
+      for (const variant of info.variants) {
+        const bytes = sizeFromBitrate((variant.bandwidth || 0) + audio, info.duration)
+        // A master playlist can list the same height at several bitrates; the one
+        // a player would pick is the highest, and that is what we would download.
+        if (bytes && variant.height && bytes > (info.sizes[variant.height] || 0)) {
+          info.sizes[variant.height] = bytes
+        }
+      }
+      const top = info.variants[0]
+      info.filesize = sizeFromBitrate((top.bandwidth || 0) + audio, info.duration)
+      info.filesizeEstimated = !!info.filesize
+    } else if (kind === 'file' || /\.(mp4|webm|m4v|mkv|mov|flv|mp3|m4a)(\?|#|$)/i.test(url)) {
+      info.filesize = await headSize(url, resolved)
+    }
+  }
+
+  if (info.filesize && info.height && !info.sizes[info.height]) {
+    info.sizes[info.height] = info.filesize
+  }
   return info
 }
 
@@ -461,6 +568,10 @@ module.exports = {
   parseHls,
   parseDash,
   cookieHeaderFor,
+  ffprobeHeaderArgs,
+  fetchHeaders,
+  fetchManifest,
+  headSize,
   ffprobeMedia,
   audioLanguages,
   normaliseLanguage,

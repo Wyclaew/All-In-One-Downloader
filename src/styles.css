@@ -2072,3 +2072,154 @@ a {
     display: none;
   }
 }
+
+/* ==========================================================================
+   Vault — a locked door reads as a different kind of place, so it is set as a
+   single centred card rather than the usual list-in-a-pane. Once open it falls
+   back into the same row rhythm as the library, because then it *is* a list.
+   ========================================================================== */
+
+.vault-gate {
+  display: flex;
+  justify-content: center;
+  padding: 40px 0 24px;
+}
+
+.vault-card {
+  width: min(520px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 22px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--panel);
+}
+
+.vault-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text);
+}
+
+.vault-title {
+  font-family: var(--f-display);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.vault-body {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--dim);
+}
+
+.vault-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.vault-field > span {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dimmer);
+}
+
+.vault-warn {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--dim);
+}
+
+.vault-warn.strong {
+  padding: 9px 11px;
+  border-left: 2px solid var(--signal);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.vault-detail {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.vault-detail summary {
+  cursor: pointer;
+  color: var(--dim);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vault-detail ul {
+  margin: 10px 0 0;
+  padding-left: 16px;
+  line-height: 1.6;
+}
+
+.vault-detail li + li {
+  margin-top: 7px;
+}
+
+.vault-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--dimmer);
+}
+
+.vault-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  border-top: 1px solid var(--rule-soft);
+}
+
+.vault-row:first-child {
+  border-top: 0;
+}
+
+.vault-row:hover {
+  background: var(--panel-2);
+}
+
+/* A padlock where a thumbnail would be: there is nothing to preview, and
+   pretending otherwise would mean decrypting a frame to show it. */
+.vault-glyph {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--panel-3);
+  color: var(--dim);
+}
+
+.vault-ident {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.vault-name {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.vault-foot {
+  margin: 10px 0 0;
+  font-size: 11.5px;
+  color: var(--dimmer);
+}

@@ -9,6 +9,7 @@ const downloader = require('./lib/downloader')
 const binaries = require('./lib/binaries')
 const browsers = require('./lib/browsers')
 const subtitles = require('./lib/subtitles')
+const vault = require('./lib/vault')
 const { uid, extractUrls, isProbablyUrl } = require('./lib/util')
 
 // Load from the Vite dev server only when we were actually started by `npm run
@@ -70,6 +71,19 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null
   })
+}
+
+/**
+ * What the renderer is allowed to know about the vault. Entry names only exist
+ * while it is unlocked; locked, there is nothing to send but the count of
+ * nothing.
+ */
+function vaultState() {
+  return { ...vault.status(), entries: vault.isUnlocked() ? vault.list() : [] }
+}
+
+function pushVault() {
+  store.send('vault', vaultState())
 }
 
 function toRenderer(action) {
@@ -400,6 +414,10 @@ function registerIpc() {
     store.commit((s) => {
       s.settings = { ...s.settings, ...patch }
     })
+    if (patch && patch.vaultAutoLockMinutes !== undefined) {
+      vault.configure({ autoLockMinutes: patch.vaultAutoLockMinutes })
+      pushVault()
+    }
     downloader.pumpQueue()
     return store.getState().settings
   })
@@ -481,6 +499,94 @@ function registerIpc() {
   })
 
   handle('subs:tools', () => ({ ffsubsync: !!subtitles.ffsubsyncPath() }))
+
+  /* ---- vault ------------------------------------------------------------- *
+   * The passphrase crosses the bridge once, on the way in, and is never stored
+   * or echoed back. Entry names live in the encrypted index, so the renderer only
+   * ever sees them while the vault is unlocked.
+   */
+
+  handle('vault:status', () => vaultState())
+
+  handle('vault:create', async (passphrase) => {
+    await vault.create(passphrase)
+    vault.configure({ autoLockMinutes: store.getState().settings.vaultAutoLockMinutes })
+    pushVault()
+    return vaultState()
+  })
+
+  handle('vault:unlock', async (passphrase) => {
+    await vault.unlock(passphrase)
+    vault.configure({ autoLockMinutes: store.getState().settings.vaultAutoLockMinutes })
+    pushVault()
+    return vaultState()
+  })
+
+  handle('vault:lock', () => {
+    vault.lock()
+    pushVault()
+    return vaultState()
+  })
+
+  /** Move a finished download into the vault: encrypt it, then drop the record. */
+  handle('vault:takeDownload', async (downloadId) => {
+    const download = store.findDownload(downloadId)
+    if (!download) throw new Error('Kayıt bulunamadı.')
+    if (!download.filePath) throw new Error('Bu kaydın diskte bir dosyası yok.')
+
+    const entry = await vault.addFile(download.filePath, {
+      title: download.title,
+      site: download.site,
+      duration: download.duration,
+      sourceUrl: download.url,
+    })
+    // The file is no longer where the library says it is, so the row would only
+    // mislead. The vault entry carries the title, site and duration instead.
+    downloader.remove(downloadId, { deleteFile: false })
+    pushVault()
+    return entry
+  })
+
+  handle('vault:addFiles', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Kasaya eklenecek dosyaları seç',
+      properties: ['openFile', 'multiSelections'],
+    })
+    if (result.canceled || !result.filePaths.length) return { added: 0 }
+    let added = 0
+    for (const file of result.filePaths) {
+      try {
+        await vault.addFile(file, { title: path.basename(file) })
+        added += 1
+      } catch (err) {
+        store.toast(`${path.basename(file)} eklenemedi: ${err.message}`, 'error')
+      }
+    }
+    pushVault()
+    return { added }
+  })
+
+  handle('vault:open', (id) => vault.openEntry(id))
+
+  handle('vault:export', async (id) => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Şifresiz kopya nereye çıkarılsın?',
+      defaultPath: store.getState().settings.downloadDir,
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (result.canceled || !result.filePaths.length) return null
+    const out = await vault.exportEntry(id, result.filePaths[0])
+    store.toast('Şifresiz kopya çıkarıldı. Kasadaki şifreli hâli yerinde duruyor.', 'ok')
+    return out
+  })
+
+  handle('vault:remove', async (id) => {
+    const ok = await vault.removeEntry(id)
+    pushVault()
+    return ok
+  })
+
+  handle('vault:audit', () => vault.audit())
 }
 
 // ---- lifecycle -----------------------------------------------------------
@@ -505,6 +611,10 @@ if (!app.requestSingleInstanceLock()) {
       }
     }
     store.init()
+    vault.configure({ autoLockMinutes: store.getState().settings.vaultAutoLockMinutes })
+    // An idle lock has to reach the interface, or it would keep showing a list
+    // whose files are no longer readable.
+    vault.onLocked(() => pushVault())
     registerIpc()
     buildMenu()
     createWindow()
@@ -524,6 +634,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     downloader.killAll()
     probe.killAll()
+    // Quitting locks the vault and takes the decrypted temp copies with it.
+    vault.lock({ reason: 'quit' })
     store.flush()
   })
 }
