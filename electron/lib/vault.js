@@ -46,6 +46,8 @@ let openedTemps = new Set()
 let lockTimer = null
 let autoLockMs = DEFAULT_AUTOLOCK_MS
 let onLockedListener = null
+/** Long encrypt/decrypt operations in flight. The idle lock waits for them. */
+let busy = 0
 
 /* -------------------------------------------------------------------------- */
 /* paths                                                                       */
@@ -144,6 +146,15 @@ async function openFileTo(srcPath, destPath) {
 
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, nonce)
   decipher.setAuthTag(tag)
+
+  // An empty file seals to header + tag and nothing between. A read stream whose
+  // end lands before its start throws, so verify the tag and write the empty file.
+  if (stat.size === HEADER_LEN + TAG_LEN) {
+    decipher.final()
+    await fsp.writeFile(destPath, Buffer.alloc(0), { mode: 0o600 })
+    return
+  }
+
   await pipeline(
     fs.createReadStream(srcPath, { start: HEADER_LEN, end: stat.size - TAG_LEN - 1 }),
     decipher,
@@ -189,7 +200,7 @@ function requireUnlocked() {
 function armAutoLock() {
   if (lockTimer) clearTimeout(lockTimer)
   lockTimer = null
-  if (!key || !autoLockMs) return
+  if (!key || !autoLockMs || busy) return
   lockTimer = setTimeout(() => lock({ reason: 'timeout' }), autoLockMs)
   // Don't hold the process open just to lock something that quitting locks anyway.
   if (lockTimer.unref) lockTimer.unref()
@@ -198,6 +209,27 @@ function armAutoLock() {
 /** Any vault action counts as activity and pushes the idle lock back. */
 function touch() {
   if (key) armAutoLock()
+}
+
+/**
+ * Encrypting or decrypting a multi-gigabyte file takes far longer than a tick, and
+ * the idle timer does not know that. Locking mid-decrypt was the worst kind of
+ * bug: the sweep ran first, then the decryption finished and wrote a *plaintext*
+ * copy into the temp directory of a vault that now claimed to be locked. So a
+ * transfer in flight holds the lock off, and the timer is re-armed when it ends.
+ */
+async function whileWorking(fn) {
+  busy += 1
+  if (lockTimer) {
+    clearTimeout(lockTimer)
+    lockTimer = null
+  }
+  try {
+    return await fn()
+  } finally {
+    busy = Math.max(0, busy - 1)
+    if (!busy) armAutoLock()
+  }
 }
 
 function clearTemps() {
@@ -336,85 +368,86 @@ function list() {
  * the encrypted copy is written and verified, so a failure halfway can never lose
  * the file.
  */
-async function addFile(srcPath, meta = {}) {
+function addFile(srcPath, meta = {}) {
   requireUnlocked()
-  const stat = await fsp.stat(srcPath)
-  if (!stat.isFile()) throw new Error('Yalnızca dosya eklenebilir.')
+  return whileWorking(async () => {
+    const stat = await fsp.stat(srcPath)
+    if (!stat.isFile()) throw new Error('Yalnızca dosya eklenebilir.')
 
-  await fsp.mkdir(blobDir(), { recursive: true })
-  const id = crypto.randomBytes(16).toString('hex')
-  const dest = blobFile(id)
+    await fsp.mkdir(blobDir(), { recursive: true })
+    const id = crypto.randomBytes(16).toString('hex')
+    const dest = blobFile(id)
 
-  try {
-    await sealFile(srcPath, dest)
-    const sealed = await fsp.stat(dest)
-    if (sealed.size !== stat.size + HEADER_LEN + TAG_LEN) {
-      throw new Error('Şifrelenen dosyanın boyutu beklenenle uyuşmadı.')
+    try {
+      await sealFile(srcPath, dest)
+      const sealed = await fsp.stat(dest)
+      if (sealed.size !== stat.size + HEADER_LEN + TAG_LEN) {
+        throw new Error('Şifrelenen dosyanın boyutu beklenenle uyuşmadı.')
+      }
+    } catch (err) {
+      await fsp.rm(dest, { force: true }).catch(() => {})
+      throw err
     }
-  } catch (err) {
-    await fsp.rm(dest, { force: true }).catch(() => {})
-    throw err
-  }
 
-  const entry = {
-    id,
-    name: path.basename(srcPath),
-    title: meta.title || path.basename(srcPath),
-    site: meta.site || '',
-    duration: Number.isFinite(meta.duration) ? meta.duration : null,
-    sourceUrl: meta.sourceUrl || '',
-    size: stat.size,
-    addedAt: Date.now(),
-  }
-  entries.unshift(entry)
-  await saveIndex()
+    const entry = {
+      id,
+      name: path.basename(srcPath),
+      title: meta.title || path.basename(srcPath),
+      site: meta.site || '',
+      duration: Number.isFinite(meta.duration) ? meta.duration : null,
+      sourceUrl: meta.sourceUrl || '',
+      size: stat.size,
+      addedAt: Date.now(),
+    }
+    entries.unshift(entry)
+    await saveIndex()
 
-  // Only now is the plaintext expendable.
-  await fsp.rm(srcPath, { force: true })
-  touch()
-  return { ...entry }
+    // Only now is the plaintext expendable.
+    await fsp.rm(srcPath, { force: true })
+    return { ...entry }
+  })
 }
 
-async function decryptTo(id, destPath) {
-  requireUnlocked()
+function entryOf(id) {
   const entry = entries.find((e) => e.id === id)
   if (!entry) throw new Error('Kasa kaydı bulunamadı.')
-  await openFileTo(blobFile(id), destPath)
   return entry
 }
 
 /** Decrypt into a private temp directory and hand the file to the OS player. */
-async function openEntry(id) {
+function openEntry(id) {
   requireUnlocked()
-  const dir = path.join(tempRoot(), crypto.randomBytes(6).toString('hex'))
-  await fsp.mkdir(dir, { recursive: true, mode: 0o700 })
-  const entry = entries.find((e) => e.id === id)
-  if (!entry) throw new Error('Kasa kaydı bulunamadı.')
-  const target = path.join(dir, entry.name)
-  await decryptTo(id, target)
-  openedTemps.add(target)
-  const err = await shell.openPath(target)
-  if (err) throw new Error(err)
-  touch()
-  return { path: target }
+  const entry = entryOf(id)
+  return whileWorking(async () => {
+    const dir = path.join(tempRoot(), crypto.randomBytes(6).toString('hex'))
+    await fsp.mkdir(dir, { recursive: true, mode: 0o700 })
+    const target = path.join(dir, entry.name)
+    // Registered before the write, so a lock racing the decrypt still knows what
+    // to delete.
+    openedTemps.add(target)
+    await openFileTo(blobFile(id), target)
+    const err = await shell.openPath(target)
+    if (err) throw new Error(err)
+    return { path: target }
+  })
 }
 
 /** Write a plaintext copy back out, leaving the vault copy in place. */
-async function exportEntry(id, destDir) {
+function exportEntry(id, destDir) {
   requireUnlocked()
-  const entry = entries.find((e) => e.id === id)
-  if (!entry) throw new Error('Kasa kaydı bulunamadı.')
-  await fsp.mkdir(destDir, { recursive: true })
+  const entry = entryOf(id)
+  return whileWorking(async () => {
+    await fsp.mkdir(destDir, { recursive: true })
 
-  let target = path.join(destDir, entry.name)
-  const ext = path.extname(entry.name)
-  const base = path.basename(entry.name, ext)
-  let n = 2
-  while (fs.existsSync(target)) target = path.join(destDir, `${base} (${n++})${ext}`)
+    let target = path.join(destDir, entry.name)
+    const ext = path.extname(entry.name)
+    const base = path.basename(entry.name, ext)
+    let n = 2
+    while (fs.existsSync(target)) target = path.join(destDir, `${base} (${n++})${ext}`)
 
-  await decryptTo(id, target)
-  touch()
-  return { path: target }
+    await openFileTo(blobFile(id), target)
+    return { path: target }
+  })
 }
 
 async function removeEntry(id) {

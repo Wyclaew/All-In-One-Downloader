@@ -108,6 +108,9 @@ export default function Library({
     onFindSubtitle: (d: Download) => setSubtitleFor(d),
     onToVault: async (d: Download) => {
       setVaulting(d.id)
+      // Encrypting a few gigabytes takes seconds with nothing to show for it, and
+      // the row disappears when it lands — so say what is happening up front.
+      onToast(T.library.movingToVault, 'info')
       const entry = await api.vaultTakeDownload(d.id)
       setVaulting(null)
       if (entry) onToast(T.library.movedToVault, 'ok')
@@ -261,6 +264,10 @@ function Row({
   // A segmented stream reports no total of its own, but the item measured one
   // before the transfer started — so the meter still has a figure to show.
   const target = d.total ?? d.expectedSize ?? null
+  const shownSize = d.fileSize ?? target
+  // Only mark a number as an estimate when there *is* a number: a leading ~ on an
+  // em dash reads as a glitch.
+  const sizeIsEstimate = shownSize !== null && d.fileSize == null && d.total == null
 
   return (
     <div className={`dl${running ? ' running' : ''}`}>
@@ -283,9 +290,9 @@ function Row({
           ) : null}
           <span>{describe(d.quality, d.audioOnly)}</span>
           <span className="sep" />
-          <span title={d.fileSize || d.total ? undefined : T.library.sizeEstimate}>
-            {d.fileSize || d.total ? '' : '~'}
-            {fmt.bytes(d.fileSize ?? target)}
+          <span title={sizeIsEstimate ? T.library.sizeEstimate : undefined}>
+            {sizeIsEstimate ? '~' : ''}
+            {fmt.bytes(shownSize)}
           </span>
           {d.finishedAt ? <span className="sep" /> : null}
           {d.finishedAt ? <span>{fmt.relativeTime(d.finishedAt)}</span> : null}

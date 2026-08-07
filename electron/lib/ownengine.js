@@ -193,13 +193,28 @@ async function fetchFile({ url, resolved, destPath, onProgress, onHandle }) {
     throw new Error(`Sunucu ${res.status} döndü.`)
   }
 
+  // A redirect to a login wall or an error page answers 200 with HTML. Copying
+  // those bytes would produce a .mp4 that is really a web page — saved, listed as
+  // finished, and unplayable.
+  const type = (res.headers.get('content-type') || '').toLowerCase()
+  if (/^(text\/|application\/(x?html|json|xml))/.test(type)) {
+    try {
+      await res.body?.cancel()
+    } catch {
+      /* already closed */
+    }
+    throw new Error(`Bağlantı video değil, ${type.split(';')[0]} döndürdü — akış adresi geçmiş olabilir.`)
+  }
+
   // A server that ignores Range restarts the file; keeping the old bytes would
   // corrupt it, so start over rather than append.
   let resuming = already > 0 && res.status === 206
   if (already > 0 && !resuming) already = 0
 
+  // No Content-Length means no total. Adding what we already have to a zero would
+  // report the part we resumed from as the whole file — a meter stuck at 100%.
   const declared = Number(res.headers.get('content-length')) || 0
-  const total = resuming ? already + declared : declared || null
+  const total = declared ? (resuming ? already + declared : declared) : null
 
   const out = fs.createWriteStream(partPath, { flags: resuming ? 'a' : 'w' })
   let downloaded = already
@@ -218,6 +233,9 @@ async function fetchFile({ url, resolved, destPath, onProgress, onHandle }) {
     onProgress({
       downloaded,
       total,
+      // Content-Length is a real length, not a guess — say so, so the caller
+      // doesn't second-guess it with an estimate.
+      totalExact: !!total,
       speed,
       eta: total && speed > 0 ? Math.round((total - downloaded) / speed) : null,
       percent: total ? downloaded / total : null,
@@ -354,7 +372,11 @@ function runFfmpeg({ url, resolved, destPath, workPath, download, settings, onPr
 
       onProgress({
         downloaded: bytes,
-        total: percent && bytes ? Math.round(bytes / percent) : null,
+        // Extrapolated from how much of the timeline is done, so it is wild for
+        // the first few percent. Flagged as inexact; the caller has a better
+        // figure from the manifest and should prefer it.
+        total: percent > 0.05 && bytes ? Math.round(bytes / percent) : null,
+        totalExact: false,
         speed,
         eta,
         percent,
@@ -403,14 +425,32 @@ function runFfmpeg({ url, resolved, destPath, workPath, download, settings, onPr
  * Fetch one download without yt-dlp. Resolves with the finished file's path;
  * rejects with an ABORTED error when the caller killed it.
  */
-async function transfer({ download, settings, onProgress, onHandle, onStage, onNote, onDest }) {
+async function transfer({
+  download,
+  settings,
+  onProgress,
+  onHandle,
+  onStage,
+  onNote,
+  onDest,
+  isStopped,
+}) {
+  // Resolving a gated page can take most of a minute, and during that stretch
+  // there is no process to kill — so pause and cancel are checked at each phase
+  // boundary instead of being silently ignored until the first byte moves.
+  const halt = () => {
+    if (isStopped && isStopped()) throw abortError()
+  }
+
   const located = await locateStream(download, settings, onNote)
+  halt()
   let { url } = located
   const { resolved, kind } = located
 
   if (kind === 'hls' && !download.audioOnly) {
     const picked = await pickVariant(url, resolved, download.quality, onNote)
     url = picked.url
+    halt()
   }
 
   const dir = settings.downloadDir
@@ -429,7 +469,10 @@ async function transfer({ download, settings, onProgress, onHandle, onStage, onN
   if (plain) {
     // Ask for the length first so the meter has a target from the first byte.
     const size = await headSize(url, resolved).catch(() => null)
-    if (size) onProgress({ downloaded: 0, total: size, speed: null, eta: null, percent: 0 })
+    halt()
+    if (size) {
+      onProgress({ downloaded: 0, total: size, totalExact: true, speed: null, eta: null, percent: 0 })
+    }
     return { filePath: await fetchFile({ url, resolved, destPath, onProgress, onHandle }) }
   }
 

@@ -458,6 +458,7 @@ function startOwn(download, settings) {
     .transfer({
       download,
       settings,
+      isStopped: () => job.paused || job.canceled,
       onHandle: (handle) => {
         job.child = handle
       },
@@ -472,9 +473,11 @@ function startOwn(download, settings) {
           download.note = note
         })
       },
-      onProgress: ({ downloaded, total, speed, eta, percent }) => {
+      onProgress: ({ downloaded, total, totalExact, speed, eta, percent }) => {
         download.downloaded = downloaded || 0
-        download.total = total || download.expectedSize || null
+        // A measured length wins. Otherwise the manifest's figure beats an
+        // extrapolation from how much of the timeline has been written.
+        download.total = totalExact ? total : download.expectedSize || total || null
         download.speed = speed ?? null
         download.stage = 'downloading'
         if (percent !== null && percent !== undefined) {
@@ -485,7 +488,12 @@ function startOwn(download, settings) {
         sendProgress(download)
       },
     })
-    .then(({ filePath }) => settle(job, download, settings, { ok: true, filePath }))
+    .then(({ filePath }) => {
+      // Cancelled on the last byte: the user asked for it gone, so honour that
+      // rather than presenting a file they said they did not want.
+      if (job.canceled) return settle(job, download, settings, { canceled: true })
+      settle(job, download, settings, { ok: true, filePath })
+    })
     .catch((err) => {
       if (job.canceled || (err && err.code === 'ABORTED' && !job.paused)) {
         return settle(job, download, settings, { canceled: true })
@@ -686,8 +694,9 @@ function pump_queue() {
  */
 function expectedSizeFor(item, quality, audioOnly) {
   if (!item) return null
-  if (audioOnly) return null
   const sizes = item.sizes && typeof item.sizes === 'object' ? item.sizes : null
+  // An audio-only transfer is the audio track, not a share of the video's size.
+  if (audioOnly) return (sizes && sizes.audio) || null
   if (sizes) {
     const cap = Number(quality) || 0
     const heights = Object.keys(sizes)

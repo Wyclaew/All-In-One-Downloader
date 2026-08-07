@@ -174,7 +174,7 @@ export const T = {
       'Açıkken sayfaları yt-dlp çözümler ve indirmeyi o yapar. Kapatırsan yt-dlp hiç çağrılmaz: her bağlantıyı kendi çözümleyicim çözer, indirmeyi de kendisi yapar — düz dosyalar için parçalı HTTP (duraklat/sürdür çalışır), HLS/DASH için ffmpeg. Kalite, master playlist içindeki varyantlardan seçilir. Kapalıyken yt-dlp\'nin bildiği siteler (YouTube gibi) için elde kalan tek yol kendi çözümleyicim olur, yani bazı sayfalarda sonuç değişir.',
     engineOn: 'yt-dlp kullan',
     engineOffNote:
-      'yt-dlp kapalı. Çözümleme ve indirme tamamen kendi motorumda; ffmpeg gerekli.',
+      'yt-dlp kapalı. Çözümleme ve indirme tamamen kendi motorumda; ffmpeg gerekli. Bu motorda hız sınırı uygulanmaz ve parçalı akışlarda duraklatma baştan başlamak demektir.',
 
     deletePolicy: 'Kayıttan silerken dosya',
     deletePolicyHint:

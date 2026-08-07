@@ -1,3 +1,21 @@
+## Bu sürümde
+
+- **Şifreli kasa.** İçeriği *ve adı* şifreli duran bir klasör: diskte rastgele adlı
+  bloklar, gerçek adlar yalnızca şifreli dizinde. Dosya başına AES-256-GCM,
+  şifreden anahtar scrypt ile, anahtar yalnızca bellekte ve kilitlenince üzerine
+  sıfır yazılıyor. Boşta kalınca kendiliğinden kilitleniyor.
+- **yt-dlp'yi kapatma anahtarı.** Kapalıyken hiç çağrılmıyor: çözümlemeyi de
+  indirmeyi de uygulamanın kendi motoru yapıyor — düz dosyalar için parçalı HTTP
+  (duraklat/sürdür kaldığı yerden), HLS/DASH için ffmpeg.
+- **İndirmeden önce boyut.** Kalite başına hesaplanıyor ve satır, açılır menüde ne
+  seçiliyse onun cevabını veriyor. Tahminler `~` ile işaretli.
+- **Kalan süre.** Parçalı akışlarda yt-dlp süre vermiyor; artık ölçülen hızdan,
+  parça hızından veya videonun zaman çizgisinden hesaplanıyor.
+- **Yapışkan silme tercihi.** "Diskteki dosyayı da sil" kutusu artık her silmede
+  sıfırlanmıyor; Ayarlar'dan bir kez seçiliyor.
+- Kalite seçiminde bir hata düzeltildi: sınır verilmediğinde ("en iyi") en kötü
+  varyant seçilebiliyordu.
+
 ## İndir
 
 | İşletim sistemi | Dosya |
