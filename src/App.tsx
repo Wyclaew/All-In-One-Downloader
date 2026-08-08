@@ -403,7 +403,12 @@ export default function App() {
             ) : null}
 
             {view === 'sources' ? (
-              <SourcesView state={state} downloads={downloads} onGoToLibrary={() => goLibrary(ALL)} />
+              <SourcesView
+                state={state}
+                downloads={downloads}
+                onGoToLibrary={() => goLibrary(ALL)}
+                onToast={pushToast}
+              />
             ) : null}
 
             {view === 'library' ? (

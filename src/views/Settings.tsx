@@ -93,6 +93,20 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
           </select>
         </Row>
 
+        <Row label={T.settings.connections} hint={T.settings.connectionsHint}>
+          <select
+            className="select"
+            value={settings.connections ?? 4}
+            onChange={(e) => patch({ connections: Number(e.target.value) })}
+          >
+            {[1, 2, 4, 6, 8, 12, 16].map((n) => (
+              <option key={n} value={n}>
+                {n === 1 ? '1 (kapalı)' : n}
+              </option>
+            ))}
+          </select>
+        </Row>
+
         <Row label={T.settings.rateLimit} hint={T.settings.rateLimitHint}>
           <input
             className="input"

@@ -278,6 +278,9 @@ function status() {
     unlocked: isUnlocked(),
     count: isUnlocked() ? entries.length : null,
     autoLockMinutes: Math.round(autoLockMs / 60000),
+    // Safe to show and worth showing: knowing where the vault lives is how you
+    // back it up. What is there is ciphertext under random names.
+    dir: root(),
   }
 }
 

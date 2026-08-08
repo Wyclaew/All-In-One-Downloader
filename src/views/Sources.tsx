@@ -22,9 +22,10 @@ interface Props {
   state: AppState
   downloads: Download[]
   onGoToLibrary: () => void
+  onToast: (message: string, kind?: 'info' | 'warn' | 'error' | 'ok') => void
 }
 
-export default function Sources({ state, downloads, onGoToLibrary }: Props) {
+export default function Sources({ state, downloads, onGoToLibrary, onToast }: Props) {
   const [groupQuality, setGroupQuality] = useState<Record<string, string>>({})
   const [rowQuality, setRowQuality] = useState<Record<string, string>>({})
   const [pendingRemove, setPendingRemove] = useState<Source | null>(null)
@@ -113,6 +114,14 @@ export default function Sources({ state, downloads, onGoToLibrary }: Props) {
     api.downloadSource(source.id, toRequest(value)).then((res) => {
       if (res && res.count) onGoToLibrary()
     })
+  }
+
+  // Encrypting takes seconds and the row vanishes when it lands, so say what is
+  // happening before the list changes under the user.
+  const toVault = async (d: Download) => {
+    onToast(T.library.movingToVault, 'info')
+    const entry = await api.vaultTakeDownload(d.id)
+    if (entry) onToast(T.library.movedToVault, 'ok')
   }
 
   const rescan = async (source: Source) => {
@@ -287,6 +296,7 @@ export default function Sources({ state, downloads, onGoToLibrary }: Props) {
                     onToggleSelect={() => toggleOne(item.id)}
                     onQuality={(value) => setRowQuality((prev) => ({ ...prev, [item.id]: value }))}
                     onDownload={() => startDownload(item)}
+                    onToVault={toVault}
                   />
                 ))}
               </div>
@@ -381,6 +391,7 @@ function Row({
   onToggleSelect,
   onQuality,
   onDownload,
+  onToVault,
 }: {
   item: MediaItem
   download: Download | null
@@ -389,6 +400,7 @@ function Row({
   onToggleSelect: () => void
   onQuality: (value: string) => void
   onDownload: () => void
+  onToVault: (d: Download) => void
 }) {
   const audio = quality === 'audio'
   const status = download ? download.status : null
@@ -512,6 +524,17 @@ function Row({
                   }}
                 >
                   {T.library.open}
+                </MenuItem>
+              ) : null}
+              {download && download.status === 'done' && download.filePath ? (
+                <MenuItem
+                  icon="lock"
+                  onClick={() => {
+                    onToVault(download)
+                    close()
+                  }}
+                >
+                  {T.library.toVault}
                 </MenuItem>
               ) : null}
               {download && (download.status === 'queued' || download.status === 'running') ? (

@@ -11,7 +11,7 @@ const { Notification } = require('electron')
 const store = require('./store')
 const { toolEnv, ytdlpPathOrThrow, ffmpegPath } = require('./binaries')
 const { resolveCookieArg } = require('./browsers')
-const { uid, num, clamp, fileSizeOf, resolvedArgs, safeName } = require('./util')
+const { uid, num, clamp, fileSizeOf, resolvedArgs, safeName, settingNumber } = require('./util')
 const { readableError, isRetryableWithoutCookies } = require('./probe')
 const ownengine = require('./ownengine')
 
@@ -71,6 +71,13 @@ function buildArgs(download, settings, printFile) {
 
   const ff = ffmpegPath()
   if (ff) args.push('--ffmpeg-location', ff)
+
+  // The single biggest speed lever for a streaming site. An HLS video arrives as
+  // thousands of small fragments, and yt-dlp fetches them one at a time by
+  // default — so the transfer runs at one round-trip per fragment no matter how
+  // wide the line is. Asking for several at once is what fills it.
+  const connections = clamp(settingNumber(settings.connections, 4), 1, 16)
+  if (connections > 1) args.push('--concurrent-fragments', String(connections))
 
   if (download.resolved) {
     // The page's own headers and cookies; a browser-profile cookie jar would be

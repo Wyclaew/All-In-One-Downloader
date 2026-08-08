@@ -25,6 +25,11 @@
  *
  * So we let the advert load, skip it, and refuse to treat it as downloadable.
  * Blocking it would be the intuitive move and it is the wrong one.
+ *
+ * The same reasoning keeps the viewability and fraud-verification services
+ * (adsafeprotected, moatads, doubleverify) out of the block list: an SDK that is
+ * waiting on a verification callback which never arrives is an SDK that never
+ * finishes. They are still refused as *media*, which is what matters.
  */
 const AD_SDK_ALLOW = [
   'imasdk.googleapis.com',
@@ -49,42 +54,99 @@ const AD_SDK_ALLOW = [
   'fwmrm.net',
 ]
 
-/** Trackers, pop-under networks and ad exchanges: cancelled outright. */
+/**
+ * Trackers, pop-under networks and ad exchanges: cancelled outright.
+ *
+ * Curated rather than imported. A general-purpose filter list is written for a
+ * browser you are reading in, and this is a browser we are scraping with — the
+ * two want opposite things. Half of a list like EasyList is cosmetic rules we
+ * cannot apply, and the half we could apply includes the ad SDKs above, which
+ * this app must let run or players never hand over the video. So: the networks
+ * that actually appear in front of streams, grouped by what they are.
+ */
 const TRACKERS = [
+  // ---- Google's ad stack ----
   'doubleclick.net',
   'googlesyndication.com',
   'googleadservices.com',
   'google-analytics.com',
+  'googletagservices.com',
+  'googletagmanager.com',
   'adservice.google',
+  'app-measurement.com',
+
+  // ---- pop-under and "click" networks: the ones that open new windows ----
   'popads.net',
   'popcash.net',
+  'popunder.net',
+  'poptm.com',
   'propellerads.com',
   'propellerclick.com',
+  'propu.sh',
   'onclickads.net',
   'onclasrv.com',
+  'onclickalgo.com',
+  'onclicksuper.com',
   'adsterra.com',
+  'adsterratech.com',
+  'highperformanceformat.com',
+  'profitabledisplaynetwork.com',
+  'profitablegatecpm.com',
+  'displayvertising.com',
   'exoclick.com',
   'exosrv.com',
+  'exdynsrv.com',
+  'realsrv.com',
   'juicyads.com',
   'hilltopads.net',
+  'hilltopads.com',
   'clickadu.com',
   'clicksgear.com',
-  'mgid.com',
-  'taboola.com',
-  'outbrain.com',
-  'zedo.com',
-  'revcontent.com',
+  'clickaine.com',
+  'adcash.com',
+  'adkernel.com',
+  'admaven.com',
+  'ad-maven.com',
+  'adnium.com',
+  'adspyglass.com',
+  'adprofex.com',
+  'trafficstars.com',
+  'tsyndicate.com',
+  'trafficfactory.biz',
   'trafficjunky.net',
-  'adsco.re',
-  'luckyorange.com',
-  'hotjar.com',
-  'scorecardresearch.com',
-  'quantserve.com',
+  'trafficshop.com',
+  'zeropark.com',
+  'mybestadnetwork.com',
+  'monetizer.click',
+  'galaksion.com',
+  'kadam.net',
+  'bodelen.com',
+  'stpd.cloud',
+  'stpanel.io',
+
+  // ---- content-recommendation widgets ----
+  'mgid.com',
+  'dt07.net',
+  'servicer.mgid.com',
+  'taboola.com',
+  'taboolasyndication.com',
+  'outbrain.com',
+  'zemanta.com',
+  'revcontent.com',
+  'zedo.com',
+  'plista.com',
+  'ligatus.com',
+  'adnow.com',
+  'engageya.com',
+
+  // ---- ad exchanges and header bidding ----
   'bidswitch.net',
   'smartadserver.com',
+  'sascdn.com',
   'criteo.com',
   'criteo.net',
   'adnxs.com',
+  'adnxs-simple.com',
   'rubiconproject.com',
   'pubmatic.com',
   'openx.net',
@@ -95,7 +157,29 @@ const TRACKERS = [
   'sonobi.com',
   'gumgum.com',
   'sovrn.com',
+  'lijit.com',
   'districtm.io',
+  'indexww.com',
+  'contextweb.com',
+  'pulsepoint.com',
+  'improvedigital.com',
+  'appnexus.com',
+  'emxdgt.com',
+  'gammaplatform.com',
+  'onetag-sys.com',
+  'adlightning.com',
+  'rtbhouse.com',
+  'themoneytizer.com',
+  'adpushup.com',
+  'adthrive.com',
+  'mediavine.com',
+  'ezoic.net',
+  'ezoic.com',
+  'raptive.com',
+  'snigelweb.com',
+  'ad-delivery.net',
+
+  // ---- identity graphs and data brokers ----
   'id5-sync.com',
   'crwdcntrl.net',
   'demdex.net',
@@ -104,21 +188,83 @@ const TRACKERS = [
   'agkn.com',
   'tapad.com',
   'adform.net',
+  'adsrvr.org',
+  'liadm.com',
+  'rlcdn.com',
+  'exelator.com',
+  'eyeota.net',
+  'mathtag.com',
+  'bidr.io',
+  'creativecdn.com',
+  'krxd.net',
+  'omnitagjs.com',
   'advolve.io',
   'yellowblue.io',
   'ingage.tech',
   'connatix.com',
   'cootlogix.com',
+
+  // ---- analytics and session recording ----
+  'luckyorange.com',
+  'hotjar.com',
+  'mouseflow.com',
+  'fullstory.com',
+  'inspectlet.com',
+  'clarity.ms',
+  'smartlook.com',
+  'scorecardresearch.com',
+  'quantserve.com',
+  'quantcount.com',
+  'chartbeat.com',
+  'parsely.com',
+  'newrelic.com',
+  'nr-data.net',
+  'mc.yandex.ru',
+  'segment.io',
+  'segment.com',
+  'amplitude.com',
+  'mixpanel.com',
+  'heap.io',
   'histats.com',
   'statcounter.com',
+  'matomo.cloud',
+  'gemius.pl',
+  'hs-analytics.net',
+  'branch.io',
+  'adjust.com',
+  'appsflyer.com',
+  'kochava.com',
+
+  // ---- Turkish market ----
   'admatic.com.tr',
   'adhood.com',
   'reklamstore.com',
-  'gemius.pl',
+  'motionads.com.tr',
+  'adparlor.com',
+  'gnetwork.com.tr',
+
+  // ---- browser push-notification spam: the "allow notifications" trap ----
   'onesignal.com',
+  'os.tc',
   'pushwoosh.com',
   'notix.io',
   'push-sdk.net',
+  'pushnews.eu',
+  'pushengage.com',
+  'webpushr.com',
+  'sendpulse.com',
+  'pushprofit.ru',
+  'subscribers.com',
+  'pushdom.net',
+  'push-sdc.com',
+
+  // ---- crypto miners and malvertising staging ----
+  'coinhive.com',
+  'coin-hive.com',
+  'jsecoin.com',
+  'crypto-loot.com',
+  'webminepool.com',
+  'browsermine.com',
 ]
 
 /**
@@ -127,6 +273,20 @@ const TRACKERS = [
  * exists to prevent.
  */
 const AD_MEDIA = [
+  'moatads.com',
+  'doubleverify.com',
+  'imrworldwide.com',
+  'innovid.com',
+  'serving-sys.com',
+  'flashtalking.com',
+  'celtra.com',
+  'adcolony.com',
+  'smartclip.tv',
+  'stickyadstv.com',
+  'contextual.media.net',
+  'videoo.tv',
+  'nativery.com',
+  'dable.io',
   'connatix.com',
   'imasdk.googleapis.com',
   'securepubads.g.doubleclick.net',

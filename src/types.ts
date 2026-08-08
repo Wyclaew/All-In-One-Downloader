@@ -118,6 +118,7 @@ export interface Category {
 export interface Settings {
   downloadDir: string
   concurrency: number
+  connections: number
   defaultQuality: number
   container: string
   audioFormat: string
@@ -196,6 +197,8 @@ export interface VaultState {
   unlocked: boolean
   count: number | null
   autoLockMinutes: number
+  /** Where the encrypted blobs live on disk. */
+  dir: string
   entries: VaultEntry[]
 }
 

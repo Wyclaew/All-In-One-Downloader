@@ -155,14 +155,38 @@ Windows işine aynı şekilde bağlanır.
 - İnerken kalan süre gösterilir. Parçalı akışlarda yt-dlp `eta` vermez; o durumda
   ölçülen hızla bilinen hedeften, ya da parça hızından hesaplanır.
 
+## İndirme neden yavaş kalıyor, ne yaptık
+
+Hattın 8 MB/s iken indirmenin 300 KB/s'de takılmasının sebebi genelde hat değil,
+**tek bağlantı**: sunucu bağlantı başına hız kısar, gidiş-dönüş süresi tek TCP
+akışının penceresini daraltır, ve aradaki bir kutu o tek akışa "yeter" der. Bu
+sınırların hiçbiri dosya başına değil, **bağlantı başına** işler.
+
+**Ayarlar → Aktarım → Dosya başına bağlantı** (varsayılan 4) iki yerde iş görür:
+
+| Akış türü | Ne oluyor |
+|---|---|
+| HLS / DASH (dizi-film siteleri) | yt-dlp'ye `--concurrent-fragments` verilir; parçalar tek tek değil aynı anda iner. Varsayılan yt-dlp davranışı **1**'dir, yani bu ayar olmadan bir film binlerce parçanın her biri için ayrı bir gidiş-dönüş bekler. |
+| Düz dosya (kendi motorum) | Dosya gerçekten parçalara bölünür, her parça kendi bağlantısıyla ve kendi konumuna yazılır. Duraklatırsan her parçanın nerede kaldığı yanına günlüklenir, sürdürünce yalnızca eksikler istenir. |
+
+Sunucu `Range` desteklemiyorsa ya da 206 yerine başka bir şey dönerse kendiliğinden
+tek bağlantıya düşer. Çok yükseltmek bazı sitelerde 429 (çok fazla istek) yiyebilir;
+4–8 arası iyi bir aralık.
+
 ## Şifreli kasa
 
 **Kasa** sekmesi, içeriği *ve adı* şifreli duran bir klasör. Bir dosya adı çoğu
 zaman o dosyanın ne olduğunu söylemeye yeter, o yüzden ikisi birlikte şifrelenir.
 
-- Kitaplıkta tamamlanmış bir kaydın `⋯` menüsünden **Kasaya taşı**, ya da Kasa
-  sekmesinden doğrudan **Dosya ekle**. Şifreli kopya yazılıp doğrulandıktan sonra
-  şifresiz özgün dosya silinir — yarıda kalan bir işlem dosyayı kaybettirmez.
+- Kitaplıkta **ya da Kaynaklar'da** tamamlanmış bir kaydın `⋯` menüsünden **Kasaya
+  taşı**, ya da Kasa sekmesinden doğrudan **Dosya ekle**. Şifreli kopya yazılıp
+  doğrulandıktan sonra şifresiz özgün dosya silinir — yarıda kalan bir işlem
+  dosyayı kaybettirmez.
+- Kasaya giden video, kitaplıktan ve kaynak listesinden birlikte silinir: dosya
+  artık orada olmadığı için o satırlar yalnızca bozuk bir "aç" düğmesi sunardı. Bir
+  kaynağın **son** videosu da kasaya girerse başlık kendiliğinden kaybolur.
+- Kasadaki dosyaların diskte nerede durduğunu alt satırdaki ⓘ gösterir; yanındaki
+  düğme klasörü açar.
 - Diskte `~/Library/Application Support/All in One Downloader/vault/` altında
   rastgele adlı bloklar durur. Gerçek adlar, başlıklar ve boyutlar yalnızca
   şifreli dizinde.

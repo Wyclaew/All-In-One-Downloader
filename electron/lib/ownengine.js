@@ -17,6 +17,9 @@
 // rather than asking ffmpeg to guess.
 
 const fs = require('fs')
+const fsp = require('fs/promises')
+const http = require('http')
+const https = require('https')
 const path = require('path')
 const { spawn } = require('child_process')
 const { Readable, Transform } = require('stream')
@@ -26,10 +29,10 @@ const {
   fetchHeaders,
   fetchManifest,
   ffprobeHeaderArgs,
-  headSize,
   parseHls,
+  probeFile,
 } = require('./mediainfo')
-const { safeName } = require('./util')
+const { safeName, settingNumber } = require('./util')
 
 const AUDIO_CODECS = {
   mp3: ['libmp3lame', '-q:a', '2'],
@@ -159,7 +162,275 @@ async function pickVariant(url, resolved, quality, onNote) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* plain file over HTTP                                                        */
+/* plain file over HTTP, in several pieces at once                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Below this there is nothing to gain: the connections cost more in handshakes
+ * than they save, and the file is over before they ramp up.
+ */
+const MIN_MULTIPART = 4 * 1024 * 1024
+
+/**
+ * Parallel parts go through node's own http client rather than fetch.
+ *
+ * This is not a style preference. Node's fetch keeps one connection per origin by
+ * default, so four "parallel" range requests to the same host queue behind each
+ * other — no parallelism at all, and a part that hangs up early can leave the
+ * next one waiting on a connection that never frees. An explicit agent with real
+ * sockets is the only way to get what this feature is for.
+ */
+const AGENTS = {
+  'http:': new http.Agent({ keepAlive: true, maxSockets: 32 }),
+  'https:': new https.Agent({ keepAlive: true, maxSockets: 32 }),
+}
+
+/** Open one request, following redirects, and hand back the live response. */
+function openStream(rawUrl, headers, redirects = 5) {
+  return new Promise((resolve, reject) => {
+    let target
+    try {
+      target = new URL(rawUrl)
+    } catch (err) {
+      return reject(err)
+    }
+    const mod = target.protocol === 'http:' ? http : https
+    const req = mod.request(
+      target,
+      { headers, agent: AGENTS[target.protocol] },
+      (res) => {
+        const location = res.headers.location
+        if (location && res.statusCode >= 300 && res.statusCode < 400 && redirects > 0) {
+          res.resume() // drain, or the socket is never reusable
+          const next = new URL(location, target).href
+          return resolve(openStream(next, headers, redirects - 1))
+        }
+        resolve({ status: res.statusCode, headers: res.headers, stream: res, request: req })
+      }
+    )
+    req.on('error', reject)
+    req.setTimeout(30000, () => req.destroy(new Error('Sunucu yanıt vermedi.')))
+    req.end()
+  })
+}
+
+/**
+ * Why several connections are faster than one, given the same line.
+ *
+ * A single TCP stream is rarely limited by your bandwidth. It is limited by the
+ * server's per-connection shaping, by the round-trip time against the congestion
+ * window, and by whatever middlebox decided that this one flow has had enough.
+ * None of those apply *per file* — they apply per connection. Opening four means
+ * four independent windows, four shaping buckets, and four flows for the network
+ * to schedule, which is why 300 KB/s on one can become several MB/s on four.
+ *
+ * The file is preallocated and each part is written straight to its own offset,
+ * so nothing is concatenated at the end. Progress for each part is journalled
+ * next to it, which is what makes a multi-part transfer resumable at all.
+ */
+function planPathFor(partPath) {
+  return `${partPath}.parts`
+}
+
+function makePlan(size, connections) {
+  const count = Math.max(1, Math.min(connections, 16))
+  const chunk = Math.ceil(size / count)
+  const parts = []
+  for (let start = 0; start < size; start += chunk) {
+    parts.push({ start, end: Math.min(start + chunk, size) - 1, done: 0 })
+  }
+  return { size, parts }
+}
+
+function readPlan(planPath, size) {
+  try {
+    const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'))
+    if (!plan || plan.size !== size || !Array.isArray(plan.parts) || !plan.parts.length) return null
+    // A journal that disagrees with itself is worse than no journal.
+    for (const p of plan.parts) {
+      if (!Number.isFinite(p.start) || !Number.isFinite(p.end) || !Number.isFinite(p.done)) return null
+      if (p.done < 0 || p.start + p.done > p.end + 1) return null
+    }
+    return plan
+  } catch {
+    return null
+  }
+}
+
+function savePlan(planPath, plan) {
+  try {
+    fs.writeFileSync(planPath, JSON.stringify(plan))
+  } catch {
+    /* the journal is an optimisation; losing it only costs a restart */
+  }
+}
+
+async function fetchFileParallel({
+  url,
+  resolved,
+  destPath,
+  size,
+  connections,
+  onProgress,
+  onHandle,
+  onNote,
+}) {
+  const partPath = `${destPath}.part`
+  const planPath = planPathFor(partPath)
+
+  let plan = readPlan(planPath, size)
+  let resumed = false
+  if (plan && fs.existsSync(partPath) && fs.statSync(partPath).size === size) {
+    resumed = plan.parts.some((p) => p.done > 0)
+  } else {
+    plan = makePlan(size, connections)
+    // Preallocate so every connection can write at its own offset from the start.
+    const fd = fs.openSync(partPath, 'w')
+    try {
+      fs.ftruncateSync(fd, size)
+    } finally {
+      fs.closeSync(fd)
+    }
+  }
+  savePlan(planPath, plan)
+  onNote?.(
+    resumed ? `${plan.parts.length} parça, kaldığı yerden` : `${plan.parts.length} bağlantı`
+  )
+
+  let stopped = false
+  const live = new Set()
+  onHandle({
+    kill() {
+      stopped = true
+      for (const req of live) {
+        try {
+          req.destroy()
+        } catch {
+          /* already gone */
+        }
+      }
+      live.clear()
+    },
+  })
+
+  const doneBytes = () => plan.parts.reduce((sum, p) => sum + p.done, 0)
+  let lastAt = Date.now()
+  let lastBytes = doneBytes()
+  let lastSaved = Date.now()
+
+  const tick = () => {
+    const now = Date.now()
+    if (now - lastAt < 400) return
+    const downloaded = doneBytes()
+    const speed = ((downloaded - lastBytes) * 1000) / (now - lastAt)
+    lastAt = now
+    lastBytes = downloaded
+    if (now - lastSaved > 1000) {
+      savePlan(planPath, plan)
+      lastSaved = now
+    }
+    onProgress({
+      downloaded,
+      total: size,
+      totalExact: true,
+      speed,
+      eta: speed > 0 ? Math.round((size - downloaded) / speed) : null,
+      percent: downloaded / size,
+    })
+  }
+
+  const MAX_STALLS = 4
+
+  const runPart = async (part) => {
+    let stalls = 0
+    const capacity = part.end - part.start + 1
+
+    while (part.done < capacity) {
+      if (stopped) throw abortError()
+      const from = part.start + part.done
+      const res = await openStream(url, {
+        ...fetchHeaders(url, resolved),
+        Range: `bytes=${from}-${part.end}`,
+      })
+      live.add(res.request)
+
+      if (res.status !== 206) {
+        res.request.destroy()
+        live.delete(res.request)
+        const err = new Error('Sunucu parçalı indirmeyi reddetti.')
+        err.code = 'NO_RANGE'
+        throw err
+      }
+
+      const before = part.done
+
+      // Written by hand rather than through a pipeline. A part has to stop at its
+      // own boundary — asking for bytes 0-999 does not guarantee getting only
+      // those, and some servers answer 206 and then send the rest of the file,
+      // which would scribble over the next part's territory. Awaiting each
+      // positioned write makes "stop here" and "everything is on disk" the same
+      // moment, which a pipeline torn down mid-flight cannot promise.
+      const handle = await fsp.open(partPath, 'r+')
+      try {
+        let offset = from
+        for await (const chunk of res.stream) {
+          if (stopped) throw abortError()
+          const room = capacity - part.done
+          if (room <= 0) break
+          const slice = chunk.length > room ? chunk.subarray(0, room) : chunk
+          await handle.write(slice, 0, slice.length, offset)
+          offset += slice.length
+          part.done += slice.length
+          tick()
+          if (part.done >= capacity) break
+        }
+      } finally {
+        await handle.close()
+        // Hang up rather than pull down bytes that would only be discarded.
+        res.request.destroy()
+        live.delete(res.request)
+      }
+
+      // A connection dropped early leaves this part short; the loop reopens it
+      // from exactly where it stopped rather than starting the file again. But a
+      // server that answers 206 and then sends nothing would spin that loop
+      // forever, so a run of empty answers has to end the attempt.
+      if (part.done === before) {
+        stalls += 1
+        if (stalls >= MAX_STALLS) {
+          throw new Error(`Sunucu ${from}. bayttan sonrasını vermedi.`)
+        }
+        await new Promise((r) => setTimeout(r, 300 * stalls))
+      } else {
+        stalls = 0
+      }
+
+      if (part.start + part.done > part.end) return
+      if (stopped) throw abortError()
+    }
+  }
+
+  try {
+    await Promise.all(plan.parts.map(runPart))
+  } catch (err) {
+    savePlan(planPath, plan)
+    if (stopped) throw abortError()
+    throw err
+  }
+
+  const total = doneBytes()
+  if (total !== size) {
+    throw new Error(`Parçalar eksik indi (${total}/${size}).`)
+  }
+
+  fs.rmSync(planPath, { force: true })
+  fs.renameSync(partPath, destPath)
+  onProgress({ downloaded: size, total: size, totalExact: true, speed: null, eta: 0, percent: 1 })
+  return { path: destPath, resumed, parts: plan.parts.length }
+}
+
+/* -------------------------------------------------------------------------- */
+/* plain file over HTTP, one connection                                        */
 /* -------------------------------------------------------------------------- */
 
 async function fetchFile({ url, resolved, destPath, onProgress, onHandle }) {
@@ -467,12 +738,47 @@ async function transfer({
   // segmented has to be assembled, and only ffmpeg does that properly.
   const plain = kind === 'file' && !download.audioOnly
   if (plain) {
-    // Ask for the length first so the meter has a target from the first byte.
-    const size = await headSize(url, resolved).catch(() => null)
+    // Ask what this file is before fetching it: the length gives the meter a
+    // target from the first byte, and whether the server serves ranges decides
+    // between four connections and one.
+    const probed = await probeFile(url, resolved).catch(() => ({ size: null, ranges: false }))
     halt()
-    if (size) {
-      onProgress({ downloaded: 0, total: size, totalExact: true, speed: null, eta: null, percent: 0 })
+    if (probed.url) url = probed.url
+    if (probed.size) {
+      onProgress({
+        downloaded: 0,
+        total: probed.size,
+        totalExact: true,
+        speed: null,
+        eta: null,
+        percent: 0,
+      })
     }
+
+    const connections = Math.max(1, Math.min(16, settingNumber(settings.connections, 4)))
+    if (probed.size && probed.ranges && connections > 1 && probed.size >= MIN_MULTIPART) {
+      try {
+        const out = await fetchFileParallel({
+          url,
+          resolved,
+          destPath,
+          size: probed.size,
+          connections,
+          onProgress,
+          onHandle,
+          onNote,
+        })
+        return { filePath: out.path }
+      } catch (err) {
+        // Advertising ranges and honouring them are different things. One retry
+        // on a single connection beats failing a download over an optimisation.
+        if (!err || err.code !== 'NO_RANGE') throw err
+        onNote?.('sunucu parçalı vermedi, tek bağlantıya düşüldü')
+        fs.rmSync(planPathFor(`${destPath}.part`), { force: true })
+        fs.rmSync(`${destPath}.part`, { force: true })
+      }
+    }
+
     return { filePath: await fetchFile({ url, resolved, destPath, onProgress, onHandle }) }
   }
 

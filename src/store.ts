@@ -87,6 +87,7 @@ export function useVault() {
     unlocked: false,
     count: null,
     autoLockMinutes: 15,
+    dir: '',
     entries: [],
   })
 

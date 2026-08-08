@@ -86,6 +86,48 @@ function pushVault() {
   store.send('vault', vaultState())
 }
 
+/**
+ * Forget every trace of a file that has moved into the vault.
+ *
+ * The file is no longer where the library record and the source row say it is, so
+ * leaving either behind means offering the user a broken "open" and a download
+ * button for something they already have. The source heading itself goes when its
+ * last item leaves — a group with nothing under it is just a stale title.
+ *
+ * Matched on the path as well as the id, so a file added straight from disk
+ * cleans up the record that was pointing at it too.
+ */
+function forgetVaultedFile({ downloadId = null, filePath = null }) {
+  const state = store.getState()
+  const gone = state.downloads.filter(
+    (d) => (downloadId && d.id === downloadId) || (filePath && d.filePath === filePath)
+  )
+  if (!gone.length && !downloadId) return
+
+  const urls = new Set(gone.map((d) => d.url).filter(Boolean))
+  const itemIds = new Set(gone.map((d) => d.itemId).filter(Boolean))
+  const touchedSources = new Set(gone.map((d) => d.sourceId).filter(Boolean))
+
+  for (const d of gone) downloader.remove(d.id, { deleteFile: false })
+
+  store.commit((s) => {
+    const before = new Map()
+    for (const src of s.sources) before.set(src.id, s.items.filter((i) => i.sourceId === src.id).length)
+
+    s.items = s.items.filter((i) => !itemIds.has(i.id) && !urls.has(i.url))
+
+    for (const src of s.sources) {
+      src.count = s.items.filter((i) => i.sourceId === src.id).length
+      if (src.count === 0 && before.get(src.id) > 0) touchedSources.add(src.id)
+    }
+    // Only drop a source that has just been emptied — never one that arrived
+    // empty, because that one is still showing the user why it found nothing.
+    s.sources = s.sources.filter(
+      (src) => !(touchedSources.has(src.id) && before.get(src.id) > 0 && src.count === 0)
+    )
+  })
+}
+
 function toRenderer(action) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('menu', action)
 }
@@ -540,9 +582,7 @@ function registerIpc() {
       duration: download.duration,
       sourceUrl: download.url,
     })
-    // The file is no longer where the library says it is, so the row would only
-    // mislead. The vault entry carries the title, site and duration instead.
-    downloader.remove(downloadId, { deleteFile: false })
+    forgetVaultedFile({ downloadId })
     pushVault()
     return entry
   })
@@ -557,6 +597,9 @@ function registerIpc() {
     for (const file of result.filePaths) {
       try {
         await vault.addFile(file, { title: path.basename(file) })
+        // The picker can point at a file the library downloaded, and that record
+        // would otherwise keep pointing at a path that no longer exists.
+        forgetVaultedFile({ filePath: file })
         added += 1
       } catch (err) {
         store.toast(`${path.basename(file)} eklenemedi: ${err.message}`, 'error')

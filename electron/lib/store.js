@@ -15,6 +15,9 @@ function defaultSettings() {
   return {
     downloadDir: path.join(app.getPath('downloads'), 'All in One Downloader'),
     concurrency: 2,
+    // Connections per file. A single TCP stream is usually shaped well below the
+    // line's capacity, so several pieces at once is what fills it.
+    connections: 4,
     defaultQuality: 1080, // 0 = en iyi
     container: 'mp4',
     audioFormat: 'mp3',

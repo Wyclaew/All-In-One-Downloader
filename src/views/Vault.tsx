@@ -256,20 +256,31 @@ function Contents({
         )}
       </section>
 
-      {vault.entries.length ? (
-        <p className="vault-foot">
-          <span className="info-wrap">
-            <span>{T.vault.footer(vault.entries.length, fmt.bytes(totalSize))}</span>
-            <Info label={T.vault.howTitle}>
-              <ul style={{ margin: 0, paddingLeft: 16 }}>
-                {T.vault.how.map((line) => (
-                  <li key={line}>{line}</li>
-                ))}
-              </ul>
-            </Info>
+      <p className="vault-foot">
+        <span className="info-wrap">
+          <span>
+            {vault.entries.length
+              ? T.vault.footer(vault.entries.length, fmt.bytes(totalSize))
+              : T.vault.footerEmpty}
           </span>
-        </p>
-      ) : null}
+          <Info label={T.vault.howTitle}>
+            <p style={{ marginTop: 0 }}>{T.vault.whereTitle}</p>
+            <code className="mono" style={{ wordBreak: 'break-all', fontSize: 11 }}>
+              {vault.dir}
+            </code>
+            <p>{T.vault.whereBody}</p>
+            <p style={{ marginBottom: 4 }}>{T.vault.howTitle}</p>
+            <ul style={{ margin: 0, paddingLeft: 16 }}>
+              {T.vault.how.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </Info>
+        </span>
+        <Btn size="sm" variant="ghost" icon="folder" onClick={() => api.revealFile(vault.dir)}>
+          {T.vault.reveal}
+        </Btn>
+      </p>
 
       {pendingRemove ? (
         <Modal

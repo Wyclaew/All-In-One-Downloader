@@ -132,7 +132,7 @@ export const T = {
     subsSkipSame: 'Videonun sesi zaten o dildeyse altyazı ekleme',
     blocker: 'Reklam ve izleyici engelleme',
     blockerHint:
-      'Çözümleyicinin tarayıcısı, bilinen reklam ağlarına ve izleyicilere yapılan istekleri iptal eder — pop-up açılmaz ve sayfa daha hızlı yüklenir. Reklam sayacı ve analytics bilerek engellenmez, çünkü bazı oynatıcılar kendini onların üzerinden başlatıyor. Aşağıya kendi engellemek istediğin alan adlarını satır satır ekleyebilirsin.',
+      'Çözümleyicinin tarayıcısı, bilinen reklam ağlarına ve izleyicilere yapılan istekleri iptal eder — pop-up açılmaz ve sayfa daha hızlı yüklenir. Liste 200\'ün üzerinde alan adı içeriyor: pop-under ağları, reklam borsaları, kimlik/veri simsarları, oturum kaydediciler, bildirim spam\'i ve tarayıcıda madencilik yapanlar. Reklam SDK\'ları ve ölçüm servisleri bilerek engellenmez — bazı oynatıcılar videoyu ancak reklam döngüsü bitince veriyor, o istekleri kesersen video hiç başlamıyor. Aşağıya kendi alan adlarını satır satır ekleyebilirsin.',
     blockTrackers: 'Bilinen reklam ağlarını ve izleyicileri engelle',
     minStream: 'En kısa video süresi',
     minStreamHint:
@@ -152,6 +152,9 @@ export const T = {
 
     concurrency: 'Eşzamanlı indirme',
     concurrencyHint: 'Aynı anda kaç aktarım çalışsın.',
+    connections: 'Dosya başına bağlantı',
+    connectionsHint:
+      'Tek bir videoyu kaç ayrı bağlantıyla çekelim. Bir indirmenin yavaş olmasının sebebi genelde hattın değil, tek bağlantının sınırlanması: sunucu bağlantı başına hız kısar, gidiş-dönüş süresi tek akışın penceresini daraltır. Dördü birden açmak bu sınırların dördünü birden kullanır. Parçalı akışlarda (HLS/DASH) aynı anda indirilen parça sayısı olur; düz dosyalarda dosya gerçekten parçalara bölünüp aynı anda indirilir ve duraklatırsan her parça kaldığı yerden devam eder. Sunucu izin vermezse kendiliğinden tek bağlantıya düşer. Çok yükseltmek bazı sitelerde 429 (çok fazla istek) yiyebilir — 4 ile 8 arası iyi bir aralık.',
     rateLimit: 'Hız sınırı',
     rateLimitHint: 'Boş bırak = sınırsız. Örn. 4M, 800K',
     autoStart: 'Sıraya eklenen indirmeler kendiliğinden başlasın',
@@ -278,6 +281,11 @@ export const T = {
     autoLockNote: (n: number) => `${n} dk işlem olmazsa kendiliğinden kilitlenir`,
     autoLockOff: 'otomatik kilit kapalı',
     footer: (n: number, size: string) => `${n} dosya · ${size} şifreli olarak duruyor`,
+    footerEmpty: 'Kasa diskte nerede duruyor?',
+    reveal: 'Klasörü göster',
+    whereTitle: 'Dosyalar burada duruyor:',
+    whereBody:
+      'Bu klasörü yedeklersen kasan da yedeklenmiş olur; içindekiler zaten şifreli. İçeride rastgele adlı bloklar, bir de şifreli dizin dosyası görürsün — adları ve başlıkları tutan yer orası. Bu dosyaları elle silersen o kayıtlar geri gelmez.',
     howTitle: 'Güvenlik katmanları',
     how: [
       'Her dosya AES-256-GCM ile, kendine ait rastgele bir nonce ile şifrelenir. Doğrulama etiketi dosyaya iliştirilir: kurcalanan bir dosya bozuk çözülmez, hiç açılmaz.',

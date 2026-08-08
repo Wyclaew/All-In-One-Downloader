@@ -1,5 +1,20 @@
 ## Bu sürümde
 
+- **İndirme hızı: dosya başına birden çok bağlantı.** Bir indirmenin yavaş
+  kalmasının sebebi genelde hattın değil, tek bağlantının sınırlanması. Parçalı
+  akışlarda (HLS/DASH) parçalar artık aynı anda iniyor — yt-dlp'nin varsayılanı
+  **1**'di. Düz dosyalarda ise dosya gerçekten parçalara bölünüp her parça kendi
+  bağlantısıyla iniyor; duraklatırsan her parça kaldığı yerden devam ediyor.
+  Ayarlar → Aktarım → **Dosya başına bağlantı** (varsayılan 4).
+- **Kaynaklar'dan doğrudan kasaya taşıma**, ve kasaya giden videonun kaynak
+  listesinden de silinmesi. Bir kaynağın son videosu kasaya girerse başlık
+  kendiliğinden kayboluyor.
+- **Kasa nerede duruyor** bilgisi kasa ekranında; yanındaki düğme klasörü açıyor.
+- **Engelleme listesi** 66'dan 183 alan adına çıktı: pop-under ağları, reklam
+  borsaları, kimlik/veri simsarları, oturum kaydediciler, bildirim spam'i ve
+  tarayıcıda madencilik. Reklam SDK'ları ve ölçüm servisleri bilerek dışarıda —
+  onları kesince bazı oynatıcılar videoyu hiç vermiyor.
+
 - **Şifreli kasa.** İçeriği *ve adı* şifreli duran bir klasör: diskte rastgele adlı
   bloklar, gerçek adlar yalnızca şifreli dizinde. Dosya başına AES-256-GCM,
   şifreden anahtar scrypt ile, anahtar yalnızca bellekte ve kilitlenince üzerine

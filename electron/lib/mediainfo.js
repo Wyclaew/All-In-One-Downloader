@@ -194,13 +194,16 @@ async function fetchManifest(url, resolved) {
 }
 
 /**
- * Byte length of a plain file without fetching it.
+ * What a plain file is, without fetching it: how long, and whether the server
+ * will serve pieces of it.
  *
  * HEAD is the polite way to ask and plenty of media CDNs refuse it, so fall back
- * to a one-byte ranged GET and read the total out of Content-Range.
+ * to a one-byte ranged GET — which answers both questions at once, since a 206
+ * *is* the proof that ranges work.
  */
-async function headSize(url, resolved) {
+async function probeFile(url, resolved) {
   const headers = fetchHeaders(url, resolved)
+  const out = { size: null, ranges: false, url }
 
   const attempt = async (init) => {
     const controller = new AbortController()
@@ -216,8 +219,12 @@ async function headSize(url, resolved) {
 
   const head = await attempt({ method: 'HEAD', headers })
   if (head && head.ok) {
-    const size = num(head.headers.get('content-length'))
-    if (size) return size
+    out.size = num(head.headers.get('content-length'))
+    out.ranges = /bytes/i.test(head.headers.get('accept-ranges') || '')
+    // Follow the redirect once here: parallel parts must all ask the same host,
+    // and re-resolving the redirect on every connection wastes a round trip each.
+    if (head.url) out.url = head.url
+    if (out.size && out.ranges) return out
   }
 
   const ranged = await attempt({ method: 'GET', headers: { ...headers, Range: 'bytes=0-0' } })
@@ -228,11 +235,22 @@ async function headSize(url, resolved) {
     } catch {
       /* already closed */
     }
+    if (ranged.url) out.url = ranged.url
     const total = num((ranged.headers.get('content-range') || '').split('/')[1])
-    if (total) return total
-    if (ranged.ok && ranged.status !== 206) return num(ranged.headers.get('content-length'))
+    if (ranged.status === 206 && total) {
+      out.size = total
+      out.ranges = true
+      return out
+    }
+    if (ranged.ok && !out.size) out.size = num(ranged.headers.get('content-length'))
   }
-  return null
+  return out
+}
+
+/** Byte length of a plain file, or null when the server won't say. */
+async function headSize(url, resolved) {
+  const info = await probeFile(url, resolved)
+  return info.size
 }
 
 /** Key systems we will not try to work around. */
@@ -572,6 +590,7 @@ module.exports = {
   fetchHeaders,
   fetchManifest,
   headSize,
+  probeFile,
   ffprobeMedia,
   audioLanguages,
   normaliseLanguage,
