@@ -28,7 +28,7 @@ const path = require('path')
 const { BrowserWindow, session } = require('electron')
 const { createBlocker } = require('./blocklist')
 const { describeStream } = require('./mediainfo')
-const { electronRules: proxyRules } = require('./proxy')
+const { electronRules: proxyRules, fetchVia } = require('./proxy')
 const { uid, hostOf } = require('./util')
 
 /**
@@ -198,32 +198,31 @@ function decodeBase64Blobs(text) {
  * engine 1 — static scan
  * ========================================================================== */
 
-async function fetchText(url, referer, { timeoutMs = 12000, userAgent = UA, json = false } = {}) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+async function fetchText(
+  url,
+  referer,
+  { timeoutMs = 12000, userAgent = UA, json = false, proxy = '' } = {}
+) {
+  const headers = {
+    'User-Agent': userAgent,
+    Accept: json
+      ? 'application/json, text/javascript, */*;q=0.8'
+      : 'text/html,application/xhtml+xml,*/*;q=0.8',
+    'Accept-Language': 'tr,en-US;q=0.8,en;q=0.6',
+    // Players call their own API from the page, and plenty of them check.
+    ...(json ? { 'X-Requested-With': 'XMLHttpRequest' } : {}),
+    ...(referer ? { Referer: referer } : {}),
+  }
+
+  // Everything on behalf of a proxied link goes through the tunnel. `fetch`
+  // cannot be given an agent, so a proxied source has to leave that path
+  // entirely — otherwise the page is read from the real address while only the
+  // download is tunnelled.
   try {
-    const res = await fetch(url, {
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: {
-        'User-Agent': userAgent,
-        Accept: json
-          ? 'application/json, text/javascript, */*;q=0.8'
-          : 'text/html,application/xhtml+xml,*/*;q=0.8',
-        'Accept-Language': 'tr,en-US;q=0.8,en;q=0.6',
-        // Players call their own API from the page, and plenty of them check.
-        ...(json ? { 'X-Requested-With': 'XMLHttpRequest' } : {}),
-        ...(referer ? { Referer: referer } : {}),
-      },
-    })
-    const type = res.headers.get('content-type') || ''
-    if (!/text|html|json|javascript|xml|mpegurl/i.test(type)) return { text: '', finalUrl: res.url }
-    const text = await res.text()
-    return { text: text.slice(0, 3 * 1024 * 1024), finalUrl: res.url || url }
+    const res = await fetchVia(url, { headers, proxy, timeoutMs })
+    return { text: String(res.text || '').slice(0, 3 * 1024 * 1024), finalUrl: res.finalUrl || url }
   } catch {
     return { text: '', finalUrl: url }
-  } finally {
-    clearTimeout(timer)
   }
 }
 
@@ -692,7 +691,10 @@ function decodeEntities(text) {
  * Walk the page, its player scripts, and up to `maxDepth` levels of nested
  * iframes — carrying the Referer chain, because embed hosts check it.
  */
-async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress = null } = {}) {
+async function staticScan(
+  pageUrl,
+  { maxDepth = 3, maxFetches = 16, onProgress = null, proxy = '' } = {}
+) {
   const candidates = []
   let title = ''
   let thumbnail = ''
@@ -719,7 +721,7 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
     const fetched = await Promise.all(
       batch.map(async (job) => ({
         job,
-        ...(await fetchText(job.url, job.referer, { json: job.kind === 'api' })),
+        ...(await fetchText(job.url, job.referer, { json: job.kind === 'api', proxy })),
       }))
     )
 
@@ -748,21 +750,17 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
       }
       candidates.push(...found)
 
-      // The page and its scripts both name the endpoint the player will call.
-      // Asking it is usually cheaper and more reliable than anything else here.
-      if (job.kind !== 'api') {
-        for (const api of collectSourceApis(text, finalUrl).slice(0, 4)) {
-          next.push({ url: api, referer: finalUrl, depth: job.depth, kind: 'api' })
-        }
-      }
-
+      /*
+       * Order matters here, because the fetch budget is shared.
+       *
+       * Frames and the refresh redirect are the proven paths — a nested player
+       * document is where most sites actually keep the stream. The source API and
+       * the script chain are newer and speculative: they win outright when they
+       * hit, but queueing them first would let a page with four API-looking URLs
+       * spend the budget before a single iframe was opened. So: documents first,
+       * guesses after.
+       */
       if (job.kind === 'page') {
-        for (const script of collectScripts(text, finalUrl).slice(0, 5)) {
-          next.push({ url: script, referer: finalUrl, depth: job.depth, kind: 'script' })
-        }
-
-        // A refresh meta tag is a redirect the fetch layer never sees, and some
-        // wrapper pages use nothing else.
         const refresh = metaRefreshOf(text, finalUrl)
         if (refresh && job.depth < maxDepth) {
           next.push({ url: refresh, referer: finalUrl, depth: job.depth + 1, kind: 'page' })
@@ -777,6 +775,17 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
             }
             next.push({ url: frame, referer: finalUrl, depth: job.depth + 1, kind: 'page' })
           }
+        }
+
+        for (const script of collectScripts(text, finalUrl).slice(0, 5)) {
+          next.push({ url: script, referer: finalUrl, depth: job.depth, kind: 'script' })
+        }
+      }
+
+      // The page and its scripts both name the endpoint the player will call.
+      if (job.kind !== 'api') {
+        for (const api of collectSourceApis(text, finalUrl).slice(0, 3)) {
+          next.push({ url: api, referer: finalUrl, depth: job.depth, kind: 'api' })
         }
       }
 
@@ -804,13 +813,13 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
   // and a runtime and would pay for a second document they never read.
   if (!candidates.length && maxFetches > 1) {
     if (onProgress) onProgress('mobil sürüm deneniyor')
-    const { text, finalUrl } = await fetchText(pageUrl, '', { userAgent: MOBILE_UA })
+    const { text, finalUrl } = await fetchText(pageUrl, '', { userAgent: MOBILE_UA, proxy })
     if (text) {
       const { candidates: mobile } = collectFromText(text, finalUrl)
       for (const candidate of mobile) candidates.push({ ...candidate, via: 'static-mobile' })
       if (!expectedDuration) expectedDuration = pageDurationOf(text)
       for (const api of collectSourceApis(text, finalUrl).slice(0, 2)) {
-        const answer = await fetchText(api, finalUrl, { json: true })
+        const answer = await fetchText(api, finalUrl, { json: true, proxy })
         if (!answer.text) continue
         const { candidates: fromApi } = collectFromText(answer.text, answer.finalUrl)
         for (const candidate of fromApi) candidates.push({ ...candidate, via: 'static-mobile' })
@@ -1627,7 +1636,7 @@ function browserScan(
  * we're there. Unverified guesses from player configs live or die here, which is
  * what lets the scan be aggressive without inventing entries.
  */
-async function verifyCandidates(candidates, { limit = 12, concurrency = 3 } = {}) {
+async function verifyCandidates(candidates, { limit = 12, concurrency = 3, proxy = '' } = {}) {
   const shortlist = candidates.slice(0, limit)
   const keep = []
   let cursor = 0
@@ -1756,8 +1765,8 @@ async function resolvePage(
     onProgress(skipStatic ? 'bu site için oynatıcı taraması' : 'sayfa ve oynatıcı kodları taranıyor')
   }
   const fast = skipStatic
-    ? await staticScan(pageUrl, { maxFetches: 1, maxDepth: 0 })
-    : await staticScan(pageUrl, { onProgress })
+    ? await staticScan(pageUrl, { maxFetches: 1, maxDepth: 0, proxy })
+    : await staticScan(pageUrl, { onProgress, proxy })
 
   if (fast.expectedDuration && onProgress) {
     onProgress(`sayfa videoyu ${Math.round(fast.expectedDuration / 60)} dk diye bildiriyor`)
@@ -1872,7 +1881,7 @@ async function assistedCapture(
 
   // One cheap fetch for the page's own title, poster and declared runtime — the
   // runtime is what lets us tell the feature from a pre-roll here too.
-  const meta = await staticScan(pageUrl, { maxFetches: 1, maxDepth: 0 })
+  const meta = await staticScan(pageUrl, { maxFetches: 1, maxDepth: 0, proxy })
 
   const result = await browserScan(pageUrl, {
     assisted: true,

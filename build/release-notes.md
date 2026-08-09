@@ -1,5 +1,17 @@
 ## Bu sürümde
 
+- **VPN düzeltmesi.** Vekil açıkken sayfa taraması, aday doğrulama ve manifest
+  okuma hâlâ tünelin *etrafından* gidiyordu: yalnızca indirme vekilliydi. Coğrafi
+  engelli bir sitede çözümleme bu yüzden düşüyordu — üstelik gerçek adres de
+  sızıyordu. Artık vekilli bir bağlantı adına yapılan her istek aynı kapıdan
+  geçiyor.
+- **Çözümleyicide öncelik düzeltmesi.** Yeni eklenen kaynak-API ve script zinciri
+  denemeleri, iframe takibiyle aynı istek bütçesini paylaşıyordu; dört API adayı
+  olan bir sayfada tek bir iframe bile açılmadan bütçe bitebiliyordu. Kanıtlanmış
+  yollar (iframe, yönlendirme) artık sırada önce.
+
+## Önceki sürümde
+
 - **Çözümleyiciye dört yeni teknik.** Oynatıcının kendi kaynak API'sini sorma
   (adresin sayfada hiç bulunmadığı siteler için), script zincirini bir kat daha
   takip etme, masaüstünde boş dönen sayfayı telefon olarak isteme, ve 3xx dönmeyen

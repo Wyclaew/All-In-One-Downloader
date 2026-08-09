@@ -307,4 +307,87 @@ function checkProxy(raw, timeoutMs = 12000) {
   })
 }
 
-module.exports = { parseProxy, agentsFor, electronRules, ffmpegEnv, isSocks, checkProxy }
+/**
+ * A text fetch that honours the proxy.
+ *
+ * `fetch` cannot be given an agent, so anything built on it goes around the
+ * tunnel no matter what the interface says. Every request the resolver makes on
+ * behalf of a proxied link has to come through here instead — otherwise the page
+ * is fetched from the real address while only the download is tunnelled, which
+ * both leaks and fails: a geo-blocked site answers the scan with a block page and
+ * the resolve dies before the proxy is ever used.
+ */
+function fetchVia(url, { headers = {}, proxy = '', timeoutMs = 12000, maxBytes = 3 * 1024 * 1024, redirects = 5 } = {}) {
+  const agents = proxy ? agentsFor(proxy) : null
+  if (proxy && !agents) return Promise.reject(new Error(`Vekil adresi anlaşılamadı: ${proxy}`))
+
+  return new Promise((resolve, reject) => {
+    let target
+    try {
+      target = new URL(url)
+    } catch (err) {
+      return reject(err)
+    }
+    const mod = target.protocol === 'http:' ? http : https
+    const req = mod.request(
+      target,
+      { headers, agent: agents ? agents[target.protocol] : undefined },
+      (res) => {
+        const location = res.headers.location
+        if (location && res.statusCode >= 300 && res.statusCode < 400 && redirects > 0) {
+          res.resume()
+          let next
+          try {
+            next = new URL(location, target).href
+          } catch {
+            return resolve({ status: res.statusCode, headers: res.headers, text: '', finalUrl: url })
+          }
+          return resolve(fetchVia(next, { headers, proxy, timeoutMs, maxBytes, redirects: redirects - 1 }))
+        }
+
+        const type = String(res.headers['content-type'] || '')
+        if (!/text|html|json|javascript|xml|mpegurl|dash|octet-stream/i.test(type)) {
+          res.resume()
+          return resolve({ status: res.statusCode, headers: res.headers, text: '', finalUrl: target.href })
+        }
+
+        const chunks = []
+        let size = 0
+        res.on('data', (chunk) => {
+          chunks.push(chunk)
+          size += chunk.length
+          if (size >= maxBytes) res.destroy()
+        })
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode,
+            headers: res.headers,
+            text: Buffer.concat(chunks).toString('utf8'),
+            finalUrl: target.href,
+          })
+        )
+        res.on('error', () =>
+          resolve({
+            status: res.statusCode,
+            headers: res.headers,
+            text: Buffer.concat(chunks).toString('utf8'),
+            finalUrl: target.href,
+          })
+        )
+      }
+    )
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('Sunucu yanıt vermedi.')))
+    req.once('error', reject)
+    req.end()
+  })
+}
+
+module.exports = {
+  parseProxy,
+  agentsFor,
+  electronRules,
+  ffmpegEnv,
+  isSocks,
+  checkProxy,
+  fetchVia,
+}
