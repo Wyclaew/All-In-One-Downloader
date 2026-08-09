@@ -24,6 +24,19 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [clip, setClip] = useState<string | null>(null)
   const [managingCategories, setManagingCategories] = useState(false)
+  // Held here so a trip to the library and back does not undo a quality pick.
+  const [groupQuality, setGroupQuality] = useState<Record<string, string>>({})
+  const [rowQuality, setRowQuality] = useState<Record<string, string>>({})
+  const [useProxy, setUseProxy] = useState(false)
+
+  // The default is a setting, but only until the user touches the switch — after
+  // that the switch stays where they left it for the rest of the session.
+  const proxyTouched = useRef(false)
+  useEffect(() => {
+    if (!proxyTouched.current && state?.settings.proxyByDefault !== undefined) {
+      setUseProxy(!!state.settings.proxyByDefault)
+    }
+  }, [state?.settings.proxyByDefault])
 
   const urlRef = useRef<HTMLInputElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
@@ -45,14 +58,14 @@ export default function App() {
       const value = (raw ?? url).trim()
       if (!value || busy) return
       setBusy(true)
-      const res = await api.addSource(value)
+      const res = await api.addSource(value, useProxy)
       setBusy(false)
       if (res) {
         setUrl('')
         setView('sources')
       }
     },
-    [url, busy]
+    [url, busy, useProxy]
   )
 
   /* ---- clipboard watch: offer, never auto-add ---------------------------- */
@@ -200,6 +213,20 @@ export default function App() {
               }}
             />
           </label>
+          {/* Per link, not per app: this is the whole point of the switch. */}
+          <button
+            type="button"
+            className={`vpn-toggle${useProxy ? ' on' : ''}`}
+            title={useProxy ? T.compose.proxyOnHint : T.compose.proxyOffHint}
+            aria-pressed={useProxy}
+            onClick={() => {
+              proxyTouched.current = true
+              setUseProxy((v) => !v)
+            }}
+          >
+            <Icon name={useProxy ? 'shield' : 'shieldOff'} size={14} />
+            <span>{T.compose.proxy}</span>
+          </button>
           <Btn
             variant="primary"
             size="tall"
@@ -406,6 +433,12 @@ export default function App() {
               <SourcesView
                 state={state}
                 downloads={downloads}
+                quality={{
+                  group: groupQuality,
+                  row: rowQuality,
+                  setGroup: setGroupQuality,
+                  setRow: setRowQuality,
+                }}
                 onGoToLibrary={() => goLibrary(ALL)}
                 onToast={pushToast}
               />

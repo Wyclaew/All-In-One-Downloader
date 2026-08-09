@@ -10,6 +10,7 @@ const binaries = require('./lib/binaries')
 const browsers = require('./lib/browsers')
 const subtitles = require('./lib/subtitles')
 const vault = require('./lib/vault')
+const proxy = require('./lib/proxy')
 const { uid, extractUrls, isProbablyUrl } = require('./lib/util')
 
 // Load from the Vite dev server only when we were actually started by `npm run
@@ -272,9 +273,13 @@ function registerIpc() {
   handle('tools:refresh', () => binaries.detectTools({ force: true }))
   handle('tools:update', () => binaries.updateYtdlp())
 
-  handle('source:add', (input) => {
+  handle('source:add', ({ input, useProxy = false } = {}) => {
     const urls = extractUrls(String(input || ''))
     if (!urls.length) throw new Error('Geçerli bir bağlantı bulunamadı.')
+    const settings = store.getState().settings
+    if (useProxy && !String(settings.proxyUrl || '').trim()) {
+      throw new Error('Vekil adresi boş. Ayarlar → Erişim bölümünden gir.')
+    }
     const existing = store.getState().sources
     let added = 0
     for (const url of urls) {
@@ -286,14 +291,41 @@ function registerIpc() {
         })
         continue
       }
-      queueProbe(probe.createSource(url))
+      // The choice belongs to the link and travels with it: this source resolves
+      // and downloads through the proxy while the one beside it does not.
+      queueProbe(probe.createSource(url, { useProxy }))
       added += 1
     }
     return { added }
   })
 
+  handle('proxy:check', async () => {
+    const url = String(store.getState().settings.proxyUrl || '').trim()
+    if (!url) return { ok: false, message: 'Vekil adresi boş.' }
+    const parsed = proxy.parseProxy(url)
+    if (!parsed) return { ok: false, message: 'Adres anlaşılamadı. Örnek: socks5://127.0.0.1:40000' }
+    try {
+      const started = Date.now()
+      const seen = await proxy.checkProxy(url)
+      return {
+        ok: true,
+        message: `Bağlandı (${Date.now() - started} ms). Dışarıya görünen adres: ${seen || 'okunamadı'}`,
+      }
+    } catch (err) {
+      return { ok: false, message: err.message }
+    }
+  })
+
   handle('source:remove', (id) => {
     probe.cancelProbe(id)
+    // Removing the group has to stop what it started. Leaving a transfer running
+    // for a source that no longer exists is how a download becomes impossible to
+    // stop: nothing on screen owns it any more.
+    for (const d of store.getState().downloads) {
+      if (d.sourceId === id && (d.status === 'running' || d.status === 'queued' || d.status === 'paused')) {
+        downloader.cancel(d.id)
+      }
+    }
     store.commit((s) => {
       s.sources = s.sources.filter((x) => x.id !== id)
       s.items = s.items.filter((x) => x.sourceId !== id)

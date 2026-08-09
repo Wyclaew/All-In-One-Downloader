@@ -302,7 +302,7 @@ function Row({
 
         {running || paused ? (
           <>
-            <Meter percent={d.percent} tone={tone} />
+            <Meter percent={d.percent} tone={tone} parts={running ? d.parts : null} />
             <div className="dl-figures">
               <span className="pct">{fmt.percent(d.percent)}</span>
               <span>

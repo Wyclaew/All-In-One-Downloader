@@ -28,6 +28,7 @@ const path = require('path')
 const { BrowserWindow, session } = require('electron')
 const { createBlocker } = require('./blocklist')
 const { describeStream } = require('./mediainfo')
+const { electronRules: proxyRules } = require('./proxy')
 const { uid, hostOf } = require('./util')
 
 /**
@@ -48,6 +49,14 @@ const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
 
 /** Extensions that mean "this is the thing we want to hand to yt-dlp". */
+/**
+ * The same site often ships two different players. Desktop gets one that builds
+ * its source in JavaScript; a phone gets a plain <video src> because the phone's
+ * own player handles it. Asking as a phone is a second, cheaper document.
+ */
+const MOBILE_UA =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
+
 const MANIFEST_EXT = /\.(m3u8|mpd)(\?|#|$)/i
 const FILE_EXT = /\.(mp4|webm|m4v|mkv|mov|flv|mp3|m4a|ogg|opus|wav)(\?|#|$)/i
 const SEGMENT_EXT = /\.(ts|m4s|aac|init)(\?|#|$)/i
@@ -189,7 +198,7 @@ function decodeBase64Blobs(text) {
  * engine 1 — static scan
  * ========================================================================== */
 
-async function fetchText(url, referer, timeoutMs = 12000) {
+async function fetchText(url, referer, { timeoutMs = 12000, userAgent = UA, json = false } = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -197,9 +206,13 @@ async function fetchText(url, referer, timeoutMs = 12000) {
       redirect: 'follow',
       signal: controller.signal,
       headers: {
-        'User-Agent': UA,
-        Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
+        'User-Agent': userAgent,
+        Accept: json
+          ? 'application/json, text/javascript, */*;q=0.8'
+          : 'text/html,application/xhtml+xml,*/*;q=0.8',
         'Accept-Language': 'tr,en-US;q=0.8,en;q=0.6',
+        // Players call their own API from the page, and plenty of them check.
+        ...(json ? { 'X-Requested-With': 'XMLHttpRequest' } : {}),
         ...(referer ? { Referer: referer } : {}),
       },
     })
@@ -438,6 +451,101 @@ function collectFromText(text, baseUrl) {
 }
 
 /**
+ * The player's own source API.
+ *
+ * On a large share of streaming hosts the address is not in the page at all: the
+ * page ships an id, and the player asks its own backend for the stream — a small
+ * JSON endpoint like `/api/source/abc123` or `/player/index.php?data=…`. Scraping
+ * the HTML finds nothing because there is nothing to find. Asking the endpoint
+ * the player would ask, with the page as Referer, gets the same answer the player
+ * gets — in one request, without starting a browser.
+ */
+const SOURCE_API_RE =
+  /["'`(=]\s*((?:https?:\/\/[^"'`\s<>]+|\/[^"'`\s<>]*)?(?:\/api\/(?:v\d+\/)?(?:source|sources|video|stream|player|embed)|\/getSources?\b|\/get_?video(?:_?info)?\b|\/player\/index\.php|\/(?:source|sources|embed-source|player)\.php|\/ajax\/(?:video|source|player|embed)[^"'`\s<>]*)[^"'`\s<>{}]*)/gi
+
+/**
+ * Endpoints worth asking, absolute and same-host only.
+ *
+ * Same-host on purpose: a source API belongs to the site serving the player.
+ * Following one off-site would mean fetching whatever any script on the page
+ * cares to name.
+ */
+function collectSourceApis(text, baseUrl) {
+  let host = ''
+  try {
+    host = new URL(baseUrl).hostname
+  } catch {
+    return []
+  }
+  const out = new Set()
+  SOURCE_API_RE.lastIndex = 0
+  let match
+  while ((match = SOURCE_API_RE.exec(text)) !== null) {
+    let abs
+    try {
+      abs = new URL(normaliseText(match[1]), baseUrl)
+    } catch {
+      continue
+    }
+    if (!/^https?:$/.test(abs.protocol)) continue
+    if (abs.hostname !== host && !abs.hostname.endsWith(`.${host}`)) continue
+    if (blocker.shouldBlock(abs.href)) continue
+    out.add(abs.href)
+  }
+  return [...out]
+}
+
+/**
+ * Script URLs named inside another script.
+ *
+ * A loader does not write a `<script src>` tag into the markup — it does
+ * `el.src = "/static/player.js"`, or names the file in a config. The tag-based
+ * extractor cannot see either, so the chain stops at the loader and the real
+ * player, where the source actually lives, is never read.
+ */
+function collectScriptRefs(text, baseUrl) {
+  let host = ''
+  try {
+    host = new URL(baseUrl).hostname
+  } catch {
+    return []
+  }
+  const out = new Set()
+  const re = /["'`]([^"'`\s<>]+\.js(?:\?[^"'`\s<>]*)?)["'`]/gi
+  let match
+  while ((match = re.exec(text)) !== null) {
+    let abs
+    try {
+      abs = new URL(normaliseText(match[1]), baseUrl)
+    } catch {
+      continue
+    }
+    if (!/^https?:$/.test(abs.protocol)) continue
+    if (abs.hostname !== host && !abs.hostname.endsWith(`.${host}`)) continue
+    if (blocker.shouldBlock(abs.href)) continue
+    if (/jquery|bootstrap|analytics|gtag|gtm|recaptcha|polyfill|react|vue\.|lodash/i.test(abs.pathname)) {
+      continue
+    }
+    out.add(abs.href)
+  }
+  return [...out]
+}
+
+/** `<meta http-equiv="refresh" content="0; url=...">` — a redirect with no 3xx. */
+function metaRefreshOf(html, baseUrl) {
+  const match = String(html).match(
+    /<meta[^>]+http-equiv\s*=\s*["']?refresh["']?[^>]*content\s*=\s*["'][^"']*?url\s*=\s*([^"';]+)/i
+  )
+  if (!match) return null
+  try {
+    const abs = new URL(normaliseText(match[1].trim()), baseUrl)
+    return /^https?:$/.test(abs.protocol) ? abs.href : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * Player scripts are usually a separate file, so scanning only the HTML misses
  * the very place the source lives. Take same-site and player-looking scripts.
  */
@@ -609,7 +717,10 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
     fetches += batch.length
 
     const fetched = await Promise.all(
-      batch.map(async (job) => ({ job, ...(await fetchText(job.url, job.referer)) }))
+      batch.map(async (job) => ({
+        job,
+        ...(await fetchText(job.url, job.referer, { json: job.kind === 'api' })),
+      }))
     )
 
     const next = []
@@ -637,11 +748,26 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
       }
       candidates.push(...found)
 
-      // Scripts hold sources but never frames, so they are a leaf.
+      // The page and its scripts both name the endpoint the player will call.
+      // Asking it is usually cheaper and more reliable than anything else here.
+      if (job.kind !== 'api') {
+        for (const api of collectSourceApis(text, finalUrl).slice(0, 4)) {
+          next.push({ url: api, referer: finalUrl, depth: job.depth, kind: 'api' })
+        }
+      }
+
       if (job.kind === 'page') {
         for (const script of collectScripts(text, finalUrl).slice(0, 5)) {
           next.push({ url: script, referer: finalUrl, depth: job.depth, kind: 'script' })
         }
+
+        // A refresh meta tag is a redirect the fetch layer never sees, and some
+        // wrapper pages use nothing else.
+        const refresh = metaRefreshOf(text, finalUrl)
+        if (refresh && job.depth < maxDepth) {
+          next.push({ url: refresh, referer: finalUrl, depth: job.depth + 1, kind: 'page' })
+        }
+
         if (job.depth < maxDepth) {
           for (const frame of collectIframes(text, finalUrl)) {
             // Worth revisiting on its own later: a nested player is served
@@ -653,8 +779,43 @@ async function staticScan(pageUrl, { maxDepth = 3, maxFetches = 16, onProgress =
           }
         }
       }
+
+      // A loader script that fetches the real player is common enough to be
+      // worth one hop, but only one: scripts fan out without limit otherwise.
+      if (job.kind === 'script' && job.depth === 0) {
+        for (const nested of collectScriptRefs(text, finalUrl).slice(0, 2)) {
+          next.push({ url: nested, referer: finalUrl, depth: 1, kind: 'script' })
+        }
+      }
     }
     queue = next
+  }
+
+  /*
+   * Nothing found as a desktop browser? Ask again as a phone.
+   *
+   * Sites routinely serve two different players: an MSE one to desktop, where the
+   * source only exists inside JavaScript, and a plain <video src> to mobile
+   * because the phone's own player handles it. When the desktop pass comes back
+   * empty this one request often has the answer sitting in the markup — far
+   * cheaper than the browser engine, and it costs nothing when it fails.
+   */
+  // Not on the metadata-only peeks (maxFetches: 1), which are called for a title
+  // and a runtime and would pay for a second document they never read.
+  if (!candidates.length && maxFetches > 1) {
+    if (onProgress) onProgress('mobil sürüm deneniyor')
+    const { text, finalUrl } = await fetchText(pageUrl, '', { userAgent: MOBILE_UA })
+    if (text) {
+      const { candidates: mobile } = collectFromText(text, finalUrl)
+      for (const candidate of mobile) candidates.push({ ...candidate, via: 'static-mobile' })
+      if (!expectedDuration) expectedDuration = pageDurationOf(text)
+      for (const api of collectSourceApis(text, finalUrl).slice(0, 2)) {
+        const answer = await fetchText(api, finalUrl, { json: true })
+        if (!answer.text) continue
+        const { candidates: fromApi } = collectFromText(answer.text, answer.finalUrl)
+        for (const candidate of fromApi) candidates.push({ ...candidate, via: 'static-mobile' })
+      }
+    }
   }
 
   return {
@@ -966,6 +1127,7 @@ function browserScan(
     assisted = false,
     expectedDuration = null,
     referer = null,
+    proxy = '',
   } = {}
 ) {
   // A page-declared runtime raises the bar for "long enough to be the feature".
@@ -978,6 +1140,15 @@ function browserScan(
     // because Electron cannot destroy a session once created.
     const partition = acquirePartition()
     const ses = session.fromPartition(partition)
+
+    // Each resolve gets its own session, which is exactly what makes a per-link
+    // proxy possible: this page goes through the tunnel while the one resolving
+    // beside it does not. Chromium understands SOCKS here, so no tunnelling of
+    // our own is needed on this path.
+    if (proxy) {
+      const rules = proxyRules(proxy)
+      if (rules) ses.setProxy({ proxyRules: rules, proxyBypassRules: '<local>' }).catch(() => {})
+    }
     const hits = new Map()
     const skipped = new Set()
     const jsonScanned = new Set()
@@ -1569,6 +1740,7 @@ async function resolvePage(
     minStreamSeconds = 120,
     blockRules = null,
     preferEngine = null,
+    proxy = '',
   } = {}
 ) {
   if (!isHttp(pageUrl)) return { title: '', candidates: [], engine: 'none' }
@@ -1630,6 +1802,7 @@ async function resolvePage(
     browserCookieJar,
     minStreamSeconds,
     expectedDuration: fast.expectedDuration,
+    proxy,
   })
 
   /*
@@ -1651,6 +1824,7 @@ async function resolvePage(
         minStreamSeconds,
         expectedDuration: fast.expectedDuration,
         referer: frame.referer,
+        proxy,
       })
       if (inner.candidates.length) {
         deep = { ...inner, title: deep.title || inner.title }
@@ -1690,6 +1864,7 @@ async function assistedCapture(
     minStreamSeconds = 120,
     timeoutMs = 300000,
     blockRules = null,
+    proxy = '',
   } = {}
 ) {
   if (!isHttp(pageUrl)) return { title: '', candidates: [], engine: 'assisted' }
@@ -1706,6 +1881,7 @@ async function assistedCapture(
     browserCookieJar,
     minStreamSeconds,
     expectedDuration: meta.expectedDuration,
+    proxy,
   })
 
   const verified = result.candidates.length ? await verifyCandidates(result.candidates) : []
@@ -1723,4 +1899,15 @@ async function assistedCapture(
   }
 }
 
-module.exports = { resolvePage, assistedCapture, embedCandidatesFor, unpackPacked, UA }
+module.exports = {
+  resolvePage,
+  assistedCapture,
+  embedCandidatesFor,
+  unpackPacked,
+  // Exported so the static techniques can be exercised without a browser.
+  staticScan,
+  collectSourceApis,
+  metaRefreshOf,
+  UA,
+  MOBILE_UA,
+}

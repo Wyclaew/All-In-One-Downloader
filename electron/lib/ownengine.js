@@ -22,16 +22,11 @@ const http = require('http')
 const https = require('https')
 const path = require('path')
 const { spawn } = require('child_process')
-const { Readable, Transform } = require('stream')
+const { Transform } = require('stream')
 const { pipeline } = require('stream/promises')
 const { toolEnv, ffmpegPath } = require('./binaries')
-const {
-  fetchHeaders,
-  fetchManifest,
-  ffprobeHeaderArgs,
-  parseHls,
-  probeFile,
-} = require('./mediainfo')
+const { fetchHeaders, ffprobeHeaderArgs, parseHls } = require('./mediainfo')
+const { agentsFor, ffmpegEnv, parseProxy } = require('./proxy')
 const { safeName, settingNumber } = require('./util')
 
 const AUDIO_CODECS = {
@@ -70,6 +65,58 @@ function freePath(dir, base, ext) {
   let n = 2
   while (fs.existsSync(candidate)) candidate = path.join(dir, `${base} (${n++}).${ext}`)
   return candidate
+}
+
+/* -------------------------------------------------------------------------- */
+/* asking about a file, through the same door we will fetch it from            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How long the file is and whether the server serves pieces of it.
+ *
+ * Deliberately not the shared helper in mediainfo, which uses fetch and therefore
+ * cannot be tunnelled: a probe that goes out directly while the download goes
+ * through the proxy tells the origin server exactly who is asking. One request —
+ * a one-byte range — answers both questions, and a 206 *is* the proof that ranges
+ * work.
+ */
+async function probeVia(url, resolved, proxy) {
+  const res = await openStream(
+    url,
+    { ...fetchHeaders(url, resolved), Range: 'bytes=0-0' },
+    { proxy }
+  )
+  const headers = res.headers || {}
+  res.request.destroy()
+
+  const total = Number(String(headers['content-range'] || '').split('/')[1]) || null
+  if (res.status === 206 && total) return { size: total, ranges: true, url }
+  if (res.status === 200) {
+    return {
+      size: Number(headers['content-length']) || null,
+      ranges: /bytes/i.test(String(headers['accept-ranges'] || '')),
+      url,
+    }
+  }
+  return { size: null, ranges: false, url }
+}
+
+/** A manifest's text, through the tunnel when there is one. */
+async function fetchTextVia(url, resolved, proxy, limit = 2 * 1024 * 1024) {
+  const res = await openStream(url, fetchHeaders(url, resolved), { proxy })
+  if (res.status !== 200) {
+    res.request.destroy()
+    return { text: '', finalUrl: url }
+  }
+  const chunks = []
+  let size = 0
+  for await (const chunk of res.stream) {
+    chunks.push(chunk)
+    size += chunk.length
+    if (size >= limit) break
+  }
+  res.request.destroy()
+  return { text: Buffer.concat(chunks).toString('utf8'), finalUrl: url }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -135,8 +182,8 @@ async function locateStream(download, settings, onNote) {
  * Swap a master playlist for the rendition the user asked for. Falls back to the
  * playlist itself when there is nothing to choose between.
  */
-async function pickVariant(url, resolved, quality, onNote) {
-  const { text, finalUrl } = await fetchManifest(url, resolved)
+async function pickVariant(url, resolved, quality, onNote, proxy = '') {
+  const { text, finalUrl } = await fetchTextVia(url, resolved, proxy)
   if (!text || !/#EXTM3U/i.test(text)) return { url, height: null }
   const hls = parseHls(text, finalUrl)
   if (!hls.variants.length) return { url, height: null }
@@ -186,7 +233,7 @@ const AGENTS = {
 }
 
 /** Open one request, following redirects, and hand back the live response. */
-function openStream(rawUrl, headers, redirects = 5) {
+function openStream(rawUrl, headers, { redirects = 5, proxy = '' } = {}) {
   return new Promise((resolve, reject) => {
     let target
     try {
@@ -195,19 +242,19 @@ function openStream(rawUrl, headers, redirects = 5) {
       return reject(err)
     }
     const mod = target.protocol === 'http:' ? http : https
-    const req = mod.request(
-      target,
-      { headers, agent: AGENTS[target.protocol] },
-      (res) => {
-        const location = res.headers.location
-        if (location && res.statusCode >= 300 && res.statusCode < 400 && redirects > 0) {
-          res.resume() // drain, or the socket is never reusable
-          const next = new URL(location, target).href
-          return resolve(openStream(next, headers, redirects - 1))
-        }
-        resolve({ status: res.statusCode, headers: res.headers, stream: res, request: req })
+    const tunnel = proxy ? agentsFor(proxy) : null
+    if (proxy && !tunnel) return reject(new Error(`Vekil adresi anlaşılamadı: ${proxy}`))
+    const agent = tunnel ? tunnel[target.protocol] : AGENTS[target.protocol]
+
+    const req = mod.request(target, { headers, agent }, (res) => {
+      const location = res.headers.location
+      if (location && res.statusCode >= 300 && res.statusCode < 400 && redirects > 0) {
+        res.resume() // drain, or the socket is never reusable
+        const next = new URL(location, target).href
+        return resolve(openStream(next, headers, { redirects: redirects - 1, proxy }))
       }
-    )
+      resolve({ status: res.statusCode, headers: res.headers, stream: res, request: req })
+    })
     req.on('error', reject)
     req.setTimeout(30000, () => req.destroy(new Error('Sunucu yanıt vermedi.')))
     req.end()
@@ -271,6 +318,7 @@ async function fetchFileParallel({
   destPath,
   size,
   connections,
+  proxy = '',
   onProgress,
   onHandle,
   onNote,
@@ -336,6 +384,9 @@ async function fetchFileParallel({
       speed,
       eta: speed > 0 ? Math.round((size - downloaded) / speed) : null,
       percent: downloaded / size,
+      // Per-connection progress, so the meter can show what each one is doing
+      // instead of averaging four connections into one number.
+      parts: plan.parts.map((p) => ({ done: p.done, size: p.end - p.start + 1 })),
     })
   }
 
@@ -348,10 +399,11 @@ async function fetchFileParallel({
     while (part.done < capacity) {
       if (stopped) throw abortError()
       const from = part.start + part.done
-      const res = await openStream(url, {
-        ...fetchHeaders(url, resolved),
-        Range: `bytes=${from}-${part.end}`,
-      })
+      const res = await openStream(
+        url,
+        { ...fetchHeaders(url, resolved), Range: `bytes=${from}-${part.end}` },
+        { proxy }
+      )
       live.add(res.request)
 
       if (res.status !== 206) {
@@ -433,7 +485,7 @@ async function fetchFileParallel({
 /* plain file over HTTP, one connection                                        */
 /* -------------------------------------------------------------------------- */
 
-async function fetchFile({ url, resolved, destPath, onProgress, onHandle }) {
+async function fetchFile({ url, resolved, destPath, proxy = '', onProgress, onHandle }) {
   const partPath = `${destPath}.part`
   let already = 0
   try {
@@ -442,38 +494,42 @@ async function fetchFile({ url, resolved, destPath, onProgress, onHandle }) {
     /* nothing to resume */
   }
 
-  const controller = new AbortController()
   let stopped = false
+  let request = null
   onHandle({
     kill() {
       stopped = true
-      controller.abort()
+      if (request) {
+        try {
+          request.destroy()
+        } catch {
+          /* already gone */
+        }
+      }
     },
   })
 
   const headers = { ...fetchHeaders(url, resolved) }
   if (already > 0) headers.Range = `bytes=${already}-`
 
-  const res = await fetch(url, { redirect: 'follow', headers, signal: controller.signal }).catch(
-    (err) => {
-      if (stopped) throw abortError()
-      throw err
-    }
-  )
-  if (!res.ok && res.status !== 206) {
+  // Same client as the parallel path: one place that knows about redirects,
+  // timeouts and proxies, rather than fetch here and http over there.
+  const res = await openStream(url, headers, { proxy }).catch((err) => {
+    if (stopped) throw abortError()
+    throw err
+  })
+  request = res.request
+  if (res.status !== 200 && res.status !== 206) {
+    request.destroy()
     throw new Error(`Sunucu ${res.status} döndü.`)
   }
 
   // A redirect to a login wall or an error page answers 200 with HTML. Copying
   // those bytes would produce a .mp4 that is really a web page — saved, listed as
   // finished, and unplayable.
-  const type = (res.headers.get('content-type') || '').toLowerCase()
+  const type = String(res.headers['content-type'] || '').toLowerCase()
   if (/^(text\/|application\/(x?html|json|xml))/.test(type)) {
-    try {
-      await res.body?.cancel()
-    } catch {
-      /* already closed */
-    }
+    request.destroy()
     throw new Error(`Bağlantı video değil, ${type.split(';')[0]} döndürdü — akış adresi geçmiş olabilir.`)
   }
 
@@ -484,7 +540,7 @@ async function fetchFile({ url, resolved, destPath, onProgress, onHandle }) {
 
   // No Content-Length means no total. Adding what we already have to a zero would
   // report the part we resumed from as the whole file — a meter stuck at 100%.
-  const declared = Number(res.headers.get('content-length')) || 0
+  const declared = Number(res.headers['content-length']) || 0
   const total = declared ? (resuming ? already + declared : declared) : null
 
   const out = fs.createWriteStream(partPath, { flags: resuming ? 'a' : 'w' })
@@ -528,7 +584,7 @@ async function fetchFile({ url, resolved, destPath, onProgress, onHandle }) {
   })
 
   try {
-    await pipeline(Readable.fromWeb(res.body), meter, out)
+    await pipeline(res.stream, meter, out)
   } catch (err) {
     if (stopped) throw abortError()
     throw err
@@ -592,15 +648,42 @@ function ffmpegArgs({ url, resolved, destPath, workPath, download, settings }) {
   return args
 }
 
-function runFfmpeg({ url, resolved, destPath, workPath, download, settings, onProgress, onHandle }) {
+function runFfmpeg({
+  url,
+  resolved,
+  destPath,
+  workPath,
+  download,
+  settings,
+  proxy = '',
+  onProgress,
+  onHandle,
+}) {
   return new Promise((resolve, reject) => {
     const bin = ffmpegPath()
     if (!bin) return reject(new Error('ffmpeg bulunamadı. yt-dlp kapalıyken indirme ona dayanır.'))
 
+    // ffmpeg has no SOCKS support of any kind. Downloading unproxied while the
+    // interface shows a proxy badge would be a lie, so this combination stops
+    // and says what to change.
+    let env = toolEnv()
+    if (proxy) {
+      const vars = ffmpegEnv(proxy)
+      if (!vars) {
+        return reject(
+          new Error(
+            `Bu akış ffmpeg ile iniyor ve ffmpeg ${parseProxy(proxy)?.protocol || 'bu'} vekilini desteklemiyor. ` +
+              'Vekilli indirmek için Ayarlar → Erişim\'den yt-dlp\'yi aç, ya da bir HTTP vekili gir.'
+          )
+        )
+      }
+      env = { ...env, ...vars }
+    }
+
     const child = spawn(
       bin,
       ffmpegArgs({ url, resolved, destPath, workPath, download, settings }),
-      { env: toolEnv(), windowsHide: true }
+      { env, windowsHide: true }
     )
     onHandle(child)
 
@@ -713,13 +796,15 @@ async function transfer({
     if (isStopped && isStopped()) throw abortError()
   }
 
+  const proxy = download.useProxy ? String(settings.proxyUrl || '').trim() : ''
+
   const located = await locateStream(download, settings, onNote)
   halt()
   let { url } = located
   const { resolved, kind } = located
 
   if (kind === 'hls' && !download.audioOnly) {
-    const picked = await pickVariant(url, resolved, download.quality, onNote)
+    const picked = await pickVariant(url, resolved, download.quality, onNote, proxy)
     url = picked.url
     halt()
   }
@@ -741,7 +826,7 @@ async function transfer({
     // Ask what this file is before fetching it: the length gives the meter a
     // target from the first byte, and whether the server serves ranges decides
     // between four connections and one.
-    const probed = await probeFile(url, resolved).catch(() => ({ size: null, ranges: false }))
+    const probed = await probeVia(url, resolved, proxy).catch(() => ({ size: null, ranges: false }))
     halt()
     if (probed.url) url = probed.url
     if (probed.size) {
@@ -764,6 +849,7 @@ async function transfer({
           destPath,
           size: probed.size,
           connections,
+          proxy,
           onProgress,
           onHandle,
           onNote,
@@ -779,7 +865,7 @@ async function transfer({
       }
     }
 
-    return { filePath: await fetchFile({ url, resolved, destPath, onProgress, onHandle }) }
+    return { filePath: await fetchFile({ url, resolved, destPath, proxy, onProgress, onHandle }) }
   }
 
   const filePath = await runFfmpeg({
@@ -789,6 +875,7 @@ async function transfer({
     workPath: `${destPath}.part`,
     download,
     settings,
+    proxy,
     onProgress,
     onHandle,
   })

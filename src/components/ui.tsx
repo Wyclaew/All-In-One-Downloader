@@ -39,6 +39,8 @@ export type IconName =
   | 'target'
   | 'lock'
   | 'unlock'
+  | 'shield'
+  | 'shieldOff'
 
 const PATHS: Record<IconName, ReactNode> = {
   chevron: <path d="M6 3.5l4.5 4.5L6 12.5" />,
@@ -123,6 +125,19 @@ const PATHS: Record<IconName, ReactNode> = {
       {/* The shackle swings clear of the body — open at a glance, even at 12px. */}
       <path d="M5.6 7.2V5.1a2.4 2.4 0 014.8 0" />
       <circle cx="8" cy="10.3" r="0.7" fill="currentColor" stroke="none" />
+    </>
+  ),
+  shield: (
+    <>
+      <path d="M8 1.8l5 1.9v4c0 3.2-2.1 5.5-5 6.5-2.9-1-5-3.3-5-6.5v-4z" />
+      <path d="M5.8 7.9l1.6 1.6 3-3.2" />
+    </>
+  ),
+  // Same silhouette, struck through: on and off read as one control, not two icons.
+  shieldOff: (
+    <>
+      <path d="M8 1.8l5 1.9v4c0 3.2-2.1 5.5-5 6.5-2.9-1-5-3.3-5-6.5v-4z" />
+      <path d="M3.6 2.6l8.8 10.8" />
     </>
   ),
 }
@@ -228,15 +243,50 @@ export function Meter({
   percent,
   tone = 'running',
   slim = false,
+  parts,
 }: {
   percent: number | null
   tone?: 'running' | 'done' | 'paused' | 'bad' | 'queued'
   slim?: boolean
+  /** Per-connection progress. Turns the one bar into that many, side by side. */
+  parts?: { done: number; size: number }[] | null
 }) {
   const indeterminate = percent === null || percent === undefined
   const classes = ['meter', tone, slim ? 'slim' : '', indeterminate ? 'indeterminate' : '']
     .filter(Boolean)
     .join(' ')
+
+  // With several connections, one averaged bar hides the thing worth seeing:
+  // whether they are all pulling, or three finished while one stalls. Each
+  // connection gets its share of the same bar, sized by how much of the file it
+  // owns — so the bar still reads as one length, and still fills left to right.
+  if (parts && parts.length > 1) {
+    const total = parts.reduce((sum, p) => sum + p.size, 0) || 1
+    return (
+      <div
+        className={`${classes} split`}
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={indeterminate ? undefined : Math.round((percent as number) * 100)}
+      >
+        {parts.map((part, i) => (
+          <div
+            key={i}
+            className="meter-slot"
+            style={{ flexGrow: part.size / total }}
+            title={`${i + 1}. bağlantı — %${Math.round(Math.min(1, part.done / (part.size || 1)) * 100)}`}
+          >
+            <div
+              className="meter-fill"
+              style={{ width: `${Math.min(100, (part.done / (part.size || 1)) * 100)}%` }}
+            />
+          </div>
+        ))}
+      </div>
+    )
+  }
+
   return (
     <div
       className={classes}

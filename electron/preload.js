@@ -18,7 +18,8 @@ contextBridge.exposeInMainWorld('api', {
   updateYtdlp: () => ipcRenderer.invoke('tools:update'),
   listBrowsers: () => ipcRenderer.invoke('browsers:list'),
 
-  addSource: (url) => ipcRenderer.invoke('source:add', url),
+  addSource: (input, useProxy) => ipcRenderer.invoke('source:add', { input, useProxy }),
+  checkProxy: () => ipcRenderer.invoke('proxy:check'),
   removeSource: (id) => ipcRenderer.invoke('source:remove', id),
   toggleSource: (id, collapsed) => ipcRenderer.invoke('source:toggle', { id, collapsed }),
   rescanSource: (id) => ipcRenderer.invoke('source:rescan', id),

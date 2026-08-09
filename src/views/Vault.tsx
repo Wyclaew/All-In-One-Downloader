@@ -193,9 +193,18 @@ function Contents({
           <div className="card">
             {vault.entries.map((entry) => (
               <div key={entry.id} className="vault-row">
-                <span className="vault-glyph">
-                  <Icon name="lock" size={15} />
-                </span>
+                {entry.thumb ? (
+                  <span className="vault-poster">
+                    <img src={entry.thumb} alt="" />
+                    {entry.duration ? (
+                      <span className="vault-poster-time">{fmt.duration(entry.duration)}</span>
+                    ) : null}
+                  </span>
+                ) : (
+                  <span className="vault-glyph">
+                    <Icon name="lock" size={15} />
+                  </span>
+                )}
 
                 <div className="vault-ident">
                   <span className="vault-name clamp2" title={entry.name}>

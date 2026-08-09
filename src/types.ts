@@ -3,6 +3,8 @@ export type SourceStatus = 'queued' | 'probing' | 'ready' | 'empty' | 'error'
 export interface Source {
   id: string
   url: string
+  /** Chosen when the link was added; resolving and downloading follow it. */
+  useProxy?: boolean
   host: string
   site: string
   title: string | null
@@ -77,6 +79,8 @@ export interface Download {
   quality: number
   audioOnly: boolean
   categoryId: string | null
+  /** Inherited from the source; the address itself is read at spawn time. */
+  useProxy?: boolean
   /** Set after a cookie-related failure so the retry runs without cookies. */
   noCookies?: boolean
   resolved?: Resolved | null
@@ -95,6 +99,8 @@ export interface Download {
   total: number | null
   /** Known before the first byte, from the item's own size. */
   expectedSize?: number | null
+  /** Live per-connection progress while a multi-part transfer runs. */
+  parts?: DownloadPart[] | null
   speed: number | null
   eta: number | null
   phase: number
@@ -134,6 +140,9 @@ export interface Settings {
   autoStartDownloads: boolean
   enrichLimit: number
   notifyOnFinish: boolean
+
+  proxyUrl: string
+  proxyByDefault: boolean
 
   useYtdlp: boolean
   useResolver: boolean
@@ -190,6 +199,8 @@ export interface VaultEntry {
   sourceUrl: string
   size: number
   addedAt: number
+  /** A frame taken from the video itself, decrypted only while unlocked. */
+  thumb?: string | null
 }
 
 export interface VaultState {
@@ -220,6 +231,12 @@ export interface AppState {
   settings: Settings
 }
 
+/** One connection's share of a multi-part transfer. */
+export interface DownloadPart {
+  done: number
+  size: number
+}
+
 export interface ProgressEvent {
   id: string
   status: DownloadStatus
@@ -231,6 +248,7 @@ export interface ProgressEvent {
   total: number | null
   phase: number
   phases: number
+  parts?: DownloadPart[] | null
 }
 
 export interface Tools {

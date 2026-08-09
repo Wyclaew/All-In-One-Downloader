@@ -292,7 +292,22 @@ başlayarak:
    - `eval(function(p,a,c,k,e,d))` ile paketlenmiş script'lerin açılması
    - base64 blob'lar, `\x68\x74…` hex kaçışları, `%68%74…` yüzde kaçışları,
      **tersten yazılmış** adresler (`//:sptth`) ve `String.fromCharCode(…)` dizileri
-2. **Watch → embed dönüşümü.** Bir sitenin izleme sayfası ile embed sayfası farklı
+2. **Oynatıcının kendi kaynak API'si.** Birçok sitede adres sayfada hiç yoktur:
+   sayfa bir kimlik taşır, oynatıcı da akışı kendi arka ucundan ister
+   (`/api/source/abc123`, `/player/index.php?data=…` gibi). HTML'i kazımak boşuna,
+   çünkü orada bir şey yok. Oynatıcının soracağı ucu, sayfayı Referer vererek
+   sormak aynı cevabı verir — hem de tarayıcı başlatmadan, tek istekte. Yalnızca
+   sitenin kendi alanındaki uçlar sorulur.
+3. **Script zinciri.** Bir yükleyici script gerçek oynatıcıyı `<script src>`
+   etiketiyle değil `el.src = "…"` ile çağırır; zincir bir kat daha takip edilir,
+   çünkü kaynak genelde o ikinci dosyadadır.
+4. **Mobil sürüm.** Aynı site masaüstüne kaynağı JavaScript'te kuran bir oynatıcı,
+   telefona ise düz bir `<video src>` verir — çünkü telefonun kendi oynatıcısı işi
+   görür. Masaüstü taraması boş dönerse sayfa bir kez de telefon olarak istenir;
+   akış çoğu zaman doğrudan işaretlemede durur. Bulunduysa bu istek hiç yapılmaz.
+5. **Meta-refresh yönlendirmesi.** 3xx dönmeyen, yalnızca
+   `<meta http-equiv="refresh">` ile yönlendiren sarmalayıcı sayfalar takip edilir.
+6. **Watch → embed dönüşümü.** Bir sitenin izleme sayfası ile embed sayfası farklı
    belgelerdir ve biri bozulduğunda diğeri sıklıkla çalışır. Vimeo bunun standart
    örneği: yt-dlp `vimeo.com/ID` için OAuth `401` veriyor ama
    `player.vimeo.com/video/ID` için on altı format döndürüyor. Adres biçiminden

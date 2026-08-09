@@ -25,8 +25,10 @@ const fs = require('fs')
 const fsp = require('fs/promises')
 const os = require('os')
 const path = require('path')
+const { execFile } = require('child_process')
 const { pipeline } = require('stream/promises')
 const { app, shell } = require('electron')
+const { ffmpegPath, toolEnv } = require('./binaries')
 
 const MAGIC = Buffer.from('AIO1')
 const NONCE_LEN = 12
@@ -60,6 +62,8 @@ const metaFile = () => path.join(root(), 'meta.json')
 const indexFile = () => path.join(root(), 'index.bin')
 const blobDir = () => path.join(root(), 'blobs')
 const blobFile = (id) => path.join(blobDir(), id)
+/** Poster frame for an entry, encrypted with the same key as everything else. */
+const thumbFile = (id) => path.join(blobDir(), `${id}.t`)
 
 function tempRoot() {
   // Not the shared /tmp: a per-user directory we create with 0700 ourselves.
@@ -163,6 +167,76 @@ async function openFileTo(srcPath, destPath) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* poster frames                                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A frame from the video itself, made while the plaintext is still on disk.
+ *
+ * The alternative was to keep the site's thumbnail URL and let the interface load
+ * it, which would have meant the vault phoning the source site every time you
+ * looked at the list — telling that site what you are keeping and when you look
+ * at it. Extracting one frame locally and encrypting it with everything else
+ * keeps the vault self-contained and offline.
+ */
+function makeThumb(srcPath) {
+  return new Promise((resolve) => {
+    const bin = ffmpegPath()
+    if (!bin) return resolve(null)
+    // Five seconds in, because frame zero of a film is usually black. If the file
+    // is shorter than that ffmpeg returns nothing and we simply have no poster.
+    execFile(
+      bin,
+      [
+        '-hide_banner', '-loglevel', 'error',
+        '-ss', '5',
+        '-i', srcPath,
+        '-frames:v', '1',
+        '-vf', 'scale=320:-2',
+        '-q:v', '5',
+        '-f', 'mjpeg',
+        'pipe:1',
+      ],
+      { env: toolEnv(), timeout: 20000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, encoding: 'buffer' },
+      (err, stdout) => {
+        if (!err && stdout && stdout.length > 1024) return resolve(stdout)
+        // Too short to seek into: take the first frame instead.
+        execFile(
+          bin,
+          [
+            '-hide_banner', '-loglevel', 'error',
+            '-i', srcPath,
+            '-frames:v', '1',
+            '-vf', 'scale=320:-2',
+            '-q:v', '5',
+            '-f', 'mjpeg',
+            'pipe:1',
+          ],
+          { env: toolEnv(), timeout: 20000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, encoding: 'buffer' },
+          (err2, out2) => resolve(!err2 && out2 && out2.length > 1024 ? out2 : null)
+        )
+      }
+    )
+  })
+}
+
+/** id -> data URL, held only while unlocked. */
+let thumbCache = new Map()
+
+function thumbFor(id) {
+  if (thumbCache.has(id)) return thumbCache.get(id)
+  let url = null
+  try {
+    const jpeg = openBuffer(fs.readFileSync(thumbFile(id)))
+    url = `data:image/jpeg;base64,${jpeg.toString('base64')}`
+  } catch {
+    url = null // no poster for this one; the list falls back to a padlock
+  }
+  thumbCache.set(id, url)
+  return url
+}
+
+/* -------------------------------------------------------------------------- */
 /* index                                                                       */
 /* -------------------------------------------------------------------------- */
 
@@ -259,6 +333,8 @@ function lock({ reason = 'user' } = {}) {
     key = null
   }
   entries = []
+  // Decrypted posters are still pictures of what is inside; they go with the key.
+  thumbCache = new Map()
   clearTemps()
   if (reason !== 'quit' && onLockedListener) onLockedListener(reason)
   return true
@@ -363,7 +439,7 @@ async function unlock(passphrase) {
 function list() {
   requireUnlocked()
   touch()
-  return entries.map((e) => ({ ...e }))
+  return entries.map((e) => ({ ...e, thumb: thumbFor(e.id) }))
 }
 
 /**
@@ -390,6 +466,16 @@ function addFile(srcPath, meta = {}) {
     } catch (err) {
       await fsp.rm(dest, { force: true }).catch(() => {})
       throw err
+    }
+
+    // Taken before the plaintext goes, and stored encrypted like everything else.
+    const poster = await makeThumb(srcPath).catch(() => null)
+    if (poster) {
+      try {
+        await fsp.writeFile(thumbFile(id), sealBuffer(poster), { mode: 0o600 })
+      } catch {
+        /* a missing poster is cosmetic; the entry is not */
+      }
     }
 
     const entry = {
@@ -424,7 +510,12 @@ function openEntry(id) {
   return whileWorking(async () => {
     const dir = path.join(tempRoot(), crypto.randomBytes(6).toString('hex'))
     await fsp.mkdir(dir, { recursive: true, mode: 0o700 })
-    const target = path.join(dir, entry.name)
+    // Deliberately not the real name. Handing a file to the OS player puts it in
+    // that player's recent-documents list, and on macOS that list survives the
+    // file — so a vaulted title would sit in QuickTime's right-click menu long
+    // after the decrypted copy was deleted. An opaque name keeps the extension
+    // (players need it) and says nothing else.
+    const target = path.join(dir, `${crypto.randomBytes(8).toString('hex')}${path.extname(entry.name)}`)
     // Registered before the write, so a lock racing the decrypt still knows what
     // to delete.
     openedTemps.add(target)
@@ -460,6 +551,8 @@ async function removeEntry(id) {
   // Unlinking is enough: what is left on the disk is ciphertext, which is the
   // whole point of encrypting at rest.
   await fsp.rm(blobFile(id), { force: true })
+  await fsp.rm(thumbFile(id), { force: true })
+  thumbCache.delete(id)
   entries = entries.filter((e) => e.id !== id)
   await saveIndex()
   touch()
@@ -479,7 +572,9 @@ async function audit() {
     /* no blobs yet */
   }
   const known = new Set(entries.map((e) => e.id))
-  const orphanBlobs = files.filter((f) => !known.has(f))
+  // Poster frames live beside their blob as <id>.t; they belong to a known entry,
+  // not to nobody.
+  const orphanBlobs = files.filter((f) => !known.has(f.replace(/\.t$/, '')))
   const missingBlobs = entries.filter((e) => !files.includes(e.id)).map((e) => e.name)
   return { orphanBlobs: orphanBlobs.length, missingBlobs }
 }

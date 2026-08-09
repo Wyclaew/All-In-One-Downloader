@@ -20,6 +20,11 @@ export const T = {
     placeholder: 'Bağlantı yapıştır — sayfadaki videoları çıkarayım',
     submit: 'Çözümle',
     working: 'Çözümlüyor',
+    proxy: 'VPN',
+    proxyOnHint:
+      'Bu bağlantı vekil sunucu üzerinden çözümlenip indirilecek. Kapatmak için tıkla.',
+    proxyOffHint:
+      'Bu bağlantı doğrudan, vekilsiz gidecek. Vekil üzerinden eklemek için tıkla.',
     clipboard: 'Panoda bir bağlantı var',
     clipboardAdd: 'Ekle',
     multiHint: 'birden fazla bağlantıyı aynı anda yapıştırabilirsin',
@@ -171,6 +176,14 @@ export const T = {
     cookiesHint:
       'Giriş gerektiren sayfalar için seçtiğin tarayıcının çerezlerini kullanır. Yok = çerez kullanılmaz.',
     cookiesNone: 'Yok',
+
+    proxy: 'VPN / vekil sunucu',
+    proxyHint:
+      'İstediğin bağlantıyı vekil sunucu üzerinden çözümleyip indirir. Gerçek bir VPN tüm bilgisayarı tünelden geçirir — bu ise bağlantı başına çalışır: bir videoyu tünelden, yanındakini doğrudan indirebilirsin, aynı anda. URL kutusunun yanındaki VPN düğmesi hangi bağlantının hangi yoldan gideceğini belirler. socks5://, http:// ve https:// adresleri kabul edilir; kullanıcı adı/parola yazabilirsin (socks5://ad:parola@sunucu:port).',
+    proxyTest: 'Sına',
+    proxyDefault: 'Yeni bağlantılar varsayılan olarak VPN ile eklensin',
+    proxyWarp:
+      'Cloudflare ile kullanmak için: Cloudflare WARP\'ı kur, sonra terminalde "warp-cli mode proxy" ve "warp-cli connect" çalıştır — WARP 127.0.0.1:40000 üzerinde bir SOCKS5 sunucusu açar, yukarıdaki varsayılan adres de orayı gösterir. Uygulama WARP\'ı kurmaz ve ayarlarını değiştirmez; yalnızca oraya bağlanır. Not: ffmpeg SOCKS desteklemez, bu yüzden yt-dlp kapalıyken parçalı akışlar (HLS/DASH) vekille inmez — o durumda yt-dlp\'yi açık tut ya da HTTP vekili kullan.',
 
     engine: 'İndirme motoru',
     engineHint:

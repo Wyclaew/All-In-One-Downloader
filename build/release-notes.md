@@ -1,5 +1,25 @@
 ## Bu sürümde
 
+- **Çözümleyiciye dört yeni teknik.** Oynatıcının kendi kaynak API'sini sorma
+  (adresin sayfada hiç bulunmadığı siteler için), script zincirini bir kat daha
+  takip etme, masaüstünde boş dönen sayfayı telefon olarak isteme, ve 3xx dönmeyen
+  meta-refresh yönlendirmelerini takip etme.
+- **Bağlantı başına VPN.** URL kutusunun yanındaki düğme: bir videoyu vekil
+  sunucudan, yanındakini doğrudan indirebilirsin — aynı anda. Cloudflare WARP'ın
+  proxy kipiyle çalışır. SOCKS5 ve HTTP vekilleri, kullanıcı adı/parola dahil.
+- **Kasa küçük görselleri**, videodan alınıp diğer her şeyle aynı anahtarla
+  şifrelenerek. Kasa artık diskte nerede durduğunu da söylüyor.
+- **Oynatma ad sızıntısı kapatıldı:** kasadaki bir dosyayı açmak adını sistemin
+  "son kullanılanlar" listesine yazıyordu; geçici kopya artık anlamsız bir adla
+  açılıyor.
+- **İndirme çubuğu bağlantı sayısınca bölünüyor**, her dilim kendi bağlantısını
+  gösteriyor.
+- **Kaynaklar'da iptal düğmesi**, ve bir kaynağı silmek ona ait süren indirmeleri
+  de durduruyor. İptal artık yarım dosyayı, parça dosyalarını ve günlüğü siliyor.
+- **Kalite seçimi** sekme değiştirince sıfırlanmıyor.
+
+## Önceki sürümlerde
+
 - **İndirme hızı: dosya başına birden çok bağlantı.** Bir indirmenin yavaş
   kalmasının sebebi genelde hattın değil, tek bağlantının sınırlanması. Parçalı
   akışlarda (HLS/DASH) parçalar artık aynı anda iniyor — yt-dlp'nin varsayılanı

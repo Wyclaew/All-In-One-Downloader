@@ -24,6 +24,9 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
   const [subtitleLangs, setSubtitleLangs] = useState(settings.subtitleLangs)
   const [subsTools, setSubsTools] = useState<{ ffsubsync: boolean } | null>(null)
   const [blockedHosts, setBlockedHosts] = useState(settings.extraBlockedHosts)
+  const [proxyUrl, setProxyUrl] = useState(settings.proxyUrl || '')
+  const [checking, setChecking] = useState(false)
+  const [proxyResult, setProxyResult] = useState<string | null>(null)
 
   // Only offer browsers whose cookie store actually exists on this machine —
   // picking a missing one used to fail every request with a cryptic error.
@@ -246,6 +249,47 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
           {browsers && !browsers.length ? (
             <div className="set-hint">Bu makinede çerez deposu olan bir tarayıcı bulunamadı.</div>
           ) : null}
+        </Row>
+
+        <Row label={T.settings.proxy} hint={T.settings.proxyHint}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
+            <div className="set-inline">
+              <input
+                className="input wide"
+                value={proxyUrl}
+                spellCheck={false}
+                placeholder="socks5://127.0.0.1:40000"
+                onChange={(e) => setProxyUrl(e.target.value)}
+                onBlur={() => patch({ proxyUrl: proxyUrl.trim() })}
+              />
+              <Btn
+                size="sm"
+                icon="target"
+                spinning={checking}
+                disabled={checking || !proxyUrl.trim()}
+                onClick={async () => {
+                  setChecking(true)
+                  const res = await api.checkProxy()
+                  setChecking(false)
+                  if (res) {
+                    setProxyResult(res.message)
+                    onToast(res.message, res.ok ? 'ok' : 'error')
+                  }
+                }}
+              >
+                {T.settings.proxyTest}
+              </Btn>
+            </div>
+            {proxyResult ? <div className="set-hint">{proxyResult}</div> : null}
+            <Toggle
+              checked={!!settings.proxyByDefault}
+              onChange={(v) => patch({ proxyByDefault: v })}
+              label={T.settings.proxyDefault}
+            />
+            <div className="set-hint" style={{ marginTop: 0 }}>
+              {T.settings.proxyWarp}
+            </div>
+          </div>
         </Row>
 
         <Row label={T.settings.engine} hint={T.settings.engineHint}>

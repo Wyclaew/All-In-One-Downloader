@@ -119,6 +119,7 @@ export function withProgress(download: Download, progress: Record<string, Progre
     total: live.total,
     phase: live.phase,
     phases: live.phases,
+    parts: live.parts ?? null,
   }
 }
 

@@ -18,16 +18,33 @@ import {
   Thumb,
 } from '../components/ui'
 
+/**
+ * Quality picks live in the shell, not here. This view unmounts every time the
+ * user looks at the library or settings, and a per-row choice that evaporates on
+ * the way back is worse than no choice at all.
+ */
+export interface QualityMemory {
+  group: Record<string, string>
+  row: Record<string, string>
+  setGroup: (fn: (prev: Record<string, string>) => Record<string, string>) => void
+  setRow: (fn: (prev: Record<string, string>) => Record<string, string>) => void
+}
+
 interface Props {
   state: AppState
   downloads: Download[]
+  quality: QualityMemory
   onGoToLibrary: () => void
   onToast: (message: string, kind?: 'info' | 'warn' | 'error' | 'ok') => void
 }
 
-export default function Sources({ state, downloads, onGoToLibrary, onToast }: Props) {
-  const [groupQuality, setGroupQuality] = useState<Record<string, string>>({})
-  const [rowQuality, setRowQuality] = useState<Record<string, string>>({})
+export default function Sources({
+  state,
+  downloads,
+  quality: { group: groupQuality, row: rowQuality, setGroup: setGroupQuality, setRow: setRowQuality },
+  onGoToLibrary,
+  onToast,
+}: Props) {
   const [pendingRemove, setPendingRemove] = useState<Source | null>(null)
   const [rescanning, setRescanning] = useState<Record<string, boolean>>({})
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -193,6 +210,12 @@ export default function Sources({ state, downloads, onGoToLibrary, onToast }: Pr
                   <Chip tone="site" title={source.url} lang="en">
                     {source.site}
                   </Chip>
+                  {source.useProxy ? (
+                    <Chip tone="signal" title={T.compose.proxyOnHint}>
+                      <Icon name="shield" size={10} />
+                      {T.compose.proxy}
+                    </Chip>
+                  ) : null}
                   <span className="group-title truncate">{source.title || source.url}</span>
                 </div>
                 <div className="group-meta">
@@ -491,6 +514,19 @@ function Row({
         ) : null}
         {download && download.status === 'paused' ? (
           <IconBtn icon="play" title={T.library.resume} onClick={() => api.resume(download.id)} />
+        ) : null}
+        {/* Pausing was the only way out of a mistaken click, which is not a way
+            out at all. Cancelling stops it and takes the half-file with it. */}
+        {download &&
+        (download.status === 'running' ||
+          download.status === 'paused' ||
+          download.status === 'queued') ? (
+          <IconBtn
+            icon="x"
+            title={T.library.cancel}
+            variant="danger"
+            onClick={() => api.cancel(download.id)}
+          />
         ) : null}
         {download && download.status === 'error' ? (
           <IconBtn icon="refresh" title={T.library.retry} onClick={() => api.retry(download.id)} />

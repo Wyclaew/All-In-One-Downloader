@@ -41,6 +41,12 @@ function defaultSettings() {
     // Minutes of inactivity before the vault locks itself. 0 = never.
     vaultAutoLockMinutes: 15,
 
+    // Per-link proxy. Empty disables it outright. The default address is where
+    // Cloudflare WARP listens in proxy mode (`warp-cli mode proxy`).
+    proxyUrl: 'socks5://127.0.0.1:40000',
+    // Whether the toggle beside the URL field starts switched on.
+    proxyByDefault: false,
+
     // yt-dlp does the probing and the fetching unless this is off, in which case
     // the in-house resolver finds the stream and ffmpeg/HTTP fetches it.
     useYtdlp: true,

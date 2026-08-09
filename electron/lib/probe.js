@@ -24,6 +24,9 @@ function baseArgs(settings) {
   const args = ['--no-warnings', '--ignore-config', '--socket-timeout', '20', '--retries', '3']
   const cookies = resolveCookieArg(settings.cookiesBrowser)
   if (cookies) args.push('--cookies-from-browser', cookies)
+  // Set per source, not globally: two links can be resolving at the same moment,
+  // one through the proxy and one straight out.
+  if (settings.proxy) args.push('--proxy', settings.proxy)
   return args
 }
 
@@ -259,13 +262,27 @@ function itemFromNode(node, source, index) {
 }
 
 /**
+ * Settings as this particular source sees them.
+ *
+ * The proxy is a property of the link, not of the app: the whole point of the
+ * per-link switch is that a proxied resolve and a direct one can be in flight at
+ * the same moment. So it travels attached to the settings object handed to each
+ * call rather than being read from global state deeper down.
+ */
+function proxied(settings, source) {
+  const proxy = source && source.useProxy ? String(settings.proxyUrl || '').trim() : ''
+  return proxy ? { ...settings, proxy } : settings
+}
+
+/**
  * Add the source row up front, before any network work. Lets the caller answer
  * the renderer immediately and probe in the background.
  */
-function createSource(url) {
+function createSource(url, { useProxy = false } = {}) {
   const source = {
     id: uid('src'),
     url,
+    useProxy: !!useProxy,
     host: hostOf(url),
     site: siteLabel(url),
     title: null,
@@ -310,7 +327,7 @@ async function probeUrl(url, { sourceId = null, playlistEnd = 0 } = {}) {
 }
 
 async function runProbe(source, playlistEnd) {
-  const settings = store.getState().settings
+  const settings = proxied(store.getState().settings, source)
   const ytdlpOff = settings.useYtdlp === false
 
   store.commit((s) => {
@@ -512,6 +529,7 @@ async function tryResolve(source, settings, fallbackError) {
   try {
     result = await resolvePage(source.url, {
       browserCookieJar,
+      proxy: settings.proxy || '',
       preferEngine: profile ? profile.engine : null,
       blockRules: {
         extraBlockedHosts: settings.extraBlockedHosts,
@@ -822,7 +840,7 @@ function killAll() {
 async function captureSource(sourceId) {
   const source = store.findSource(sourceId)
   if (!source) return null
-  const settings = store.getState().settings
+  const settings = proxied(store.getState().settings, source)
 
   store.commit((s) => {
     source.status = 'probing'
@@ -841,6 +859,7 @@ async function captureSource(sourceId) {
   try {
     result = await assistedCapture(source.url, {
       browserCookieJar,
+      proxy: settings.proxy || '',
       blockRules: {
         extraBlockedHosts: settings.extraBlockedHosts,
         blockTrackers: settings.blockTrackers,

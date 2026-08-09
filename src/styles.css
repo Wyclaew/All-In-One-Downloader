@@ -2178,7 +2178,7 @@ a {
 
 .vault-row {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
+  grid-template-columns: 84px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 11px 12px;
@@ -2222,4 +2222,107 @@ a {
   margin: 10px 0 0;
   font-size: 11.5px;
   color: var(--dimmer);
+}
+
+/* A frame from the video itself — decrypted in memory, never fetched from the
+   site it came from. Falls back to the padlock when there is no frame to take. */
+.vault-poster {
+  position: relative;
+  display: block;
+  width: 84px;
+  height: 47px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  overflow: hidden;
+  background: var(--panel-3);
+}
+
+.vault-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.vault-poster-time {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: rgba(10, 12, 15, 0.78);
+  color: #fff;
+  font-family: var(--f-mono);
+  font-size: 9.5px;
+  line-height: 14px;
+}
+
+.vault-glyph {
+  width: 84px;
+  height: 47px;
+}
+
+/* A split meter: one bar's worth of length, divided between the connections that
+   are filling it. The dividers are gaps in the well, not lines drawn on top, so
+   the segments read as separate runways rather than a bar with marks. */
+.meter.split {
+  display: flex;
+  gap: 2px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+.meter.split::after {
+  display: none;
+}
+
+.meter-slot {
+  position: relative;
+  height: 100%;
+  min-width: 4px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--well);
+  overflow: hidden;
+}
+
+.meter.split .meter-fill::after {
+  display: none;
+}
+
+/* The per-link VPN switch. Sits inside the compose row because that is where the
+   decision is made — one link through the tunnel, the next one straight out. */
+.vpn-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--panel);
+  color: var(--dim);
+  font-family: var(--f-body);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.vpn-toggle:hover {
+  color: var(--text);
+  border-color: var(--dimmer);
+}
+
+.vpn-toggle.on {
+  color: var(--signal);
+  border-color: var(--signal);
+  background: color-mix(in srgb, var(--signal) 8%, transparent);
+}
+
+.vpn-toggle:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 1px;
 }

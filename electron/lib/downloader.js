@@ -29,6 +29,17 @@ function activeCount() {
   return store.getState().downloads.filter((d) => d.status === 'running').length
 }
 
+/**
+ * The proxy this particular transfer should use, if any.
+ *
+ * Stored on the download as a flag rather than a resolved address, so correcting
+ * a mistyped proxy in settings fixes the retry instead of baking the old value in.
+ */
+function proxyFor(download, settings) {
+  if (!download.useProxy) return ''
+  return String(settings.proxyUrl || '').trim()
+}
+
 function formatSelector(download) {
   if (download.audioOnly) return 'ba/b'
   const h = Number(download.quality) || 0
@@ -79,6 +90,10 @@ function buildArgs(download, settings, printFile) {
   const connections = clamp(settingNumber(settings.connections, 4), 1, 16)
   if (connections > 1) args.push('--concurrent-fragments', String(connections))
 
+  // Per download, because the link decided this, not the app.
+  const proxy = proxyFor(download, settings)
+  if (proxy) args.push('--proxy', proxy)
+
   if (download.resolved) {
     // The page's own headers and cookies; a browser-profile cookie jar would be
     // the wrong origin here.
@@ -125,6 +140,7 @@ function sendProgress(download, force = false) {
     total: download.total,
     phase: download.phase,
     phases: download.phases,
+    parts: download.parts || null,
   })
 }
 
@@ -307,15 +323,39 @@ function cleanupTemp(job) {
   }
 }
 
+/**
+ * Everything a stopped transfer leaves behind.
+ *
+ * Cancelling has to mean the disk looks as it did before, and a half-file is not
+ * the only leftover: yt-dlp writes `.part-FragN` per fragment and our own engine
+ * writes a `.part.parts` journal beside the partial. Listing the directory
+ * catches all of them without having to know each engine's naming by heart.
+ */
 function deletePartials(job, settings) {
   for (const c of job.destinations) {
     const abs = path.isAbsolute(c) ? c : path.resolve(settings.downloadDir, c)
-    for (const p of [`${abs}.part`, `${abs}.ytdl`, abs]) {
+    for (const p of [`${abs}.part`, `${abs}.ytdl`, `${abs}.part.parts`, abs]) {
       try {
         fs.unlinkSync(p)
       } catch {
         /* nothing to remove */
       }
+    }
+
+    const dir = path.dirname(abs)
+    const base = path.basename(abs)
+    try {
+      for (const name of fs.readdirSync(dir)) {
+        if (!name.startsWith(base)) continue
+        if (!/\.(part(-Frag\d+)?|ytdl|parts)$/i.test(name)) continue
+        try {
+          fs.unlinkSync(path.join(dir, name))
+        } catch {
+          /* already gone */
+        }
+      }
+    } catch {
+      /* directory gone */
     }
   }
 }
@@ -406,6 +446,7 @@ function settle(job, download, settings, outcome) {
       download.percent = 1
       download.speed = null
       download.eta = null
+      download.parts = null
       download.filePath = finalPath
       download.fileSize = finalPath ? fileSizeOf(finalPath) : null
       download.finishedAt = Date.now()
@@ -480,8 +521,9 @@ function startOwn(download, settings) {
           download.note = note
         })
       },
-      onProgress: ({ downloaded, total, totalExact, speed, eta, percent }) => {
+      onProgress: ({ downloaded, total, totalExact, speed, eta, percent, parts }) => {
         download.downloaded = downloaded || 0
+        download.parts = parts || null
         // A measured length wins. Otherwise the manifest's figure beats an
         // extrapolation from how much of the timeline has been written.
         download.total = totalExact ? total : download.expectedSize || total || null
@@ -730,6 +772,9 @@ function enqueue({ item, url, title, site, sourceId, quality, audioOnly, categor
     duration: item ? item.duration : null,
     resolved: item && item.resolved ? item.resolved : null,
     language: item && item.language ? item.language : null,
+    // Inherited from the link the user added, and copied here because a download
+    // outlives the source row it came from.
+    useProxy: !!(item && store.findSource(item.sourceId) && store.findSource(item.sourceId).useProxy),
     quality: quality === undefined ? settings.defaultQuality : Number(quality) || 0,
     audioOnly: !!audioOnly,
     categoryId: categoryId || null,
