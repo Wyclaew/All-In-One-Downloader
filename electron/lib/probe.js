@@ -483,6 +483,10 @@ function itemFromCandidate(candidate, source, index, title, userAgent, total, th
       cookieFile: candidate.cookieFile || null,
       kind: candidate.kind,
       engine: candidate.via,
+      // A flag, not the address. A proxy URL can carry a password, and this
+      // object is written to library.json in plain text — the address is looked
+      // up from settings at the moment it is needed instead.
+      useProxy: !!source.useProxy,
     },
   }
 }
@@ -684,10 +688,14 @@ async function enrichResolved(sourceId) {
   if (!pending.length) return
   if (source) store.commit(() => { source.enriching = pending.length })
 
+  const settings = store.getState().settings
+  const proxy =
+    source && source.useProxy ? String(settings.proxyUrl || '').trim() : ''
+
   for (const item of pending) {
     let filled = false
     try {
-      const info = await describeStream(item.url, item.resolved)
+      const info = await describeStream(item.url, { ...item.resolved, proxy })
       if (info && (info.duration || info.height)) {
         filled = true
         store.commit(() => {
@@ -716,7 +724,7 @@ async function enrichResolved(sourceId) {
         if (live) live.enriched = true
       })
     } else if (!filled) {
-      const bare = { ...store.getState().settings, cookiesBrowser: '' }
+      const bare = { ...store.getState().settings, cookiesBrowser: '', proxy }
       try {
         const { json } = await runJson(
           item.url,

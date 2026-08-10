@@ -1232,6 +1232,9 @@ function browserScan(
         origin: hit.origin,
         userAgent: UA,
         kind: hit.kind,
+        // The window's session is proxied by Chromium, but measuring a stream
+        // happens outside it — so it needs telling.
+        proxy,
       }
       const pending = describeStream(hit.url, resolved)
       measuring.add(pending)
@@ -1655,6 +1658,7 @@ async function verifyCandidates(candidates, { limit = 12, concurrency = 3, proxy
         userAgent: UA,
         cookieFile: candidate.cookieFile || null,
         kind: candidate.kind === 'unknown' ? 'hls' : candidate.kind,
+        proxy,
       }
       try {
         const info = await describeStream(candidate.url, resolved)
@@ -1777,7 +1781,7 @@ async function resolvePage(
   const embeds = fast.embeds || []
 
   if (fast.candidates.length && !skipStatic) {
-    const verified = dropVariantDuplicates(await verifyCandidates(fast.candidates))
+    const verified = dropVariantDuplicates(await verifyCandidates(fast.candidates, { proxy }))
     const { kept, dropped } = dropShortStreams(verified, minStreamSeconds, fast.expectedDuration)
     if (kept.length) {
       if (dropped && onProgress) onProgress(`${dropped} kısa akış (reklam) atlandı`)
@@ -1842,7 +1846,7 @@ async function resolvePage(
     }
   }
 
-  const verified = deep.candidates.length ? await verifyCandidates(deep.candidates) : []
+  const verified = deep.candidates.length ? await verifyCandidates(deep.candidates, { proxy }) : []
   // Keep browser finds even if verification couldn't read them: the session that
   // captured them is gone, so a fresh fetch may legitimately fail.
   const pool = dropVariantDuplicates(verified.length ? verified : deep.candidates)
@@ -1893,7 +1897,7 @@ async function assistedCapture(
     proxy,
   })
 
-  const verified = result.candidates.length ? await verifyCandidates(result.candidates) : []
+  const verified = result.candidates.length ? await verifyCandidates(result.candidates, { proxy }) : []
   const pool = dropVariantDuplicates(verified.length ? verified : result.candidates)
   const { kept, dropped } = dropShortStreams(pool, minStreamSeconds, meta.expectedDuration)
 

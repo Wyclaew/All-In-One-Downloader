@@ -14,6 +14,7 @@
 const fs = require('fs')
 const { execFile } = require('child_process')
 const { toolEnv, ffprobePath } = require('./binaries')
+const { fetchVia, ffmpegEnv } = require('./proxy')
 const { num } = require('./util')
 
 const FFPROBE_TIMEOUT = 25000
@@ -109,10 +110,21 @@ function ffprobeMedia(url, resolved) {
       url,
     ]
 
+    // ffprobe understands http_proxy and nothing else. For a SOCKS proxy there is
+    // no way to tunnel it, and probing anyway would send the user's real address
+    // to a host they asked to reach through the tunnel — so it does not run.
+    const proxy = (resolved && resolved.proxy) || ''
+    let env = toolEnv()
+    if (proxy) {
+      const vars = ffmpegEnv(proxy)
+      if (!vars) return resolve(null)
+      env = { ...env, ...vars }
+    }
+
     execFile(
       bin,
       args,
-      { env: toolEnv(), timeout: FFPROBE_TIMEOUT, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+      { env, timeout: FFPROBE_TIMEOUT, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
       (err, stdout) => {
         if (!stdout) return resolve(null)
         let data
@@ -174,22 +186,25 @@ function ffprobeMedia(url, resolved) {
 /* -------------------------------------------------------------------------- */
 
 async function fetchManifest(url, resolved) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT)
+  // A manifest read on behalf of a proxied link has to use that link's proxy.
+  // `fetch` takes no agent, so a tunnelled source leaves this path entirely —
+  // otherwise the playlist is read from the real address while only the download
+  // is tunnelled, which both leaks and fails on a geo-blocked host.
   try {
-    const res = await fetch(url, {
-      redirect: 'follow',
-      signal: controller.signal,
+    const res = await fetchVia(url, {
       headers: fetchHeaders(url, resolved),
+      proxy: (resolved && resolved.proxy) || '',
+      timeoutMs: FETCH_TIMEOUT,
+      maxBytes: MAX_MANIFEST,
     })
-    if (!res.ok) return { text: '', finalUrl: url, size: null }
-    const size = num(res.headers.get('content-length'))
-    const text = (await res.text()).slice(0, MAX_MANIFEST)
-    return { text, finalUrl: res.url || url, size }
+    if (res.status && res.status >= 400) return { text: '', finalUrl: url, size: null }
+    return {
+      text: String(res.text || ''),
+      finalUrl: res.finalUrl || url,
+      size: num(res.headers && res.headers['content-length']),
+    }
   } catch {
     return { text: '', finalUrl: url, size: null }
-  } finally {
-    clearTimeout(timer)
   }
 }
 
@@ -204,6 +219,29 @@ async function fetchManifest(url, resolved) {
 async function probeFile(url, resolved) {
   const headers = fetchHeaders(url, resolved)
   const out = { size: null, ranges: false, url }
+  // Same door as everything else when the link is proxied.
+  if (resolved && resolved.proxy) {
+    try {
+      const res = await fetchVia(url, {
+        headers: { ...headers, Range: 'bytes=0-0' },
+        proxy: resolved.proxy,
+        timeoutMs: FETCH_TIMEOUT,
+        maxBytes: 1,
+      })
+      const total = num(String((res.headers || {})['content-range'] || '').split('/')[1])
+      if (res.status === 206 && total) return { size: total, ranges: true, url }
+      if (res.status === 200) {
+        return {
+          size: num((res.headers || {})['content-length']),
+          ranges: /bytes/i.test(String((res.headers || {})['accept-ranges'] || '')),
+          url,
+        }
+      }
+    } catch {
+      /* fall through: nothing known, and nothing leaked */
+    }
+    return out
+  }
 
   const attempt = async (init) => {
     const controller = new AbortController()

@@ -1,5 +1,16 @@
 ## Bu sürümde
 
+- **Vekil yolu kökten kapatıldı.** Önceki sürümde sayfa taramasını tünele almıştım
+  ama aday doğrulama, manifest okuma, künye çıkarma (ffprobe) ve öğe
+  zenginleştirme hâlâ tünelin dışındaydı. Artık vekilli bir bağlantı adına yapılan
+  **her** istek aynı kapıdan geçiyor. ffprobe SOCKS konuşamadığı için o durumda
+  hiç çalıştırılmıyor — künye eksik kalır, ama adres sızmaz.
+- **Vekil adresi diske yazılmıyor.** Adres kullanıcı adı/parola taşıyabildiği ve
+  kitaplık dosyası düz metin olduğu için, kayıtlarda yalnızca "bu bağlantı
+  vekilliydi" bayrağı duruyor; adres kullanılacağı anda ayarlardan okunuyor.
+
+## Önceki sürümde
+
 - **VPN düzeltmesi.** Vekil açıkken sayfa taraması, aday doğrulama ve manifest
   okuma hâlâ tünelin *etrafından* gidiyordu: yalnızca indirme vekilliydi. Coğrafi
   engelli bir sitede çözümleme bu yüzden düşüyordu — üstelik gerçek adres de

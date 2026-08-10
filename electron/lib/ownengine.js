@@ -145,6 +145,9 @@ async function locateStream(download, settings, onNote) {
 
   const result = await resolvePage(download.url, {
     browserCookieJar,
+    // A proxied download that has to resolve its own page must resolve it through
+    // the same tunnel it will fetch through.
+    proxy: download.useProxy ? String(settings.proxyUrl || '').trim() : '',
     blockRules: {
       extraBlockedHosts: settings.extraBlockedHosts,
       blockTrackers: settings.blockTrackers,
