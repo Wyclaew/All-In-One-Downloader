@@ -73,6 +73,7 @@ interface Bridge {
   vaultExport(id: string): Promise<Result<{ path: string } | null>>
   vaultRemove(id: string): Promise<Result<boolean>>
   openFile(path: string): Promise<Result<boolean>>
+  playFile(path: string): Promise<Result<{ path: string }>>
   revealFile(path: string): Promise<Result<boolean>>
   openExternal(url: string): Promise<Result<boolean>>
   readClipboard(): Promise<Result<string>>
@@ -181,6 +182,7 @@ export const api = {
   vaultRemove: (id: string) => call(bridge.vaultRemove(id)),
 
   openFile: (p: string) => call(bridge.openFile(p)),
+  playFile: (p: string) => call(bridge.playFile(p)),
   revealFile: (p: string) => call(bridge.revealFile(p)),
   openExternal: (url: string) => call(bridge.openExternal(url)),
   readClipboard: () => call(bridge.readClipboard()),

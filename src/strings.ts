@@ -92,6 +92,8 @@ export const T = {
     cancel: 'İptal et',
     retry: 'Tekrar dene',
     open: 'Dosyayı aç',
+    play: 'Oynat (kaldığın yerden)',
+    openExternal: 'Sistem oynatıcısında aç (yeri hatırlanmaz)',
     reveal: 'Klasörde göster',
     remove: 'Kayıttan sil',
     removeWithFile: 'Dosyayla birlikte sil',

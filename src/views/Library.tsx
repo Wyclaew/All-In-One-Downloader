@@ -372,7 +372,11 @@ function Row({
         {failed ? <IconBtn icon="refresh" title={T.library.retry} onClick={() => api.retry(d.id)} /> : null}
         {d.status === 'done' && d.filePath ? (
           <>
-            <IconBtn icon="play" title={T.library.open} onClick={() => api.openFile(d.filePath as string)} />
+            <IconBtn
+              icon="play"
+              title={T.library.play}
+              onClick={() => api.playFile(d.filePath as string)}
+            />
             <IconBtn
               icon="folder"
               title={T.library.reveal}
@@ -427,6 +431,17 @@ function Row({
                   }}
                 >
                   {vaultingId === d.id ? T.library.movingToVault : T.library.toVault}
+                </MenuItem>
+              ) : null}
+              {d.status === 'done' && d.filePath ? (
+                <MenuItem
+                  icon="play"
+                  onClick={() => {
+                    api.openFile(d.filePath as string)
+                    close()
+                  }}
+                >
+                  {T.library.openExternal}
                 </MenuItem>
               ) : null}
               <MenuItem

@@ -69,6 +69,7 @@ contextBridge.exposeInMainWorld('api', {
   vaultRemove: (id) => ipcRenderer.invoke('vault:remove', id),
 
   openFile: (p) => ipcRenderer.invoke('file:open', p),
+  playFile: (p) => ipcRenderer.invoke('file:play', p),
   revealFile: (p) => ipcRenderer.invoke('file:reveal', p),
   openExternal: (url) => ipcRenderer.invoke('shell:external', url),
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),

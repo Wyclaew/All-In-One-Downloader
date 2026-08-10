@@ -585,11 +585,11 @@ function Row({
                 <MenuItem
                   icon="play"
                   onClick={() => {
-                    api.openFile(download.filePath as string)
+                    api.playFile(download.filePath as string)
                     close()
                   }}
                 >
-                  {T.library.open}
+                  {T.library.play}
                 </MenuItem>
               ) : null}
               {download && download.status === 'done' && download.filePath ? (

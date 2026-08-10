@@ -411,20 +411,56 @@ try {
  */
 const BUILTIN_GATE_CLICKER = `// ==UserScript==
 // @name         Kapıyı aç
-// @description  Yaş doğrulaması, çerez bildirimi ve "videoya devam et" gibi ara ekranları görünen yazısına göre kapatır. Oynatıcı hiç kurulmadığı için boş dönen sayfaların çoğu bu yüzden boş döner.
+// @description  Yaş doğrulaması ve çerez bildirimi gibi ÜSTTE DURAN katmanları görünen yazısına göre kapatır. Sayfadan ayrılabilecek hiçbir şeye dokunmaz: form içindekiler, gerçek bağlantılar ve submit düğmeleri atlanır. Bir kapıyı kaçırmak tek bir sayfaya mal olur; sayfayı gezdirmek çözümlemenin tamamına mal olur.
 // @match        *
 // @run-at       document-end
 // ==/UserScript==
 
+/*
+ * Narrowed after this recipe drove a page to a 500.
+ *
+ * The first version clicked anything whose words looked encouraging, and that is
+ * how it hit something that navigated or submitted. A gate we want to dismiss is
+ * an overlay: it sits above the page, it does not leave it. So the rules now are
+ * about *behaviour*, not just wording — never a form, never a real link, never a
+ * submit. Missing a gate costs one unresolved page; navigating away costs the
+ * whole resolve, and on some sites an error the user then has to wonder about.
+ */
 var WORDS = [
-  'kabul et', 'kabul ediyorum', 'onayla', 'devam et', 'videoya devam',
-  'giriş yap değil', 'reklamı geç', 'atla', 'kapat',
-  'accept', 'i accept', 'agree', 'i agree', 'continue', 'continue to video',
-  'watch now', 'play now', 'skip ad', 'skip', 'close', 'got it', 'ok',
-  'yes i am over', '18+', 'enter'
+  'kabul et', 'kabul ediyorum', 'onayla', 'anladım',
+  'accept', 'i accept', 'accept all', 'agree', 'i agree', 'got it',
+  'yes i am over', '18+', 'reklamı geç', 'skip ad'
 ];
 
 var clicked = {};
+
+function inOverlay(el) {
+  // Walk up looking for the fixed or absolutely positioned container a consent
+  // banner or age gate always lives in. A button in normal page flow is part of
+  // the site, not a gate over it.
+  var node = el;
+  for (var depth = 0; node && depth < 6; depth += 1) {
+    var style = getComputedStyle(node);
+    if (style.position === 'fixed' || style.position === 'absolute') {
+      if (Number(style.zIndex || 0) >= 10 || style.position === 'fixed') return true;
+    }
+    node = node.parentElement;
+  }
+  return false;
+}
+
+function safeToClick(el) {
+  // Anything that can leave the page is out, whatever it says.
+  if (el.closest && el.closest('form')) return false;
+  if (el.tagName === 'INPUT' && /submit|image/i.test(el.type || '')) return false;
+  if (el.tagName === 'A') {
+    var href = el.getAttribute('href') || '';
+    if (href && href !== '#' && !/^javascript:/i.test(href)) return false;
+    if (el.target && el.target !== '_self') return false;
+  }
+  if (el.getAttribute && el.getAttribute('formaction')) return false;
+  return inOverlay(el);
+}
 
 function looksClickable(el) {
   if (!el || clicked[el.__aioId]) return false;
@@ -444,9 +480,7 @@ function sweep() {
     if (!text || text.length > 40) continue;
     for (var w = 0; w < WORDS.length; w += 1) {
       if (text !== WORDS[w] && text.indexOf(WORDS[w]) === -1) continue;
-      if (!looksClickable(el)) break;
-      // Never touch anything that navigates away from the video.
-      if (el.tagName === 'A' && el.target === '_blank') break;
+      if (!looksClickable(el) || !safeToClick(el)) break;
       el.__aioId = el.__aioId || ++counter;
       clicked[el.__aioId] = 1;
       try { el.click(); AIO.note('kapı geçildi: ' + text.slice(0, 24)); } catch (e) {}

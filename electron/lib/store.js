@@ -84,6 +84,10 @@ function emptyState() {
     // host -> { engine, ads, ms, at }. What worked last time on this site, so a
     // repeat visit doesn't re-derive it from scratch.
     hostProfiles: {},
+    // key -> { at, duration, seen }. Where a video was last left off. Keyed by
+    // path for a library file and by id for a vault entry, so a vaulted file
+    // remembers its place without its name appearing here.
+    positions: {},
     settings: defaultSettings(),
   }
 }
@@ -129,6 +133,7 @@ function init() {
       categories: Array.isArray(loaded.categories) ? loaded.categories : [],
       hostProfiles:
         loaded.hostProfiles && typeof loaded.hostProfiles === 'object' ? loaded.hostProfiles : {},
+      positions: loaded.positions && typeof loaded.positions === 'object' ? loaded.positions : {},
     }
   }
   migrateCookieBrowser()
@@ -260,6 +265,41 @@ function rememberHostProfile(host, data) {
   })
 }
 
+const MAX_POSITIONS = 500
+
+/**
+ * Where a video was last left off.
+ *
+ * Positions near the very start or the very end are not worth keeping: the first
+ * is indistinguishable from not having watched it, and the second means it is
+ * finished — offering to resume five seconds before the credits is worse than
+ * offering nothing.
+ */
+function rememberPosition(key, seconds, duration) {
+  if (!key || !Number.isFinite(seconds) || seconds < 20) return
+  if (duration && seconds > duration - 25) {
+    commit((s) => {
+      delete s.positions[key]
+    })
+    return
+  }
+  commit((s) => {
+    s.positions[key] = { at: Math.round(seconds), duration: Math.round(duration || 0), seen: Date.now() }
+    const keys = Object.keys(s.positions)
+    if (keys.length > MAX_POSITIONS) {
+      keys
+        .sort((a, b) => (s.positions[a].seen || 0) - (s.positions[b].seen || 0))
+        .slice(0, keys.length - MAX_POSITIONS)
+        .forEach((stale) => delete s.positions[stale])
+    }
+  })
+}
+
+function positionOf(key) {
+  const entry = key ? state.positions[key] : null
+  return entry && entry.at > 0 ? entry.at : 0
+}
+
 function ensureDownloadDir() {
   const dir = state.settings.downloadDir
   fs.mkdirSync(dir, { recursive: true })
@@ -282,5 +322,7 @@ module.exports = {
   getHostProfile,
   rememberHostProfile,
   ensureDownloadDir,
+  rememberPosition,
+  positionOf,
   defaultSettings,
 }

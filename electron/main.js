@@ -131,20 +131,103 @@ function forgetVaultedFile({ downloadId = null, filePath = null }) {
 }
 
 
+/** webContents id -> the position key that window is playing. */
+const playerKeys = new Map()
+
 /**
- * Play a vaulted file in our own window.
+ * Play a file in our own window, remembering where it was left off.
  *
- * Handing the file to the OS player was what wrote a vaulted title into
- * QuickTime's recent-documents list — and on macOS that list outlives the file, so
- * deleting the decrypted copy did not undo it. The alternative people reach for is
- * to edit the shared file list, which would wipe every unrelated QuickTime entry
- * the user has. Playing it here instead means no other application ever learns the
- * file exists.
+ * Two reasons this exists. Handing a vaulted file to the OS player wrote its title
+ * into QuickTime's recent-documents list, which on macOS outlives the file. And
+ * resuming where you stopped is only possible for a player we can ask: VLC and
+ * QuickTime keep their own bookmarks in their own stores, and nothing lets another
+ * application read them. So the app can honour "remember my place" for the files it
+ * plays, and cannot for the ones it hands away — which is said plainly rather than
+ * implied.
  *
- * The window is deliberately inert: no node, no preload, no remote content, and it
- * only ever loads a page we just wrote beside the file it plays.
+ * The window is deliberately inert: no node, no remote content, a preload that
+ * exposes one number in and one number out, and a page we just wrote ourselves.
  */
-/** Open player windows, so locking the vault can close them. */
+async function openInPlayer({ file, dir, title, key }) {
+  const fs = require('fs')
+  const page = path.join(dir, 'oynat.html')
+  const name = path.basename(file)
+
+  fs.writeFileSync(
+    page,
+    `<!doctype html><meta charset="utf-8">
+<style>
+  html,body{margin:0;height:100%;background:#0d0f12;color:#e8e6e1;
+    font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
+  body{display:flex;flex-direction:column}
+  header{padding:9px 14px;border-bottom:1px solid #23262b;display:flex;gap:9px;align-items:center}
+  .tag{color:#d2461f;font-size:10.5px;letter-spacing:.07em;text-transform:uppercase}
+  #t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #r{margin-left:auto;color:#8b9199;font-size:11px}
+  video{flex:1;min-height:0;width:100%;background:#000;outline:none}
+</style>
+<header><span class="tag">${key.startsWith('vault:') ? 'kasa' : 'oynatıcı'}</span><span id="t"></span><span id="r"></span></header>
+<video id="v" src="${encodeURIComponent(name)}" controls autoplay></video>
+<script>
+  // Text is assigned from data, never written as markup, so a filename cannot inject.
+  document.getElementById('t').textContent = ${JSON.stringify(title)};
+  var v = document.getElementById('v');
+  var note = document.getElementById('r');
+
+  window.aioPlayer.resumeAt().then(function (at) {
+    if (!at || at < 20) return;
+    var apply = function () {
+      // Seeking before metadata arrives is ignored, so wait for a duration.
+      if (!isFinite(v.duration) || v.duration <= 0) return;
+      v.removeEventListener('loadedmetadata', apply);
+      if (at < v.duration - 10) {
+        v.currentTime = at;
+        var m = Math.floor(at / 60), sec = Math.floor(at % 60);
+        note.textContent = m + ':' + (sec < 10 ? '0' : '') + sec + ' devam edildi';
+      }
+    };
+    v.addEventListener('loadedmetadata', apply);
+    apply();
+  });
+
+  var save = function () { window.aioPlayer.remember(v.currentTime, v.duration); };
+  // While playing, and again on the way out: a window closed with the mouse never
+  // gets another chance to report.
+  setInterval(function () { if (!v.paused) save(); }, 5000);
+  v.addEventListener('pause', save);
+  window.addEventListener('beforeunload', save);
+</script>`,
+    'utf8'
+  )
+
+  const win = new BrowserWindow({
+    width: 960,
+    height: 600,
+    backgroundColor: '#0d0f12',
+    title: key.startsWith('vault:') ? 'Kasa' : 'Oynatıcı',
+    webPreferences: {
+      preload: path.join(__dirname, 'player-preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
+    },
+  })
+  playerKeys.set(win.webContents.id, key)
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  win.webContents.on('will-navigate', (event) => event.preventDefault())
+  win.on('closed', () => {
+    playerWindows.delete(win)
+    playerKeys.delete(win.webContents.id)
+  })
+  // Locking the vault deletes the decrypted copy; a window left playing it would
+  // be showing exactly what the user just asked to be put away.
+  if (key.startsWith('vault:')) playerWindows.add(win)
+
+  await win.loadFile(page)
+  return { path: file }
+}
+
+/** Open player windows for vaulted files, so locking can close them. */
 const playerWindows = new Set()
 
 function closePlayers() {
@@ -159,47 +242,13 @@ function closePlayers() {
 }
 
 async function playVaulted(id) {
-  const fs = require('fs')
   const prepared = await vault.prepareEntry(id)
-  const file = path.basename(prepared.path)
-  const page = path.join(prepared.dir, 'oynat.html')
-
-  fs.writeFileSync(
-    page,
-    `<!doctype html><meta charset="utf-8">
-<style>
-  html,body{margin:0;height:100%;background:#0d0f12;color:#e8e6e1;
-    font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
-  body{display:flex;flex-direction:column}
-  header{padding:10px 14px;border-bottom:1px solid #23262b;display:flex;gap:8px;align-items:center}
-  .lock{color:#d2461f;font-size:11px;letter-spacing:.06em;text-transform:uppercase}
-  video{flex:1;min-height:0;width:100%;background:#000;outline:none}
-</style>
-<header><span class="lock">kasa</span><span id="t"></span></header>
-<video src="${encodeURIComponent(file)}" controls autoplay></video>
-<script>
-  // The title is set from data, never from markup, so a filename cannot inject.
-  document.getElementById('t').textContent = ${JSON.stringify(prepared.title)};
-</script>`,
-    'utf8'
-  )
-
-  const win = new BrowserWindow({
-    width: 960,
-    height: 600,
-    backgroundColor: '#0d0f12',
-    title: 'Kasa',
-    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+  return openInPlayer({
+    file: prepared.path,
+    dir: prepared.dir,
+    title: prepared.title,
+    key: `vault:${id}`,
   })
-  // Locking the vault deletes the decrypted copy; a window left playing it would
-  // be showing exactly what the user just asked to be put away.
-  playerWindows.add(win)
-  win.on('closed', () => playerWindows.delete(win))
-  // Nothing in this window should be able to navigate anywhere.
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  win.webContents.on('will-navigate', (event) => event.preventDefault())
-  await win.loadFile(page)
-  return { path: prepared.path }
 }
 
 function toRenderer(action) {
@@ -610,6 +659,28 @@ function registerIpc() {
   handle('shell:external', (url) => {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url)
     return true
+  })
+
+  /* ---- the in-app player ------------------------------------------------- */
+
+  ipcMain.handle('player:resumeAt', (event) =>
+    store.positionOf(playerKeys.get(event.sender.id))
+  )
+
+  ipcMain.on('player:position', (event, { seconds, duration } = {}) => {
+    const key = playerKeys.get(event.sender.id)
+    if (key) store.rememberPosition(key, Number(seconds), Number(duration))
+  })
+
+  handle('file:play', async (filePath) => {
+    const fs = require('fs')
+    if (!filePath || !fs.existsSync(filePath)) throw new Error('Dosya bulunamadı.')
+    return openInPlayer({
+      file: filePath,
+      dir: path.dirname(filePath),
+      title: path.basename(filePath),
+      key: `file:${filePath}`,
+    })
   })
 
   handle('clipboard:read', () => clipboard.readText())

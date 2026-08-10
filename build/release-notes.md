@@ -1,5 +1,21 @@
 ## Bu sürümde
 
+- **Kaldığın yeri hatırlıyor.** Kitaplıktaki oynat düğmesi ve kasadaki videolar
+  artık uygulamanın kendi oynatıcısında açılıyor ve nerede bıraktığını hatırlıyor —
+  kapatınca, duraklatınca ve oynarken beş saniyede bir kaydediyor. Başa çok yakın
+  bir yer kaydedilmiyor (izlenmemişten farkı yok), sona çok yakın olan da siliniyor
+  (bitmiş demektir). **Dış oynatıcılar için bunu yapamıyorum:** VLC ve QuickTime
+  yer imlerini kendi depolarında tutuyor ve başka bir uygulamanın onları okumasının
+  bir yolu yok. Menüdeki "sistem oynatıcısında aç" seçeneği bunu açıkça yazıyor.
+- **"Kapıyı aç" tarifi ciddi şekilde sıkılaştırıldı.** İlk hâli cesaret verici
+  yazan her şeye basıyordu; sayfayı gezdiren bir şeye basması muhtemelen dizibox'ta
+  gördüğün 500 hatasının sebebi. Artık kural davranış üzerine: form içindekilere,
+  gerçek bağlantılara ve submit düğmelerine **hiç** dokunmuyor, yalnızca sayfanın
+  üstünde duran katmanlardaki düğmelere basıyor. Bir kapıyı kaçırmak tek bir sayfaya
+  mal olur; sayfayı gezdirmek çözümlemenin tamamına mal olur.
+
+## Önceki sürümde
+
 - **Bağlantı kopyalama.** Kaynaklar'daki bir videonun `⋯` menüsünde: *Bağlantıyı
   kopyala* (sayfa adresi) ve çözümlenmiş öğelerde *Akış adresini kopyala* (m3u8/mp4
   adresinin kendisi). Satır zaten yoğun olduğu için menüye koydum — yeni bir düğme
