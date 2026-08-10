@@ -28,6 +28,9 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
   const [checking, setChecking] = useState(false)
   const [proxyResult, setProxyResult] = useState<string | null>(null)
   const [scripts, setScripts] = useState<{ dir: string; scripts: UserScriptInfo[] } | null>(null)
+  const [presets, setPresets] = useState<
+    { id: string; label: string; url: string; note: string; up: boolean }[] | null
+  >(null)
 
   // Only offer browsers whose cookie store actually exists on this machine —
   // picking a missing one used to fail every request with a cryptic error.
@@ -41,6 +44,9 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
     })
     api.listScripts().then((list) => {
       if (alive && list) setScripts(list)
+    })
+    api.proxyPresets().then((list) => {
+      if (alive && list) setPresets(list)
     })
     return () => {
       alive = false
@@ -285,6 +291,25 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
               </Btn>
             </div>
             {proxyResult ? <div className="set-hint">{proxyResult}</div> : null}
+            {/* Which local privacy proxies are actually listening right now. */}
+            <div className="set-inline" style={{ flexWrap: 'wrap' }}>
+              {(presets || []).map((p) => (
+                <Btn
+                  key={p.id}
+                  size="sm"
+                  variant={p.up ? 'default' : 'ghost'}
+                  icon={p.up ? 'check' : undefined}
+                  title={p.up ? `${p.url} — açık` : `${p.url} — kapalı${p.note ? ` (${p.note})` : ''}`}
+                  onClick={() => {
+                    setProxyUrl(p.url)
+                    patch({ proxyUrl: p.url })
+                  }}
+                >
+                  {p.label}
+                </Btn>
+              ))}
+            </div>
+            <div className="set-hint" style={{ marginTop: 0 }}>{T.settings.proxyTor}</div>
             <Toggle
               checked={!!settings.proxyByDefault}
               onChange={(v) => patch({ proxyByDefault: v })}

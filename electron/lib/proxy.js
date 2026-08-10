@@ -265,6 +265,65 @@ function ffmpegEnv(raw) {
   return { http_proxy: value, https_proxy: value, HTTP_PROXY: value, HTTPS_PROXY: value }
 }
 
+
+/**
+ * Where the usual local privacy proxies listen.
+ *
+ * Cloudflare WARP hides your address from the *site*, and nothing more:
+ * Cloudflare itself sees exactly who you are. Tor is the answer when that matters
+ * — three relays, none of which knows both ends. It is slower per connection, and
+ * that is where this app has an unusual advantage: the multi-part downloader opens
+ * several connections, and with circuit isolation each one takes a different route
+ * through the network. Parallel parts over Tor add up in a way a single stream
+ * never does.
+ */
+const PRESETS = [
+  { id: 'tor', label: 'Tor', url: 'socks5://127.0.0.1:9050', note: 'Tor Browser açıkken 9150' },
+  { id: 'tor-browser', label: 'Tor Browser', url: 'socks5://127.0.0.1:9150', note: '' },
+  { id: 'warp', label: 'Cloudflare WARP', url: 'socks5://127.0.0.1:40000', note: 'warp-cli mode proxy' },
+]
+
+/** Which of them is actually listening right now. */
+function probePresets(timeoutMs = 700) {
+  return Promise.all(
+    PRESETS.map(
+      (preset) =>
+        new Promise((resolve) => {
+          const parsed = parseProxy(preset.url)
+          const socket = net.connect({ host: parsed.host, port: parsed.port })
+          const done = (up) => {
+            socket.destroy()
+            resolve({ ...preset, up })
+          }
+          socket.setTimeout(timeoutMs, () => done(false))
+          socket.once('connect', () => done(true))
+          socket.once('error', () => done(false))
+        })
+    )
+  )
+}
+
+/**
+ * Tor gives each SOCKS username its own circuit (IsolateSOCKSAuth is on by
+ * default). Naming each connection differently therefore spreads a multi-part
+ * download across several routes instead of queueing it all down one — which is
+ * the difference between Tor being unusable here and being merely slow.
+ *
+ * Only for a credential-free loopback proxy on Tor's own ports: anywhere else an
+ * invented username is at best ignored and at worst a rejected login.
+ */
+function looksLikeTor(proxy) {
+  if (!proxy || !isSocks(proxy) || proxy.username) return false
+  const local = proxy.host === '127.0.0.1' || proxy.host === 'localhost' || proxy.host === '::1'
+  return local && (proxy.port === 9050 || proxy.port === 9150)
+}
+
+function circuitFor(raw, lane) {
+  const proxy = parseProxy(raw)
+  if (!proxy || !looksLikeTor(proxy) || !Number.isFinite(lane)) return raw
+  return `socks5://aio${lane}:x@${proxy.host}:${proxy.port}`
+}
+
 /**
  * Prove the proxy works, and say what the far end looks like.
  *
@@ -383,6 +442,10 @@ function fetchVia(url, { headers = {}, proxy = '', timeoutMs = 12000, maxBytes =
 }
 
 module.exports = {
+  PRESETS,
+  probePresets,
+  circuitFor,
+  looksLikeTor,
   parseProxy,
   agentsFor,
   electronRules,

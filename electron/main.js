@@ -300,6 +300,8 @@ function registerIpc() {
     return { added }
   })
 
+  handle('proxy:presets', () => proxy.probePresets())
+
   handle('proxy:check', async () => {
     const url = String(store.getState().settings.proxyUrl || '').trim()
     if (!url) return { ok: false, message: 'Vekil adresi boş.' }

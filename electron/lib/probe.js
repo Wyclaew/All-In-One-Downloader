@@ -468,6 +468,9 @@ function itemFromCandidate(candidate, source, index, title, userAgent, total, th
     filesize: info ? info.filesize : null,
     filesizeEstimated: !!(info && info.filesizeEstimated),
     sizes: (info && info.sizes) || {},
+    // Subtitle tracks the master playlist itself advertises. yt-dlp cannot find
+    // these — it asks the extractor, and a scraped m3u8 has no extractor.
+    subtitles: (info && info.subtitles) || [],
     isLive: info ? !!info.live : false,
     site: hostOf(source.url) || source.site,
     addedAt: Date.now(),
@@ -707,6 +710,7 @@ async function enrichResolved(sourceId) {
           live.filesize = info.filesize || live.filesize
           live.filesizeEstimated = info.filesize ? !!info.filesizeEstimated : live.filesizeEstimated
           if (info.sizes && Object.keys(info.sizes).length) live.sizes = info.sizes
+          if (info.subtitles && info.subtitles.length) live.subtitles = info.subtitles
           live.isLive = !!info.live
           live.variants = (info.variants || []).map((v) => v.height).filter(Boolean)
           live.drm = !!info.drm

@@ -26,7 +26,7 @@ const { Transform } = require('stream')
 const { pipeline } = require('stream/promises')
 const { toolEnv, ffmpegPath } = require('./binaries')
 const { fetchHeaders, ffprobeHeaderArgs, parseHls } = require('./mediainfo')
-const { agentsFor, ffmpegEnv, parseProxy } = require('./proxy')
+const { agentsFor, circuitFor, ffmpegEnv, parseProxy } = require('./proxy')
 const { safeName, settingNumber } = require('./util')
 
 const AUDIO_CODECS = {
@@ -395,9 +395,12 @@ async function fetchFileParallel({
 
   const MAX_STALLS = 4
 
-  const runPart = async (part) => {
+  const runPart = async (part, lane) => {
     let stalls = 0
     const capacity = part.end - part.start + 1
+    // Over Tor this puts each part on its own circuit, so the parts add up instead
+    // of sharing one route. Anywhere else it is the same address it was given.
+    const laneProxy = circuitFor(proxy, lane)
 
     while (part.done < capacity) {
       if (stopped) throw abortError()
@@ -405,7 +408,7 @@ async function fetchFileParallel({
       const res = await openStream(
         url,
         { ...fetchHeaders(url, resolved), Range: `bytes=${from}-${part.end}` },
-        { proxy }
+        { proxy: laneProxy }
       )
       live.add(res.request)
 
@@ -466,7 +469,7 @@ async function fetchFileParallel({
   }
 
   try {
-    await Promise.all(plan.parts.map(runPart))
+    await Promise.all(plan.parts.map((part, lane) => runPart(part, lane)))
   } catch (err) {
     savePlan(planPath, plan)
     if (stopped) throw abortError()

@@ -305,6 +305,7 @@ const DRM_HINT = /widevine|playready|fairplay|streamingkeydelivery|clearkey|urn:
 function parseHls(text, baseUrl) {
   const lines = text.split(/\r?\n/)
   const variants = []
+  const subtitles = []
   let duration = 0
   let extinfCount = 0
   let encrypted = false
@@ -331,6 +332,31 @@ function parseHls(text, baseUrl) {
         width: res ? Number(res[1]) : null,
         height: res ? Number(res[2]) : null,
         bandwidth: bw ? Number(bw[1]) : null,
+      }
+      continue
+    }
+
+    /*
+     * Subtitle renditions.
+     *
+     * This was the missing piece behind "the subtitles never showed up in VLC".
+     * yt-dlp's --write-subs asks the *extractor* for subtitles, and a bare m3u8
+     * scraped off a series site has no extractor to ask — but the master playlist
+     * itself lists its subtitle tracks right here, which is where those sites keep
+     * them. Nobody was reading them.
+     */
+    if (line.startsWith('#EXT-X-MEDIA:') && /TYPE=SUBTITLES/i.test(line)) {
+      const uri = (line.match(/URI="([^"]+)"/i) || [])[1]
+      if (uri) {
+        const abs = absolute(uri)
+        if (abs) {
+          subtitles.push({
+            url: abs,
+            lang: ((line.match(/LANGUAGE="([^"]*)"/i) || [])[1] || '').toLowerCase(),
+            name: (line.match(/NAME="([^"]*)"/i) || [])[1] || '',
+            forced: /FORCED=YES/i.test(line),
+          })
+        }
       }
       continue
     }
@@ -365,6 +391,7 @@ function parseHls(text, baseUrl) {
 
   return {
     variants,
+    subtitles,
     duration: extinfCount ? Math.round(duration) : null,
     encrypted,
     drm,
@@ -453,6 +480,8 @@ async function describeStream(url, resolved) {
     filesize: null,
     /** height -> bytes, so the row can answer for whichever quality is picked. */
     sizes: {},
+    /** Subtitle tracks the manifest itself advertises. */
+    subtitles: [],
     /** True when the figure came from bitrate × duration, not from a real length. */
     filesizeEstimated: false,
     variants: [],
@@ -467,6 +496,7 @@ async function describeStream(url, resolved) {
     if (text && /#EXTM3U/i.test(text)) {
       const hls = parseHls(text, finalUrl)
       info.variants = hls.variants
+      info.subtitles = hls.subtitles || []
       info.duration = hls.duration
       info.encrypted = hls.encrypted
       info.drm = hls.drm

@@ -1,5 +1,25 @@
 ## Bu sürümde
 
+- **Altyazı sorunu çözüldü.** Sebebi buydu: `--write-subs` altyazıyı *çıkarıcıya*
+  sorar, dizi sitesinden kazınmış bir m3u8'in ise çıkarıcısı yok. Ama altyazı
+  parçaları master playlist'in içinde listeleniyor ve kimse okumuyordu. Artık
+  okunuyor, ffmpeg ile birleştirilip SRT olarak videonun yanına yazılıyor.
+- **Ve artık sessiz kalmıyor.** Asıl kusur buydu: altyazı açıkken hiçbir şey
+  bulunamadığında hiçbir şey söylenmiyordu, yani "altyazı yok" ile "hiç bakmadık"
+  aynı görünüyordu. Şimdi üç durumu da söylüyor — kaydedildi, akışta var ama
+  istediğin dilde değil, ya da bu akışta hiç yok.
+- **Tor desteği.** Ayarlar → Erişim'de hazır ayar düğmeleri: Tor (9050), Tor
+  Browser (9150), Cloudflare WARP (40000) — hangisi o an açıksa yeşil işaretli.
+  Cloudflare adresini siteden gizler, o kadar; Cloudflare seni görür. Tor'da üç
+  röle var ve hiçbiri iki ucu birden bilmez.
+- **Tor'u hızlandıran şey.** Tor bağlantı başına yavaştır, ama çok parçalı
+  indiricinin burada beklenmedik bir avantajı var: her parçaya ayrı bir SOCKS
+  kullanıcı adı verilerek **ayrı devre** açtırılıyor, böylece parçaların hızı
+  toplanıyor. Yalnızca Tor'un kendi portlarında ve kimlik bilgisi olmayan yerel bir
+  vekilde yapılıyor — başka yerde uydurma kullanıcı adı en iyi hâlde yok sayılır.
+
+## Önceki sürümde
+
 - **İptal düğmesi artık çalışıyor.** Bu sürümde eklediğim eşzamanlı parça indirme
   yüzünden yt-dlp, SIGTERM'i alıp uçuşan parçaları bitirmeye çalışırken saniyeler
   geçiyordu; satır o sürede hiçbir şey olmamış gibi devam ediyor ve düğme bozuk

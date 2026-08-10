@@ -453,6 +453,35 @@ function settle(job, download, settings, outcome) {
     })
     sendProgress(download, true)
     store.send('finished', { id: download.id, title: download.title })
+
+    // Silence was the actual bug here: with subtitles switched on and none found,
+    // nothing was said, so "none available" and "we never looked" looked the same.
+    if (settings.writeSubs && finalPath) {
+      fetchStreamSubtitles(download, finalPath, settings)
+        .then(({ found, saved }) => {
+          if (saved.length) {
+            store.commit(() => {
+              download.subtitlePath = saved[0].path
+              download.subtitleLanguage = saved.map((x) => x.lang).join(', ')
+            })
+            store.toast(
+              `Altyazı kaydedildi (${saved.map((x) => x.lang).join(', ')}): ${download.title}`,
+              'ok'
+            )
+          } else if (found) {
+            store.toast(
+              `${download.title}: akışta ${found} altyazı var ama istediğin dillerde değil (Ayarlar → Biçim → Altyazı dilleri).`,
+              'warn'
+            )
+          } else if (download.resolved) {
+            store.toast(
+              `${download.title}: bu akışta altyazı yok. Ayarlar → Altyazı'dan OpenSubtitles anahtarı girersen aranabilir.`,
+              'info'
+            )
+          }
+        })
+        .catch(() => {})
+    }
     if (settings.autoFetchSubtitles && finalPath) {
       autoSubtitles(download, finalPath, settings).catch(() => {})
     }
@@ -640,6 +669,73 @@ function startYtdlp(download, settings) {
   })
 }
 
+
+/**
+ * Subtitles the manifest itself advertised.
+ *
+ * This is the answer to "the subtitles never appeared in VLC". `--write-subs`
+ * asks the extractor, and a bare m3u8 scraped off a series site has no extractor
+ * to ask — so yt-dlp reported nothing and the app said nothing, which looked
+ * identical to "there are none". The tracks were listed in the master playlist
+ * the whole time.
+ *
+ * ffmpeg does the fetching: a subtitle rendition is itself a playlist of WebVTT
+ * segments, and ffmpeg concatenates and converts them to SRT in one pass, which
+ * beats reimplementing either half.
+ */
+async function fetchStreamSubtitles(download, filePath, settings) {
+  const tracks = Array.isArray(download.streamSubtitles) ? download.streamSubtitles : []
+  if (!tracks.length) return { found: 0, saved: [] }
+
+  const bin = ffmpegPath()
+  if (!bin) return { found: tracks.length, saved: [] }
+
+  const { normaliseLanguage, ffprobeHeaderArgs } = require('./mediainfo')
+  const wanted = String(settings.subLangs || 'tr,en')
+    .split(',')
+    .map((l) => normaliseLanguage(l) || l.trim().toLowerCase())
+    .filter(Boolean)
+
+  const base = filePath.replace(/\.[^.]+$/, '')
+  const proxy = proxyFor(download, settings)
+  const saved = []
+
+  for (const code of wanted) {
+    const track = tracks.find((t) => normaliseLanguage(t.lang) === code && !t.forced)
+    if (!track || !track.url) continue
+
+    const out = `${base}.${code}.srt`
+    const env = proxy ? { ...toolEnv(), ...(require('./proxy').ffmpegEnv(proxy) || {}) } : toolEnv()
+    // A SOCKS proxy cannot be handed to ffmpeg; skip rather than fetch around it.
+    if (proxy && !require('./proxy').ffmpegEnv(proxy)) break
+
+    const ok = await new Promise((resolve) => {
+      const child = spawn(
+        bin,
+        [
+          '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+          ...ffprobeHeaderArgs(track.url, download.resolved),
+          '-i', track.url,
+          out,
+        ],
+        { env, windowsHide: true }
+      )
+      child.on('error', () => resolve(false))
+      child.on('close', (code2) => resolve(code2 === 0))
+    })
+
+    if (ok && fileSizeOf(out)) saved.push({ lang: code, path: out })
+    else {
+      try {
+        fs.unlinkSync(out)
+      } catch {
+        /* nothing written */
+      }
+    }
+  }
+  return { found: tracks.length, saved }
+}
+
 /**
  * Best-effort subtitle right after a download. Only takes a hash match — those
  * were timed against this exact file, so they need no alignment and can't be
@@ -771,6 +867,7 @@ function enqueue({ item, url, title, site, sourceId, quality, audioOnly, categor
     duration: item ? item.duration : null,
     resolved: item && item.resolved ? item.resolved : null,
     language: item && item.language ? item.language : null,
+    streamSubtitles: (item && item.subtitles) || [],
     // Inherited from the link the user added, and copied here because a download
     // outlives the source row it came from.
     useProxy: !!(item && store.findSource(item.sourceId) && store.findSource(item.sourceId).useProxy),

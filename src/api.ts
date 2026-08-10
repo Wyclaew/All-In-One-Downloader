@@ -24,6 +24,7 @@ interface Bridge {
   listBrowsers(): Promise<Result<BrowserOption[]>>
   addSource(input: string, useProxy?: boolean): Promise<Result<{ added: number }>>
   checkProxy(): Promise<Result<{ ok: boolean; message: string }>>
+  proxyPresets(): Promise<Result<{ id: string; label: string; url: string; note: string; up: boolean }[]>>
   removeSource(id: string): Promise<Result<boolean>>
   toggleSource(id: string, collapsed?: boolean): Promise<Result<boolean>>
   rescanSource(id: string): Promise<Result<boolean>>
@@ -123,6 +124,7 @@ export const api = {
 
   addSource: (input: string, useProxy = false) => call(bridge.addSource(input, useProxy)),
   checkProxy: () => call(bridge.checkProxy()),
+  proxyPresets: () => call(bridge.proxyPresets()),
   removeSource: (id: string) => call(bridge.removeSource(id)),
   toggleSource: (id: string, collapsed?: boolean) => call(bridge.toggleSource(id, collapsed)),
   rescanSource: (id: string) => call(bridge.rescanSource(id)),

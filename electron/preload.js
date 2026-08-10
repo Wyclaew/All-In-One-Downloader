@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('api', {
 
   addSource: (input, useProxy) => ipcRenderer.invoke('source:add', { input, useProxy }),
   checkProxy: () => ipcRenderer.invoke('proxy:check'),
+  proxyPresets: () => ipcRenderer.invoke('proxy:presets'),
   removeSource: (id) => ipcRenderer.invoke('source:remove', id),
   toggleSource: (id, collapsed) => ipcRenderer.invoke('source:toggle', { id, collapsed }),
   rescanSource: (id) => ipcRenderer.invoke('source:rescan', id),
