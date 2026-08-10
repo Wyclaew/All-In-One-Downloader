@@ -1,5 +1,20 @@
 ## Bu sürümde
 
+- **İptal düğmesi artık çalışıyor.** Bu sürümde eklediğim eşzamanlı parça indirme
+  yüzünden yt-dlp, SIGTERM'i alıp uçuşan parçaları bitirmeye çalışırken saniyeler
+  geçiyordu; satır o sürede hiçbir şey olmamış gibi devam ediyor ve düğme bozuk
+  görünüyordu. Ayrıca motor henüz öldürülecek bir süreç vermediyse çağrı sessizce
+  düşüyordu. Artık: anında iptal olarak gösteriliyor, nazikçe soruluyor, 1,5 saniye
+  sonra ısrar ediliyor.
+- **İptal artık sıfırlıyor.** Yarım dosya, parça dosyaları, günlük ve kaydın
+  kendisi gidiyor — satır boşta hâline dönüyor, başka bir çözünürlükle baştan
+  başlayabiliyorsun.
+- **Kasaya taşırken "dosya bulunamadı" düzeltildi.** Kaydın yolu eskiyebiliyor
+  (son işlem uzantıyı değiştirir, dosya taşınır). Artık kayıtlı ada, sonra başlığa
+  göre indirme klasöründe aranıyor ve bulunca kayıt da düzeltiliyor.
+
+## Önceki sürümde
+
 - **Site tarifleri (script).** Tampermonkey fikri, bu uygulamaya özel yazılmış
   hâli. Çözümleme sırasında sayfanın içinde çalışan küçük script'ler — ve
   tarayıcıdakilerden farklı olarak, çözümleyiciye doğrudan akış verebiliyorlar:

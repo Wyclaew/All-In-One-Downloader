@@ -627,12 +627,66 @@ function registerIpc() {
   })
 
   /** Move a finished download into the vault: encrypt it, then drop the record. */
+  /**
+   * Where a finished download's file actually is.
+   *
+   * The recorded path can be stale: a post-processing step changed the extension,
+   * the user renamed or moved the file, or the record predates a change in how
+   * paths were resolved. Refusing to vault a file that is plainly sitting in the
+   * download folder is worse than looking for it, so look — by the recorded name
+   * first, then by the title the download was given.
+   */
+  const locateDownloadFile = (download) => {
+    const fs = require('fs')
+    const { safeName } = require('./lib/util')
+    if (download.filePath && fs.existsSync(download.filePath)) return download.filePath
+
+    const dir = store.getState().settings.downloadDir
+    const wanted = []
+    if (download.filePath) wanted.push(path.basename(download.filePath))
+    if (download.title) wanted.push(safeName(download.title))
+
+    let names = []
+    try {
+      names = fs.readdirSync(dir)
+    } catch {
+      return null
+    }
+
+    for (const want of wanted) {
+      const exact = names.find((n) => n === want)
+      if (exact) return path.join(dir, exact)
+      // Post-processing rewrites the extension, so compare on the stem — and
+      // anchor with the dot, or "Dune" would happily match "Dune 2.mp4".
+      const stem = path.basename(want, path.extname(want))
+      const sibling = names.find(
+        (n) => n.startsWith(`${stem}.`) && !n.endsWith('.part') && !n.endsWith('.ytdl')
+      )
+      if (sibling) return path.join(dir, sibling)
+    }
+    return null
+  }
+
   handle('vault:takeDownload', async (downloadId) => {
     const download = store.findDownload(downloadId)
     if (!download) throw new Error('Kayıt bulunamadı.')
-    if (!download.filePath) throw new Error('Bu kaydın diskte bir dosyası yok.')
 
-    const entry = await vault.addFile(download.filePath, {
+    const found = locateDownloadFile(download)
+    if (!found) {
+      throw new Error(
+        download.filePath
+          ? `Dosya bulunamadı: ${path.basename(download.filePath)}. Taşındıysa Kasa sekmesinden "Dosya ekle" ile ekleyebilirsin.`
+          : 'Bu kaydın diskte bir dosyası yok.'
+      )
+    }
+    // Put the record straight while we are here, so "open" works again too.
+    if (found !== download.filePath) {
+      store.commit(() => {
+        download.filePath = found
+      })
+    }
+
+    const entry = await vault.addFile(found, {
       title: download.title,
       site: download.site,
       duration: download.duration,

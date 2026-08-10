@@ -409,14 +409,13 @@ function settle(job, download, settings, outcome) {
   if (outcome.canceled) {
     deletePartials(job, settings)
     cleanupTemp(job)
-    store.commit(() => {
-      download.status = 'canceled'
-      download.stage = null
-      download.note = null
-      download.speed = null
-      download.eta = null
+    // A cancelled transfer leaves nothing behind — not the half file, and not a
+    // record. The source row returns to idle, ready for another quality.
+    store.commit((s) => {
+      s.downloads = s.downloads.filter((d) => d.id !== download.id)
+      for (const i of s.items) if (i.downloadId === download.id) i.downloadId = null
     })
-    sendProgress(download, true)
+    progressLastSent.delete(download.id)
     pump_queue()
     return
   }
@@ -846,25 +845,75 @@ function resume(id) {
   pump_queue()
 }
 
+/**
+ * Stop now, and say so now.
+ *
+ * Two things were wrong here. yt-dlp traps SIGTERM and finishes what is already
+ * in flight before exiting — with several fragments downloading at once that is
+ * seconds, during which the row carried on as if nothing had happened and the
+ * button looked broken. And if the engine had not yet handed over a process to
+ * kill, `job.child.kill()` threw into a catch and the function returned, leaving
+ * the transfer running with no way to stop it.
+ *
+ * So: mark it stopped, show it stopped, ask politely, and insist shortly after.
+ */
 function cancel(id) {
   const download = store.findDownload(id)
   if (!download) return
   const job = jobs.get(id)
-  if (job) {
-    job.canceled = true
-    try {
-      job.child.kill(process.platform === 'win32' ? undefined : 'SIGTERM')
-    } catch {
-      /* already exited */
-    }
+
+  if (!job) {
+    settleRemoved(download)
     return
   }
+
+  job.canceled = true
+  // The interface should not wait on a process to notice. The engine's own
+  // settle still runs when it exits and finds the record already gone.
   store.commit(() => {
     download.status = 'canceled'
     download.stage = null
+    download.note = null
     download.speed = null
     download.eta = null
+    download.parts = null
   })
+  sendProgress(download, true)
+
+  const stop = (signal) => {
+    try {
+      if (job.child) job.child.kill(process.platform === 'win32' ? undefined : signal)
+    } catch {
+      /* already gone */
+    }
+  }
+  stop('SIGTERM')
+  // Still there a moment later? It is not going to leave on its own.
+  const insist = setTimeout(() => {
+    if (jobs.get(id) === job) stop('SIGKILL')
+  }, 1500)
+  if (insist.unref) insist.unref()
+}
+
+/**
+ * Cancelling means the row goes back to how it was before, so a different
+ * quality can be picked and started fresh — not a dead record parked under
+ * "cancelled" that has to be cleared by hand.
+ */
+function settleRemoved(download) {
+  const settings = store.getState().settings
+  const job = jobs.get(download.id)
+  if (job) {
+    job.settled = true
+    jobs.delete(download.id)
+    deletePartials(job, settings)
+    cleanupTemp(job)
+  }
+  store.commit((s) => {
+    s.downloads = s.downloads.filter((d) => d.id !== download.id)
+    for (const i of s.items) if (i.downloadId === download.id) i.downloadId = null
+  })
+  progressLastSent.delete(download.id)
   pump_queue()
 }
 
