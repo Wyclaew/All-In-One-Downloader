@@ -1,5 +1,17 @@
 ## Bu sürümde
 
+- **Site tarifleri (script).** Tampermonkey fikri, bu uygulamaya özel yazılmış
+  hâli. Çözümleme sırasında sayfanın içinde çalışan küçük script'ler — ve
+  tarayıcıdakilerden farklı olarak, çözümleyiciye doğrudan akış verebiliyorlar:
+  `AIO.found('https://…/master.m3u8')`. Hiç kimsenin çıkarıcı yazmadığı bir site
+  on beş satırlık bir dosyayla öğretilebiliyor. Ayarlar → Erişim → Site tarifleri.
+- **Kutudan çıkan tarif: "Oynatıcıya sor".** Sayfadaki oynatıcı nesnelerinin kendi
+  kaynak listesini okuyor (JW Player, Video.js, Clappr, Plyr, hls.js, Shaka,
+  DPlayer, Playerjs). MSE/blob ile beslenen oynatıcılarda ağı izlemek işe yaramaz;
+  oynatıcının kendisi adresi bilir.
+
+## Önceki sürümde
+
 - **Vekil yolu kökten kapatıldı.** Önceki sürümde sayfa taramasını tünele almıştım
   ama aday doğrulama, manifest okuma, künye çıkarma (ffprobe) ve öğe
   zenginleştirme hâlâ tünelin dışındaydı. Artık vekilli bir bağlantı adına yapılan

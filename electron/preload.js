@@ -52,6 +52,9 @@ contextBridge.exposeInMainWorld('api', {
   applySubtitle: (payload) => ipcRenderer.invoke('subs:apply', payload),
   subtitleTools: () => ipcRenderer.invoke('subs:tools'),
 
+  listScripts: () => ipcRenderer.invoke('scripts:list'),
+  openScripts: () => ipcRenderer.invoke('scripts:open'),
+
   // The passphrase goes one way only: in. Nothing here can read it back out.
   vaultStatus: () => ipcRenderer.invoke('vault:status'),
   vaultCreate: (passphrase) => ipcRenderer.invoke('vault:create', passphrase),

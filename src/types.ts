@@ -146,6 +146,7 @@ export interface Settings {
 
   useYtdlp: boolean
   useResolver: boolean
+  useUserScripts: boolean
   resolverTimeout: number
   minStreamSeconds: number
   blockTrackers: boolean
@@ -187,6 +188,17 @@ export interface SubtitleOutcome {
   synced: boolean
   embedded: boolean
   notes: string[]
+}
+
+/** A site recipe: a script that runs inside the page while resolving. */
+export interface UserScript {
+  file: string
+  name: string
+  description: string
+  matches: string[]
+  runAt: string
+  enabled: boolean
+  bytes: number
 }
 
 /** One encrypted file in the vault. Only ever populated while unlocked. */

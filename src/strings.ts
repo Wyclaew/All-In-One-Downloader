@@ -205,6 +205,16 @@ export const T = {
       'Kasada bu kadar süre işlem yapılmazsa kilitlenir ve oynatmak için çözülmüş geçici kopyalar silinir. "Yok" seçersen yalnızca elle kilitlenir ve uygulama kapanınca kilitlenir.',
     vaultNotSet: 'Henüz kasa kurulmadı. Kasa sekmesinden kurabilirsin.',
 
+    scripts: 'Site tarifleri (script)',
+    scriptsHint:
+      'Çözümleme sırasında sayfanın içinde çalışan küçük script\'ler. Fikir Tampermonkey\'den geliyor ama Tampermonkey\'in kendisi Electron\'da çalışmaz (eklenti API\'lerinin çoğu yok — uBlock\'un yüklenememesiyle aynı sebep), o yüzden aynı fikir buraya özel yazıldı. Tarayıcıdaki bir script gördüğünü değiştirir; buradaki bir script çözümleyiciye doğrudan akış verebilir: AIO.found("https://…/master.m3u8"). Yani hiç kimsenin çıkarıcı yazmadığı bir site, on beş satırlık bir metin dosyasıyla öğretilebilir. Script\'ler sayfa dünyasında çalışır (oynatıcının değişkenlerini okuyabilmeleri için), Node\'a erişemezler, ve verdikleri adres ağdan yakalananla aynı doğrulamadan geçer — öneri sayılırlar, cevap değil.',
+    scriptsOn: 'Site tariflerini çalıştır',
+    scriptsOpen: 'Klasörü aç',
+    scriptsNone: 'Henüz script yok.',
+    scriptsCount: (n: number) => `${n} script yüklü`,
+    scriptsApi:
+      'Kullanılabilir: AIO.found(url, {kind, title, duration}) · AIO.title(metin) · AIO.duration(saniye) · AIO.note(metin) · AIO.click(seçici) · AIO.every(ms, fn). Başlıkta @match, @run-at ve @exclude Tampermonkey ile aynı yazılır.',
+
     resolver: 'Kendi çözümleyicim',
     resolverHint:
       'yt-dlp bir sayfayı tanımazsa devreye girer: sayfayı ve gömülü oynatıcıları tarar, gerekirse sayfayı görünmez bir tarayıcıda çalıştırıp akışı yakalar. Yukarıda bir tarayıcı seçtiysen o oturumu kullanır, yani sitelere yeniden giriş yapman gerekmez.',

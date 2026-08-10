@@ -29,6 +29,7 @@ const { BrowserWindow, session } = require('electron')
 const { createBlocker } = require('./blocklist')
 const { describeStream } = require('./mediainfo')
 const { electronRules: proxyRules, fetchVia } = require('./proxy')
+const userscripts = require('./userscripts')
 const { uid, hostOf } = require('./util')
 
 /**
@@ -1137,6 +1138,7 @@ function browserScan(
     expectedDuration = null,
     referer = null,
     proxy = '',
+    useUserScripts = true,
   } = {}
 ) {
   // A page-declared runtime raises the bar for "long enough to be the feature".
@@ -1169,6 +1171,11 @@ function browserScan(
     let adCount = 0
     let encrypted = false
     let title = ''
+    // A runtime announced by a user script, used the same way the page's own
+    // declared duration is: to tell a short pre-roll from the feature.
+    let scriptDuration = null
+    // One run per script per frame URL: frames re-emit dom-ready as they navigate.
+    const ranScripts = new Set()
     let win = null
     let settleTimer = null
     let done = false
@@ -1181,6 +1188,28 @@ function browserScan(
           /* listener's problem */
         }
       }
+    }
+
+    /**
+     * What came back from the page world: a bare URL from the network hooks, or a
+     * structured offer from a user script.
+     *
+     * A script's answer is a suggestion, not a verdict — it goes through `record`
+     * like every sniffed request, so verification, the ad filter and the duration
+     * check all still apply. A script can also declare the runtime, which is the
+     * strongest signal the ad filter has for telling a pre-roll from the feature.
+     */
+    const takeOffer = (item, referer) => {
+      if (typeof item === 'string') return record(item, referer, 'content-type')
+      if (!item || typeof item !== 'object') return
+      if (typeof item.title === 'string' && item.title.trim() && !title) {
+        title = item.title.trim().slice(0, 300)
+      }
+      if (typeof item.duration === 'number' && item.duration > 0 && !scriptDuration) {
+        scriptDuration = item.duration
+      }
+      if (typeof item.note === 'string' && item.note) note(item.note)
+      if (typeof item.url === 'string') record(item.url, referer, 'content-type')
     }
 
     const record = (url, referer, why) => {
@@ -1257,12 +1286,15 @@ function browserScan(
           }
           // Long enough to be the feature: no reason to hold the window open for
           // the full settle window waiting for something better.
-          if (info && info.duration && info.duration >= Math.max(featureFloor, minStreamSeconds)) {
+          const floor = scriptDuration
+            ? Math.max(featureFloor, scriptDuration * 0.5)
+            : featureFloor
+          if (info && info.duration && info.duration >= Math.max(floor, minStreamSeconds)) {
             clearTimeout(settleTimer)
             settleTimer = setTimeout(finish, 1500)
             return
           }
-          if (featureFloor > 0 && info && info.duration && info.duration < featureFloor) {
+          if (floor > 0 && info && info.duration && info.duration < floor) {
             hit.short = true
             adCount += 1
             note(
@@ -1505,9 +1537,9 @@ function browserScan(
                 const drained = frame.executeJavaScript(HOOK_DRAIN, true)
                 if (drained && drained.then) {
                   drained
-                    .then((urls) => {
-                      if (!Array.isArray(urls)) return
-                      for (const url of urls) record(url, frame.url || pageUrl, 'content-type')
+                    .then((items) => {
+                      if (!Array.isArray(items)) return
+                      for (const item of items) takeOffer(item, frame.url || pageUrl)
                     })
                     .catch(() => {})
                 }
@@ -1536,6 +1568,32 @@ function browserScan(
         }, AD_SKIP_INTERVAL)
       }
 
+      /**
+       * Site recipes, run in the page beside the hooks.
+       *
+       * Matched per frame rather than per window: on a wrapped site the player
+       * lives two frames down on a different host, and a pattern written for that
+       * host has to see it. A script that throws is contained by its own wrapper,
+       * so a bad recipe costs its own output and nothing else.
+       */
+      const runUserScripts = (frame, when) => {
+        if (!useUserScripts) return
+        let scripts = []
+        try {
+          scripts = userscripts.forUrl(frame.url || pageUrl)
+        } catch {
+          return
+        }
+        for (const script of scripts) {
+          const wants = script.runAt === 'document-idle' ? 'idle' : 'end'
+          if (wants !== when) continue
+          if (ranScripts.has(`${frame.url}::${script.file}`)) continue
+          ranScripts.add(`${frame.url}::${script.file}`)
+          frame.executeJavaScript(userscripts.wrap(script), true).catch(() => {})
+          note(`script çalıştı: ${script.name}`)
+        }
+      }
+
       // Get the hooks in as early as possible: a player that builds its source
       // immediately would otherwise do it before the first pass comes round.
       win.webContents.on('dom-ready', () => {
@@ -1543,6 +1601,7 @@ function browserScan(
           const main = win.webContents.mainFrame
           for (const frame of main ? [main, ...(main.framesInSubtree || [])] : []) {
             frame.executeJavaScript(HOOK_SCRIPT, true).catch(() => {})
+            runUserScripts(frame, 'end')
           }
         } catch {
           /* frame not ready */
@@ -1552,6 +1611,14 @@ function browserScan(
       let scheduled = false
       win.webContents.on('did-finish-load', () => {
         startAdSkipping()
+        try {
+          const main = win.webContents.mainFrame
+          for (const frame of main ? [main, ...(main.framesInSubtree || [])] : []) {
+            runUserScripts(frame, 'idle')
+          }
+        } catch {
+          /* frame not ready */
+        }
         if (assisted) {
           note('pencere açık — reklamı geç ve videoyu başlat')
           try {
@@ -1754,6 +1821,7 @@ async function resolvePage(
     blockRules = null,
     preferEngine = null,
     proxy = '',
+    useUserScripts = true,
   } = {}
 ) {
   if (!isHttp(pageUrl)) return { title: '', candidates: [], engine: 'none' }
@@ -1816,6 +1884,7 @@ async function resolvePage(
     minStreamSeconds,
     expectedDuration: fast.expectedDuration,
     proxy,
+    useUserScripts,
   })
 
   /*
@@ -1838,6 +1907,7 @@ async function resolvePage(
         expectedDuration: fast.expectedDuration,
         referer: frame.referer,
         proxy,
+        useUserScripts,
       })
       if (inner.candidates.length) {
         deep = { ...inner, title: deep.title || inner.title }
@@ -1878,6 +1948,7 @@ async function assistedCapture(
     timeoutMs = 300000,
     blockRules = null,
     proxy = '',
+    useUserScripts = true,
   } = {}
 ) {
   if (!isHttp(pageUrl)) return { title: '', candidates: [], engine: 'assisted' }
@@ -1895,6 +1966,7 @@ async function assistedCapture(
     minStreamSeconds,
     expectedDuration: meta.expectedDuration,
     proxy,
+    useUserScripts,
   })
 
   const verified = result.candidates.length ? await verifyCandidates(result.candidates, { proxy }) : []

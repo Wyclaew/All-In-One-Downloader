@@ -224,6 +224,44 @@ sürdürülemez). yt-dlp'nin kendi çıkarıcısı olan siteler (YouTube gibi) i
 kapalıyken elde kalan tek yol kendi çözümleyicim olur, yani bazı sayfalarda sonuç
 değişir.
 
+## Site tarifleri (script)
+
+Fikir Tampermonkey'den geliyor. Tampermonkey'in kendisi buraya yüklenemez —
+Electron'un eklenti desteği Chrome API'sinin küçük bir bölümünü kapsıyor ve bir
+userscript yöneticisinin dayandığı parçalar (storage, tabs, scripting,
+declarativeNetRequest, MV3 service worker) çoğunlukla yok. uBlock Origin'in
+yüklenememesiyle aynı sebep. O yüzden aynı fikir buraya özel yazıldı.
+
+Aradaki fark, işin bütün anlamı. Tarayıcıda bir script **gördüğünü** değiştirir.
+Burada bir script **çözümleyiciye akış verebilir**:
+
+```js
+AIO.found('https://cdn.site/gercek/master.m3u8')
+```
+
+Yani hiç kimsenin çıkarıcı yazmadığı bir site, on beş satırlık bir metin
+dosyasıyla öğretilebilir.
+
+- **Nerede:** Ayarlar → Erişim → *Site tarifleri* → **Klasörü aç**. Dosyalar
+  `~/Library/Application Support/All in One Downloader/userscripts/*.user.js`
+- **Başlık:** `@match`, `@exclude`, `@run-at`, `@name`, `@description`, `@enabled`
+  — Tampermonkey ile aynı yazılır, `*://*.site.com/*` orada ne demekse burada da
+  o demek (çıplak alan adı da eşleşir).
+- **API:** `AIO.found(url, {kind, title, duration})` · `AIO.title()` ·
+  `AIO.duration()` · `AIO.note()` · `AIO.click(seçici)` · `AIO.every(ms, fn)`
+
+Kutudan çıkan tarif **Oynatıcıya sor**: sayfadaki oynatıcı nesnelerinin kendi
+kaynak listesini okur (JW Player, Video.js, Clappr, Plyr, hls.js, Shaka, DPlayer,
+Playerjs). MSE ile beslenen bir oynatıcıda ağı izlemek işe yaramaz — `<video>`
+etiketinin `src`'si `blob:`tir ve gerçek adres hiç görünmeyebilir. Ama oynatıcı
+nesnesi adresi bilir, çünkü bilmek zorunda. Bu tarif ona doğrudan sorar.
+
+Sınırlar açık olsun: script'ler sayfa dünyasında çalışır (oynatıcının
+değişkenlerini okuyabilmeleri için gereken bu), Node'a erişemezler, ve
+verdikleri adres ağdan yakalanan bir istekle **aynı** doğrulamadan geçer —
+süre kontrolü, reklam filtresi, manifest ayrıştırma. Bir script öneri sunar,
+karar vermez. Patlayan bir script kendi çıktısına mal olur, çözümlemeye değil.
+
 ### Kısayollar
 
 | Kısayol | İş |

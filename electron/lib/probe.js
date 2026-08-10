@@ -534,6 +534,7 @@ async function tryResolve(source, settings, fallbackError) {
     result = await resolvePage(source.url, {
       browserCookieJar,
       proxy: settings.proxy || '',
+      useUserScripts: settings.useUserScripts !== false,
       preferEngine: profile ? profile.engine : null,
       blockRules: {
         extraBlockedHosts: settings.extraBlockedHosts,
@@ -868,6 +869,7 @@ async function captureSource(sourceId) {
     result = await assistedCapture(source.url, {
       browserCookieJar,
       proxy: settings.proxy || '',
+      useUserScripts: settings.useUserScripts !== false,
       blockRules: {
         extraBlockedHosts: settings.extraBlockedHosts,
         blockTrackers: settings.blockTrackers,

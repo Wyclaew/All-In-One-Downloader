@@ -52,6 +52,8 @@ function defaultSettings() {
     useYtdlp: true,
     // in-house page resolver, for sites yt-dlp has no extractor for
     useResolver: true,
+    // Site recipes: user-editable scripts that run inside the page.
+    useUserScripts: true,
     // Long enough that a pre-roll can finish and the real stream can start.
     resolverTimeout: 45000,
     // Streams shorter than this are treated as adverts when a longer one exists.

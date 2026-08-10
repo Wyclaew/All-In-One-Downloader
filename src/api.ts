@@ -8,6 +8,7 @@ import type {
   SubtitleSearch,
   Toast,
   Tools,
+  UserScript,
   VaultEntry,
   VaultState,
 } from './types'
@@ -58,6 +59,8 @@ interface Bridge {
     hashMatch: boolean
   }): Promise<Result<SubtitleOutcome>>
   subtitleTools(): Promise<Result<{ ffsubsync: boolean }>>
+  listScripts(): Promise<Result<{ dir: string; scripts: UserScript[] }>>
+  openScripts(): Promise<Result<boolean>>
   vaultStatus(): Promise<Result<VaultState>>
   vaultCreate(passphrase: string): Promise<Result<VaultState>>
   vaultUnlock(passphrase: string): Promise<Result<VaultState>>
@@ -158,6 +161,9 @@ export const api = {
     hashMatch: boolean
   }) => call(bridge.applySubtitle(payload)),
   subtitleTools: () => call(bridge.subtitleTools()),
+
+  listScripts: () => call(bridge.listScripts()),
+  openScripts: () => call(bridge.openScripts()),
 
   vaultStatus: () => call(bridge.vaultStatus()),
   vaultCreate: (passphrase: string) => call(bridge.vaultCreate(passphrase)),

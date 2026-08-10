@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useState } from 'react'
 import { api } from '../api'
 import { QUALITY_OPTIONS } from '../quality'
 import { T } from '../strings'
-import type { BrowserOption, Settings as SettingsShape, Tools } from '../types'
+import type { BrowserOption, Settings as SettingsShape, Tools, UserScript as UserScriptInfo } from '../types'
 import { Btn, Icon, Info, Toggle } from '../components/ui'
 
 interface Props {
@@ -27,6 +27,7 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
   const [proxyUrl, setProxyUrl] = useState(settings.proxyUrl || '')
   const [checking, setChecking] = useState(false)
   const [proxyResult, setProxyResult] = useState<string | null>(null)
+  const [scripts, setScripts] = useState<{ dir: string; scripts: UserScriptInfo[] } | null>(null)
 
   // Only offer browsers whose cookie store actually exists on this machine —
   // picking a missing one used to fail every request with a cryptic error.
@@ -37,6 +38,9 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
     })
     api.subtitleTools().then((t) => {
       if (alive && t) setSubsTools(t)
+    })
+    api.listScripts().then((list) => {
+      if (alive && list) setScripts(list)
     })
     return () => {
       alive = false
@@ -304,6 +308,45 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
                 {T.settings.engineOffNote}
               </div>
             ) : null}
+          </div>
+        </Row>
+
+        <Row label={T.settings.scripts} hint={T.settings.scriptsHint}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
+            <Toggle
+              checked={settings.useUserScripts !== false}
+              onChange={(v) => patch({ useUserScripts: v })}
+              label={T.settings.scriptsOn}
+            />
+            <div className="set-inline">
+              <span style={{ fontSize: 12.5, color: 'var(--dim)' }}>
+                {scripts && scripts.scripts.length
+                  ? T.settings.scriptsCount(scripts.scripts.length)
+                  : T.settings.scriptsNone}
+              </span>
+              <Btn
+                size="sm"
+                icon="folder"
+                onClick={async () => {
+                  await api.openScripts()
+                  const list = await api.listScripts()
+                  if (list) setScripts(list)
+                }}
+              >
+                {T.settings.scriptsOpen}
+              </Btn>
+            </div>
+            {scripts && scripts.scripts.length ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {scripts.scripts.map((s) => (
+                  <div key={s.file} className="set-hint" style={{ marginTop: 0 }}>
+                    <b style={{ color: 'var(--text)' }}>{s.name}</b>
+                    {s.matches.length ? ` — ${s.matches.join(', ')}` : ' — her sayfa'}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <div className="set-hint" style={{ marginTop: 0 }}>{T.settings.scriptsApi}</div>
           </div>
         </Row>
 

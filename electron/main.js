@@ -11,6 +11,7 @@ const browsers = require('./lib/browsers')
 const subtitles = require('./lib/subtitles')
 const vault = require('./lib/vault')
 const proxy = require('./lib/proxy')
+const userscripts = require('./lib/userscripts')
 const { uid, extractUrls, isProbablyUrl } = require('./lib/util')
 
 // Load from the Vite dev server only when we were actually started by `npm run
@@ -574,6 +575,28 @@ function registerIpc() {
 
   handle('subs:tools', () => ({ ffsubsync: !!subtitles.ffsubsyncPath() }))
 
+  /* ---- site recipes ------------------------------------------------------ */
+
+  handle('scripts:list', () => ({
+    dir: userscripts.dir(),
+    scripts: userscripts.load().map((s) => ({
+      file: s.file,
+      name: s.name,
+      description: s.description,
+      matches: s.matches,
+      runAt: s.runAt,
+      enabled: s.enabled,
+      bytes: s.bytes,
+    })),
+  }))
+
+  handle('scripts:open', async () => {
+    userscripts.ensureBuiltins()
+    const err = await shell.openPath(userscripts.dir())
+    if (err) throw new Error(err)
+    return true
+  })
+
   /* ---- vault ------------------------------------------------------------- *
    * The passphrase crosses the bridge once, on the way in, and is never stored
    * or echoed back. Entry names live in the encrypted index, so the renderer only
@@ -585,6 +608,7 @@ function registerIpc() {
   handle('vault:create', async (passphrase) => {
     await vault.create(passphrase)
     vault.configure({ autoLockMinutes: store.getState().settings.vaultAutoLockMinutes })
+    userscripts.ensureBuiltins()
     pushVault()
     return vaultState()
   })
