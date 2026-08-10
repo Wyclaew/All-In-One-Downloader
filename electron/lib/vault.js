@@ -503,6 +503,29 @@ function entryOf(id) {
   return entry
 }
 
+/**
+ * Decrypt into a private temp directory and return where it landed.
+ *
+ * Handing the file to the OS player is what put a vaulted title into QuickTime's
+ * recent-documents list, and on macOS that list outlives the file. So this stops
+ * at "the bytes are ready" and lets the caller decide who sees them — our own
+ * window sees them, and nothing else does.
+ */
+function prepareEntry(id) {
+  requireUnlocked()
+  const entry = entryOf(id)
+  return whileWorking(async () => {
+    const dir = path.join(tempRoot(), crypto.randomBytes(6).toString('hex'))
+    await fsp.mkdir(dir, { recursive: true, mode: 0o700 })
+    // Still an opaque name: even our own window's title bar should not leak it,
+    // and a crash before cleanup should leave nothing readable behind.
+    const target = path.join(dir, `${crypto.randomBytes(8).toString('hex')}${path.extname(entry.name)}`)
+    openedTemps.add(target)
+    await openFileTo(blobFile(id), target)
+    return { path: target, dir, name: entry.name, title: entry.title || entry.name }
+  })
+}
+
 /** Decrypt into a private temp directory and hand the file to the OS player. */
 function openEntry(id) {
   requireUnlocked()
@@ -582,6 +605,7 @@ async function audit() {
 module.exports = {
   status,
   create,
+  prepareEntry,
   unlock,
   lock,
   list,

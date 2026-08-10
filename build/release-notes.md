@@ -1,5 +1,20 @@
 ## Bu sürümde
 
+- **Kasa videoları artık uygulama içinde oynuyor.** QuickTime geçmişi sorununun
+  doğru çözümü bu: dosyayı hiçbir dış uygulamaya vermiyoruz, dolayısıyla hiçbir
+  uygulamanın "son kullanılanlar" listesine düşmüyor. (Alternatifi macOS'un
+  paylaşılan listesini kurcalamaktı — bu senin **tüm** QuickTime geçmişini silerdi.)
+  Yine de kendi oynatıcını kullanmak istersen `⋯` menüsünde duruyor.
+- **Dört hazır tarif** kutudan çıkıyor, hepsi siteye değil **yönteme** özel:
+  *Oynatıcıya sor* (oynatıcı nesnesinin kendi listesi), *Kod çözücüleri dinle*
+  (`atob` ve `JSON.parse` çıktısı — şifreli oynatıcıların neredeyse tamamı adresi
+  kullanmadan hemen önce burada çözer), *Kapıyı aç* (yaş/çerez/ara ekran düğmelerini
+  görünen yazısına göre kapatır — "hiçbir şey bulamadı"nın önemli bir kısmı
+  oynatıcının hiç kurulmamasıdır), *Sayfa değişkenlerini gez* (window ve oynatıcı
+  kaplarını iki kat gezer).
+
+## Önceki sürümde
+
 - **Altyazı sorunu çözüldü.** Sebebi buydu: `--write-subs` altyazıyı *çıkarıcıya*
   sorar, dizi sitesinden kazınmış bir m3u8'in ise çıkarıcısı yok. Ama altyazı
   parçaları master playlist'in içinde listeleniyor ve kimse okumuyordu. Artık

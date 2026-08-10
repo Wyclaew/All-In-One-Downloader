@@ -64,6 +64,7 @@ contextBridge.exposeInMainWorld('api', {
   vaultTakeDownload: (id) => ipcRenderer.invoke('vault:takeDownload', id),
   vaultAddFiles: () => ipcRenderer.invoke('vault:addFiles'),
   vaultOpen: (id) => ipcRenderer.invoke('vault:open', id),
+  vaultOpenExternal: (id) => ipcRenderer.invoke('vault:openExternal', id),
   vaultExport: (id) => ipcRenderer.invoke('vault:export', id),
   vaultRemove: (id) => ipcRenderer.invoke('vault:remove', id),
 

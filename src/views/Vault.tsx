@@ -234,6 +234,15 @@ function Contents({
                     {(close) => (
                       <>
                         <MenuItem
+                          icon="play"
+                          onClick={() => {
+                            api.vaultOpenExternal(entry.id)
+                            close()
+                          }}
+                        >
+                          {T.vault.openExternal}
+                        </MenuItem>
+                        <MenuItem
                           icon="folder"
                           onClick={() => {
                             api.vaultExport(entry.id)

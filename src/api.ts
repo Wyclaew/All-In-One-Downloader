@@ -69,6 +69,7 @@ interface Bridge {
   vaultTakeDownload(id: string): Promise<Result<VaultEntry>>
   vaultAddFiles(): Promise<Result<{ added: number }>>
   vaultOpen(id: string): Promise<Result<{ path: string }>>
+  vaultOpenExternal(id: string): Promise<Result<{ path: string }>>
   vaultExport(id: string): Promise<Result<{ path: string } | null>>
   vaultRemove(id: string): Promise<Result<boolean>>
   openFile(path: string): Promise<Result<boolean>>
@@ -174,6 +175,7 @@ export const api = {
   vaultTakeDownload: (id: string) => call(bridge.vaultTakeDownload(id)),
   vaultAddFiles: () => call(bridge.vaultAddFiles()),
   vaultOpen: (id: string) => call(bridge.vaultOpen(id)),
+  vaultOpenExternal: (id: string) => call(bridge.vaultOpenExternal(id)),
   vaultExport: (id: string) => call(bridge.vaultExport(id)),
   vaultRemove: (id: string) => call(bridge.vaultRemove(id)),
 

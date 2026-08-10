@@ -342,19 +342,217 @@ sweep();
 AIO.every(1500, sweep);
 `
 
+
+/**
+ * Watch the decoders, not the network.
+ *
+ * Obfuscated players nearly all share one shape: the address arrives encoded, and
+ * the page decodes it in JavaScript moments before use. Whatever the wrapping —
+ * base64, a JSON blob, a packed script — it passes through `atob` or `JSON.parse`
+ * on the way. Standing at those two doors catches an address that never appears in
+ * the page source and never appears in a request we can recognise.
+ */
+const BUILTIN_DECODER_WATCH = `// ==UserScript==
+// @name         Kod çözücüleri dinle
+// @description  atob() ve JSON.parse() çıktılarını izler. Şifreli oynatıcılar adresi kullanmadan hemen önce çözer; bu iki kapıda beklemek, sayfa kaynağında hiç görünmeyen adresi yakalar.
+// @match        *
+// @run-at       document-end
+// ==/UserScript==
+
+var seen = {};
+// Built from a string rather than written as a literal: this file embeds recipes
+// in template literals, which eat single backslashes — a regex literal in here
+// silently loses its escapes and either matches the wrong thing or fails to
+// parse. RegExp from a string keeps the escaping in one obvious place.
+var RE = new RegExp('https?:(?:\\\\\\\\?/){2}[^\\\\s"\\'<>]+\\\\.(?:m3u8|mpd|mp4|webm|m4v|mkv)[^\\\\s"\\'<>]*', 'gi');
+
+function scan(text, why) {
+  if (typeof text !== 'string' || text.length < 12 || text.length > 400000) return;
+  var found = text.replace(/\\\//g, '/').match(RE);
+  if (!found) return;
+  for (var i = 0; i < found.length && i < 8; i += 1) {
+    var url = found[i].replace(/[",';)\]}]+$/, '');
+    if (seen[url]) continue;
+    seen[url] = 1;
+    AIO.found(url);
+    AIO.note('çözücüden: ' + why);
+  }
+}
+
+try {
+  var realAtob = window.atob;
+  window.atob = function (input) {
+    var out = realAtob.apply(this, arguments);
+    try { scan(out, 'atob'); } catch (e) {}
+    return out;
+  };
+} catch (e) {}
+
+try {
+  var realParse = JSON.parse;
+  JSON.parse = function (text) {
+    var out = realParse.apply(this, arguments);
+    try {
+      scan(typeof text === 'string' ? text : '', 'JSON.parse');
+    } catch (e) {}
+    return out;
+  };
+} catch (e) {}
+`
+
+/**
+ * Get past the thing standing in front of the player.
+ *
+ * A surprising share of "it found nothing" is a page that has not started yet: an
+ * age gate, a cookie banner, a "continue to video" interstitial. The player is
+ * never constructed, so there is nothing to sniff and nothing to read. Clicking by
+ * *visible words* rather than by class name is what makes this portable — class
+ * names are per-site, "Kabul Et" is not.
+ */
+const BUILTIN_GATE_CLICKER = `// ==UserScript==
+// @name         Kapıyı aç
+// @description  Yaş doğrulaması, çerez bildirimi ve "videoya devam et" gibi ara ekranları görünen yazısına göre kapatır. Oynatıcı hiç kurulmadığı için boş dönen sayfaların çoğu bu yüzden boş döner.
+// @match        *
+// @run-at       document-end
+// ==/UserScript==
+
+var WORDS = [
+  'kabul et', 'kabul ediyorum', 'onayla', 'devam et', 'videoya devam',
+  'giriş yap değil', 'reklamı geç', 'atla', 'kapat',
+  'accept', 'i accept', 'agree', 'i agree', 'continue', 'continue to video',
+  'watch now', 'play now', 'skip ad', 'skip', 'close', 'got it', 'ok',
+  'yes i am over', '18+', 'enter'
+];
+
+var clicked = {};
+
+function looksClickable(el) {
+  if (!el || clicked[el.__aioId]) return false;
+  var box = el.getBoundingClientRect();
+  if (box.width < 24 || box.height < 12) return false;
+  var style = getComputedStyle(el);
+  return style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+}
+
+var counter = 0;
+
+function sweep() {
+  var nodes = document.querySelectorAll('button, a, [role=button], input[type=button], input[type=submit], .btn');
+  for (var i = 0; i < nodes.length && i < 400; i += 1) {
+    var el = nodes[i];
+    var text = (el.innerText || el.value || '').trim().toLowerCase();
+    if (!text || text.length > 40) continue;
+    for (var w = 0; w < WORDS.length; w += 1) {
+      if (text !== WORDS[w] && text.indexOf(WORDS[w]) === -1) continue;
+      if (!looksClickable(el)) break;
+      // Never touch anything that navigates away from the video.
+      if (el.tagName === 'A' && el.target === '_blank') break;
+      el.__aioId = el.__aioId || ++counter;
+      clicked[el.__aioId] = 1;
+      try { el.click(); AIO.note('kapı geçildi: ' + text.slice(0, 24)); } catch (e) {}
+      break;
+    }
+  }
+}
+
+sweep();
+AIO.every(1200, sweep);
+`
+
+/**
+ * Walk the page's own variables.
+ *
+ * A player that builds its source in JavaScript leaves it somewhere on the way:
+ * a config object, a data attribute, a property on the element it is about to
+ * hand to the video tag. Walking the object graph a couple of levels deep finds
+ * addresses that never touched the network and never touched a decoder — the
+ * cases the other two recipes miss.
+ */
+const BUILTIN_VARIABLE_WALK = `// ==UserScript==
+// @name         Sayfa değişkenlerini gez
+// @description  window ve oynatıcı kaplarındaki nesneleri iki kat gezip akış adresi arar. Kaynağını JavaScript'te kuran oynatıcılar adresi bir yerde bırakır; ne ağa ne kod çözücüye uğramayan durumlar burada yakalanır.
+// @match        *
+// @run-at       document-idle
+// ==/UserScript==
+
+var seen = {};
+// Same reason as above: this lives inside a template literal, so the escapes are
+// written for the string, not for the regex.
+var MEDIA = new RegExp('\\\\.(m3u8|mpd|mp4|webm|m4v|mkv)([?#]|$)', 'i');
+var SKIP = /^(document|location|history|navigator|localStorage|sessionStorage|parent|top|self|window|frames|external|clientInformation)$/;
+
+function offer(url) {
+  if (typeof url !== 'string' || !/^https?:/i.test(url) || !MEDIA.test(url)) return;
+  if (seen[url]) return;
+  seen[url] = 1;
+  AIO.found(url);
+  AIO.note('değişkenden bulundu');
+}
+
+function walk(obj, depth) {
+  if (!obj || depth > 2) return;
+  var keys;
+  try { keys = Object.keys(obj); } catch (e) { return; }
+  for (var i = 0; i < keys.length && i < 120; i += 1) {
+    var key = keys[i];
+    if (SKIP.test(key)) continue;
+    var value;
+    try { value = obj[key]; } catch (e) { continue; }
+    if (typeof value === 'string') offer(value);
+    else if (value && typeof value === 'object' && !(value instanceof Node)) walk(value, depth + 1);
+  }
+}
+
+function sweep() {
+  walk(window, 0);
+  try {
+    var holders = document.querySelectorAll('[data-src],[data-file],[data-hls],[data-video],[id*=player],[class*=player]');
+    for (var i = 0; i < holders.length && i < 60; i += 1) {
+      var el = holders[i];
+      for (var a = 0; a < el.attributes.length; a += 1) offer(el.attributes[a].value);
+      walk(el.dataset || {}, 1);
+    }
+  } catch (e) {}
+}
+
+sweep();
+AIO.every(2000, sweep);
+`
+
 /**
  * Written once, then left alone. If the user edits or deletes it, that decision
  * stands — rewriting their file on every launch would make the folder useless as
  * a place to keep your own work.
  */
+const BUILTINS = [
+  ['00-oynaticiya-sor.user.js', BUILTIN_PLAYER_PROBE],
+  ['01-kod-cozuculeri-dinle.user.js', BUILTIN_DECODER_WATCH],
+  ['02-kapiyi-ac.user.js', BUILTIN_GATE_CLICKER],
+  ['03-degiskenleri-gez.user.js', BUILTIN_VARIABLE_WALK],
+]
+
+/**
+ * Written once per version, then left alone. If the user edits or deletes one,
+ * that decision stands — rewriting their files on every launch would make the
+ * folder useless as a place to keep your own work. The stamp carries a version so
+ * a later release can add a recipe without overwriting anything.
+ */
 function ensureBuiltins() {
-  const target = path.join(dir(), '00-oynaticiya-sor.user.js')
   const stamp = path.join(dir(), '.builtins')
   try {
     fs.mkdirSync(dir(), { recursive: true })
-    if (fs.existsSync(stamp)) return
-    if (!fs.existsSync(target)) fs.writeFileSync(target, BUILTIN_PLAYER_PROBE, 'utf8')
-    fs.writeFileSync(stamp, 'v1\n', 'utf8')
+    let seen = ''
+    try {
+      seen = fs.readFileSync(stamp, 'utf8').trim()
+    } catch {
+      /* first run */
+    }
+    if (seen === 'v2') return
+    for (const [name, source] of BUILTINS) {
+      const target = path.join(dir(), name)
+      if (!fs.existsSync(target)) fs.writeFileSync(target, source, 'utf8')
+    }
+    fs.writeFileSync(stamp, 'v2\n', 'utf8')
   } catch (err) {
     console.error('[userscripts] hazır script yazılamadı', err)
   }

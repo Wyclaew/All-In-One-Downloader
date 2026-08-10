@@ -294,6 +294,7 @@ export const T = {
     lock: 'Kilitle',
     open: 'Aç',
     opened: 'Dosya şifresi çözülüp oynatıcıya verildi. Kasayı kilitleyince kopya silinir.',
+    openExternal: 'Sistem oynatıcısında aç (adı geçmişe düşer)',
     export: 'Şifresiz kopya çıkar',
     remove: 'Kasadan sil',
     removeTitle: 'Kasadan silinsin mi?',

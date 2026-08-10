@@ -130,6 +130,60 @@ function forgetVaultedFile({ downloadId = null, filePath = null }) {
   })
 }
 
+
+/**
+ * Play a vaulted file in our own window.
+ *
+ * Handing the file to the OS player was what wrote a vaulted title into
+ * QuickTime's recent-documents list — and on macOS that list outlives the file, so
+ * deleting the decrypted copy did not undo it. The alternative people reach for is
+ * to edit the shared file list, which would wipe every unrelated QuickTime entry
+ * the user has. Playing it here instead means no other application ever learns the
+ * file exists.
+ *
+ * The window is deliberately inert: no node, no preload, no remote content, and it
+ * only ever loads a page we just wrote beside the file it plays.
+ */
+async function playVaulted(id) {
+  const fs = require('fs')
+  const prepared = await vault.prepareEntry(id)
+  const file = path.basename(prepared.path)
+  const page = path.join(prepared.dir, 'oynat.html')
+
+  fs.writeFileSync(
+    page,
+    `<!doctype html><meta charset="utf-8">
+<style>
+  html,body{margin:0;height:100%;background:#0d0f12;color:#e8e6e1;
+    font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
+  body{display:flex;flex-direction:column}
+  header{padding:10px 14px;border-bottom:1px solid #23262b;display:flex;gap:8px;align-items:center}
+  .lock{color:#d2461f;font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+  video{flex:1;min-height:0;width:100%;background:#000;outline:none}
+</style>
+<header><span class="lock">kasa</span><span id="t"></span></header>
+<video src="${encodeURIComponent(file)}" controls autoplay></video>
+<script>
+  // The title is set from data, never from markup, so a filename cannot inject.
+  document.getElementById('t').textContent = ${JSON.stringify(prepared.title)};
+</script>`,
+    'utf8'
+  )
+
+  const win = new BrowserWindow({
+    width: 960,
+    height: 600,
+    backgroundColor: '#0d0f12',
+    title: 'Kasa',
+    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+  })
+  // Nothing in this window should be able to navigate anywhere.
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  win.webContents.on('will-navigate', (event) => event.preventDefault())
+  await win.loadFile(page)
+  return { path: prepared.path }
+}
+
 function toRenderer(action) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('menu', action)
 }
@@ -721,7 +775,9 @@ function registerIpc() {
     return { added }
   })
 
-  handle('vault:open', (id) => vault.openEntry(id))
+  handle('vault:open', (id) => playVaulted(id))
+  // Kept for anyone who would rather use their own player, knowing the trade-off.
+  handle('vault:openExternal', (id) => vault.openEntry(id))
 
   handle('vault:export', async (id) => {
     const result = await dialog.showOpenDialog(mainWindow, {
