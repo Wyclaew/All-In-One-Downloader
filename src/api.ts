@@ -76,6 +76,7 @@ interface Bridge {
   revealFile(path: string): Promise<Result<boolean>>
   openExternal(url: string): Promise<Result<boolean>>
   readClipboard(): Promise<Result<string>>
+  writeClipboard(text: string): Promise<Result<boolean>>
   onState(handler: (state: AppState) => void): () => void
   onVault(handler: (state: VaultState) => void): () => void
   onProgress(handler: (p: unknown) => void): () => void
@@ -183,4 +184,5 @@ export const api = {
   revealFile: (p: string) => call(bridge.revealFile(p)),
   openExternal: (url: string) => call(bridge.openExternal(url)),
   readClipboard: () => call(bridge.readClipboard()),
+  writeClipboard: (text: string) => call(bridge.writeClipboard(text)),
 }

@@ -1,5 +1,15 @@
 ## Bu sürümde
 
+- **Bağlantı kopyalama.** Kaynaklar'daki bir videonun `⋯` menüsünde: *Bağlantıyı
+  kopyala* (sayfa adresi) ve çözümlenmiş öğelerde *Akış adresini kopyala* (m3u8/mp4
+  adresinin kendisi). Satır zaten yoğun olduğu için menüye koydum — yeni bir düğme
+  aynı birkaç pikselde yarışacaktı.
+- **Kasa kilitlenince oynatıcı penceresi kapanıyor.** Kilitlemek çözülmüş kopyayı
+  siliyor; onu oynatmaya devam eden bir pencere, kullanıcının tam da kaldırılmasını
+  istediği şeyi göstermeye devam ederdi.
+
+## Önceki sürümde
+
 - **Kasa videoları artık uygulama içinde oynuyor.** QuickTime geçmişi sorununun
   doğru çözümü bu: dosyayı hiçbir dış uygulamaya vermiyoruz, dolayısıyla hiçbir
   uygulamanın "son kullanılanlar" listesine düşmüyor. (Alternatifi macOS'un

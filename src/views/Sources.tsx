@@ -320,6 +320,7 @@ export default function Sources({
                     onQuality={(value) => setRowQuality((prev) => ({ ...prev, [item.id]: value }))}
                     onDownload={() => startDownload(item)}
                     onToVault={toVault}
+                    onToast={onToast}
                   />
                 ))}
               </div>
@@ -415,6 +416,7 @@ function Row({
   onQuality,
   onDownload,
   onToVault,
+  onToast,
 }: {
   item: MediaItem
   download: Download | null
@@ -424,6 +426,7 @@ function Row({
   onQuality: (value: string) => void
   onDownload: () => void
   onToVault: (d: Download) => void
+  onToast: Props['onToast']
 }) {
   const audio = quality === 'audio'
   const status = download ? download.status : null
@@ -551,6 +554,33 @@ function Row({
               >
                 {T.item.openPage}
               </MenuItem>
+              {/* The row is already dense, so copying lives in the menu rather
+                  than as another button competing for the same few pixels. */}
+              {/* For a resolved item `url` is already the stream, and the page it
+                  came from is the one in `resolved`. Getting these the wrong way
+                  round would hand over a manifest address labelled as the page. */}
+              <MenuItem
+                icon="link"
+                onClick={() => {
+                  api.writeClipboard(item.resolved?.pageUrl || item.url)
+                  onToast(T.item.linkCopied, 'ok')
+                  close()
+                }}
+              >
+                {T.item.copyLink}
+              </MenuItem>
+              {item.resolved ? (
+                <MenuItem
+                  icon="link"
+                  onClick={() => {
+                    api.writeClipboard(item.url)
+                    onToast(T.item.streamCopied, 'ok')
+                    close()
+                  }}
+                >
+                  {T.item.copyStream}
+                </MenuItem>
+              ) : null}
               {download && download.status === 'done' && download.filePath ? (
                 <MenuItem
                   icon="play"

@@ -144,6 +144,20 @@ function forgetVaultedFile({ downloadId = null, filePath = null }) {
  * The window is deliberately inert: no node, no preload, no remote content, and it
  * only ever loads a page we just wrote beside the file it plays.
  */
+/** Open player windows, so locking the vault can close them. */
+const playerWindows = new Set()
+
+function closePlayers() {
+  for (const win of playerWindows) {
+    try {
+      if (!win.isDestroyed()) win.destroy()
+    } catch {
+      /* already gone */
+    }
+  }
+  playerWindows.clear()
+}
+
 async function playVaulted(id) {
   const fs = require('fs')
   const prepared = await vault.prepareEntry(id)
@@ -177,6 +191,10 @@ async function playVaulted(id) {
     title: 'Kasa',
     webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
   })
+  // Locking the vault deletes the decrypted copy; a window left playing it would
+  // be showing exactly what the user just asked to be put away.
+  playerWindows.add(win)
+  win.on('closed', () => playerWindows.delete(win))
   // Nothing in this window should be able to navigate anywhere.
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('will-navigate', (event) => event.preventDefault())
@@ -596,6 +614,13 @@ function registerIpc() {
 
   handle('clipboard:read', () => clipboard.readText())
 
+  handle('clipboard:write', (text) => {
+    const value = String(text || '')
+    if (!value) return false
+    clipboard.writeText(value)
+    return true
+  })
+
   handle('subs:search', async ({ downloadId, query }) => {
     const settings = store.getState().settings
     const download = downloadId ? store.findDownload(downloadId) : null
@@ -677,6 +702,7 @@ function registerIpc() {
   })
 
   handle('vault:lock', () => {
+    closePlayers()
     vault.lock()
     pushVault()
     return vaultState()
@@ -825,7 +851,10 @@ if (!app.requestSingleInstanceLock()) {
     vault.configure({ autoLockMinutes: store.getState().settings.vaultAutoLockMinutes })
     // An idle lock has to reach the interface, or it would keep showing a list
     // whose files are no longer readable.
-    vault.onLocked(() => pushVault())
+    vault.onLocked(() => {
+      closePlayers()
+      pushVault()
+    })
     registerIpc()
     buildMenu()
     createWindow()
