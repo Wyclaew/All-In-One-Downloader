@@ -554,6 +554,73 @@ AIO.every(2000, sweep);
 `
 
 /**
+ * Read what the embed page decrypts for itself.
+ *
+ * A whole family of embed hosts ships one line of markup — an AES blob and a call
+ * to CryptoJS — and builds the player out of the plaintext. Nothing about the
+ * address is in the page source, in an XHR, or in any variable we could walk to:
+ * it exists for the moment between the decrypt returning and the player being
+ * handed it.
+ *
+ * So we stand at that one door. This reads the same plaintext the page's own
+ * player is about to receive, at the same moment, and takes the media URL out of
+ * it. There is no key here and nothing is broken open: the page decrypts its own
+ * payload with its own key, exactly as it would with nobody watching.
+ */
+const BUILTIN_CRYPTO_WATCH = `// ==UserScript==
+// @name         Şifreli gömüleri oku
+// @description  CryptoJS ile kendi içeriğini çözen gömülü oynatıcılarda, çözülen metinden video adresini alır. Anahtara dokunmaz: sayfa kendi payını kendi anahtarıyla çözer, biz sadece çıkan metne bakarız.
+// @match        *
+// @run-at       document-end
+// ==/UserScript==
+
+var seen = {};
+// Built from a string, not written as a literal: this file keeps its recipes in
+// template literals, which eat single backslashes.
+var RE = new RegExp('https?:(?:\\\\\\\\?/){2}[^\\\\s"\\'<>]+\\\\.(?:m3u8|mpd|mp4|webm|m4v)[^\\\\s"\\'<>]*', 'gi');
+
+function scan(text) {
+  if (typeof text !== 'string' || text.length < 12 || text.length > 400000) return;
+  var found = text.replace(/\\\\\\//g, '/').match(RE);
+  if (!found) return;
+  for (var i = 0; i < found.length && i < 8; i += 1) {
+    var url = found[i].replace(/[",';)\\]}]+$/, '');
+    if (seen[url]) continue;
+    seen[url] = 1;
+    AIO.found(url);
+    AIO.note('şifreli gömüden çözüldü');
+  }
+}
+
+// The library may not be there yet when we run, so watch for it rather than
+// giving up: these pages load CryptoJS from a CDN and decrypt on the next line.
+function hook() {
+  var C = window.CryptoJS;
+  if (!C || !C.AES || C.AES.__aio) return false;
+  var real = C.AES.decrypt;
+  C.AES.decrypt = function () {
+    var out = real.apply(this, arguments);
+    try {
+      // A WordArray only becomes text when someone asks for it, and asking twice
+      // is free — so read it the same way the page is about to.
+      scan(out && out.toString ? out.toString(C.enc.Utf8) : '');
+    } catch (e) {}
+    return out;
+  };
+  C.AES.__aio = 1;
+  return true;
+}
+
+if (!hook()) {
+  var tries = 0;
+  var timer = AIO.every(250, function () {
+    tries += 1;
+    if (hook() || tries > 40) clearInterval(timer);
+  });
+}
+`
+
+/**
  * Written once, then left alone. If the user edits or deletes it, that decision
  * stands — rewriting their file on every launch would make the folder useless as
  * a place to keep your own work.
@@ -563,6 +630,7 @@ const BUILTINS = [
   ['01-kod-cozuculeri-dinle.user.js', BUILTIN_DECODER_WATCH],
   ['02-kapiyi-ac.user.js', BUILTIN_GATE_CLICKER],
   ['03-degiskenleri-gez.user.js', BUILTIN_VARIABLE_WALK],
+  ['04-sifreli-gomuleri-oku.user.js', BUILTIN_CRYPTO_WATCH],
 ]
 
 /**
@@ -581,12 +649,12 @@ function ensureBuiltins() {
     } catch {
       /* first run */
     }
-    if (seen === 'v2') return
+    if (seen === 'v3') return
     for (const [name, source] of BUILTINS) {
       const target = path.join(dir(), name)
       if (!fs.existsSync(target)) fs.writeFileSync(target, source, 'utf8')
     }
-    fs.writeFileSync(stamp, 'v2\n', 'utf8')
+    fs.writeFileSync(stamp, 'v3\n', 'utf8')
   } catch (err) {
     console.error('[userscripts] hazır script yazılamadı', err)
   }

@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <!-- The page loads nothing from anywhere: no remote content, no inline handlers. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; media-src aiomedia:; style-src 'self'; script-src 'self'; img-src 'self' data:"
+    />
+    <title>Oynatıcı</title>
+    <link rel="stylesheet" href="player.css" />
+  </head>
+  <body>
+    <div id="app" class="idle">
+      <header id="bar">
+        <span class="tag" id="tag">oynatıcı</span>
+        <span id="title"></span>
+      </header>
+
+      <div id="stage">
+        <video id="video" playsinline></video>
+        <div id="subs" data-size="normal"></div>
+
+        <div id="pulse" aria-hidden="true"></div>
+        <div id="spinner" aria-hidden="true"></div>
+
+        <div id="resume" hidden>
+          <span id="resume-text"></span>
+          <button type="button" id="resume-restart">Baştan başlat</button>
+        </div>
+
+        <div id="upnext" hidden>
+          <div class="upnext-card">
+            <span class="upnext-label">Sonraki bölüm</span>
+            <strong id="upnext-title"></strong>
+            <div class="upnext-actions">
+              <button type="button" id="upnext-go" class="primary">Oynat</button>
+              <button type="button" id="upnext-stay">Kal</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="fault" hidden>
+          <strong>Bu dosya oynatılamadı</strong>
+          <p id="fault-text"></p>
+          <div class="fault-actions">
+            <button type="button" id="fault-remux">Hızlı dönüştür ve dene</button>
+            <button type="button" id="fault-external">Sistem oynatıcısında aç</button>
+          </div>
+        </div>
+
+        <div id="controls">
+          <div id="seek" role="slider" aria-label="Konum" tabindex="0">
+            <div id="seek-track">
+              <div id="seek-buffer"></div>
+              <div id="seek-played"></div>
+              <div id="seek-knob"></div>
+            </div>
+            <div id="seek-tip" hidden></div>
+          </div>
+
+          <div id="row">
+            <button type="button" id="play" class="ico" title="Oynat / Duraklat (Boşluk)"></button>
+            <button type="button" id="back" class="ico" title="10 sn geri (←)"></button>
+            <button type="button" id="fwd" class="ico" title="10 sn ileri (→)"></button>
+
+            <div id="volume-wrap">
+              <button type="button" id="mute" class="ico" title="Sesi kapat (M)"></button>
+              <input id="volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Ses" />
+            </div>
+
+            <span id="time" class="mono">0:00 / 0:00</span>
+            <span class="spacer"></span>
+
+            <button type="button" id="rate" class="pill" title="Oynatma hızı">1×</button>
+            <button type="button" id="next" class="pill" title="Sonraki bölüm (N)" hidden>Sonraki</button>
+            <button type="button" id="cc" class="ico" title="Altyazı (V açar/kapatır)"></button>
+            <button type="button" id="pip" class="ico" title="Küçük pencere"></button>
+            <button type="button" id="full" class="ico" title="Tam ekran (F)"></button>
+          </div>
+        </div>
+      </div>
+
+      <aside id="panel" hidden>
+        <div class="panel-head">
+          <strong>Altyazı</strong>
+          <button type="button" id="panel-close" class="ico small" title="Kapat"></button>
+        </div>
+
+        <div class="panel-body">
+          <section>
+            <div class="panel-label">Şu an</div>
+            <div id="track-list"></div>
+          </section>
+
+          <section>
+            <div class="panel-label">OpenSubtitles'tan indir</div>
+            <div class="fetch-row">
+              <select id="lang" aria-label="Altyazı dili"></select>
+              <button type="button" id="fetch" class="primary">Ara</button>
+            </div>
+            <p id="fetch-note" class="note"></p>
+            <div id="hits"></div>
+          </section>
+
+          <section id="timing-section">
+            <div class="panel-label">Zamanlama</div>
+            <div class="delay-row">
+              <button type="button" id="delay-down" title="Altyazıyı geciktir (G)">−0,5 sn</button>
+              <span id="delay-value" class="mono">0,0 sn</span>
+              <button type="button" id="delay-up" title="Altyazıyı öne al (H)">+0,5 sn</button>
+            </div>
+            <p class="note">Konuşmadan sonra geliyorsa −, önce geliyorsa +.</p>
+          </section>
+
+          <section>
+            <div class="panel-label">Yazı boyutu</div>
+            <div id="size-row" class="size-row">
+              <button type="button" data-size="small">Küçük</button>
+              <button type="button" data-size="normal">Orta</button>
+              <button type="button" data-size="large">Büyük</button>
+              <button type="button" data-size="huge">Çok büyük</button>
+            </div>
+          </section>
+        </div>
+      </aside>
+
+      <div id="help" hidden>
+        <div class="help-card">
+          <strong>Kısayollar</strong>
+          <ul id="help-list"></ul>
+          <button type="button" id="help-close">Kapat</button>
+        </div>
+      </div>
+
+      <div id="flash" hidden></div>
+    </div>
+
+    <script src="player.js"></script>
+  </body>
+</html>

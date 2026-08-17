@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, bridge, setToastSink } from './api'
-import type { AppState, Download, ProgressEvent, Toast, Tools, VaultState } from './types'
+import type { AppState, Download, Outlook, ProgressEvent, Toast, Tools, VaultState } from './types'
 
 const SCOPE_SAMPLES = 48
 
@@ -15,6 +15,7 @@ export function useApp() {
   const [state, setState] = useState<AppState | null>(null)
   const [tools, setTools] = useState<Tools | null>(null)
   const [progress, setProgress] = useState<Record<string, ProgressEvent>>({})
+  const [outlook, setOutlook] = useState<Outlook>({ etas: {}, total: null, lineSpeed: 0 })
   const [toasts, setToasts] = useState<Toast[]>([])
   const [menuAction, setMenuAction] = useState<{ action: string; at: number } | null>(null)
 
@@ -55,6 +56,7 @@ export function useApp() {
       const p = raw as ProgressEvent
       setProgress((prev) => ({ ...prev, [p.id]: p }))
     })
+    const offOutlook = bridge.onOutlook((o) => setOutlook(o))
     const offToast = bridge.onToast((t) => pushToast(t.message, t.kind))
     const offMenu = bridge.onMenu((action) => setMenuAction({ action, at: Date.now() }))
 
@@ -62,6 +64,7 @@ export function useApp() {
       alive = false
       offState()
       offProgress()
+      offOutlook()
       offToast()
       offMenu()
     }
@@ -73,7 +76,7 @@ export function useApp() {
     return t
   }, [])
 
-  return { state, tools, progress, toasts, pushToast, dismissToast, refreshTools, menuAction }
+  return { state, tools, progress, outlook, toasts, pushToast, dismissToast, refreshTools, menuAction }
 }
 
 /**

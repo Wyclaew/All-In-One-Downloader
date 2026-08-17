@@ -171,6 +171,94 @@ function estimateEta(job, download, fragIndex, fragCount) {
   return null
 }
 
+/**
+ * How long is left for everything, not just for one transfer.
+ *
+ * A per-download ETA answers "at this rate, when is this file done" — and gets it
+ * wrong twice over. Three transfers sharing one line all slow each other down,
+ * and the moment one finishes the other two speed up; a download still sitting in
+ * the queue is reported as having no estimate at all, when in fact its start time
+ * is perfectly predictable.
+ *
+ * So the whole board is simulated instead. The line delivers what it is measurably
+ * delivering right now, shared evenly between whatever is active, and the clock is
+ * advanced to the next completion — at which point a queued item moves into the
+ * free slot and the shares are recalculated. Cheap (a handful of steps), and it
+ * degrades honestly: with nothing measured yet it returns nothing rather than a
+ * number made up out of defaults.
+ */
+function outlook() {
+  const state = store.getState()
+  const slots = Math.max(1, Number(state.settings.concurrency) || 1)
+  const running = state.downloads.filter((d) => d.status === 'running')
+  const queued = state.downloads.filter((d) => d.status === 'queued')
+  if (!running.length) return null
+
+  const lineSpeed = running.reduce((sum, d) => sum + (Number(d.speed) > 0 ? Number(d.speed) : 0), 0)
+  if (lineSpeed <= 0) return null
+
+  const sizeOf = (d) => Number(d.total) || Number(d.expectedSize) || 0
+  const known = [...running, ...queued].map(sizeOf).filter((n) => n > 0)
+  if (!known.length) return null
+  // A download of unknown size still takes a slot and still takes time, so it is
+  // treated as an average one rather than as free.
+  const typical = known.reduce((a, b) => a + b, 0) / known.length
+
+  const active = running.map((d) => ({
+    id: d.id,
+    left: Math.max(1, (sizeOf(d) || typical) - (Number(d.downloaded) || 0)),
+  }))
+  const waiting = queued.map((d) => ({ id: d.id, left: sizeOf(d) || typical }))
+
+  const etas = {}
+  let clock = 0
+  // One step per completion, so the bound is the number of transfers plus slack.
+  for (let step = 0; active.length && step < active.length + waiting.length + 4; step += 1) {
+    const share = lineSpeed / active.length
+    const dt = Math.min(...active.map((job) => job.left / share))
+    clock += dt
+    for (const job of active) job.left -= share * dt
+    for (const job of active) {
+      if (job.left <= 1) etas[job.id] = Math.round(clock)
+    }
+    const survivors = active.filter((job) => job.left > 1)
+    active.length = 0
+    active.push(...survivors)
+    while (active.length < slots && waiting.length) active.push(waiting.shift())
+  }
+
+  return { etas, total: Math.round(clock), lineSpeed }
+}
+
+let outlookTimer = null
+
+/**
+ * The estimate only moves when the transfers do, so it rides its own slow timer
+ * rather than being recomputed on every progress line — and stops entirely once
+ * there is nothing left to estimate.
+ */
+function broadcastOutlook() {
+  const result = outlook()
+  store.send('outlook', result || { etas: {}, total: null, lineSpeed: 0 })
+
+  // Nothing running means nothing to measure, and a queue with the auto-start
+  // switch off can sit there for hours — so the timer stops rather than ticking
+  // forever over a board it cannot say anything about. Starting a transfer arms
+  // it again.
+  const running = store.getState().downloads.some((d) => d.status === 'running')
+  if (!running && outlookTimer) {
+    clearInterval(outlookTimer)
+    outlookTimer = null
+  }
+}
+
+function startOutlook() {
+  if (outlookTimer) return
+  outlookTimer = setInterval(broadcastOutlook, 1000)
+  if (outlookTimer.unref) outlookTimer.unref()
+  broadcastOutlook()
+}
+
 function parseProgressLine(line, job, download) {
   const raw = line.slice(line.indexOf(TAG) + TAG.length)
   const [status, dl, total, totalEst, speed, eta, fragIndex, fragCount] = raw.split('|')
@@ -391,6 +479,7 @@ function beginJob(download) {
     download.phases = 1
   })
   sendProgress(download, true)
+  startOutlook()
   return job
 }
 
@@ -909,6 +998,9 @@ function enqueue({ item, url, title, site, sourceId, quality, audioOnly, categor
   })
 
   if (settings.autoStartDownloads) pump_queue()
+  // A new item at the back of the queue changes when everything finishes, even
+  // if nothing about the running transfers changed.
+  startOutlook()
   return download
 }
 
@@ -1089,4 +1181,5 @@ module.exports = {
   forgetMissing,
   pumpQueue: pump_queue,
   activeCount,
+  outlook,
 }

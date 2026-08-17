@@ -1594,6 +1594,54 @@ function browserScan(
         }
       }
 
+      /**
+       * Stop a page that reloads itself into the ground.
+       *
+       * Some players ship a script whose whole job is to notice a developer tool
+       * and answer with `window.stop(); location.reload()`. Inside our scan that
+       * becomes a loop: the frame never finishes, the media request never goes
+       * out, and after enough attempts the site itself starts answering 500 — so
+       * the visible symptom is an error page and "no video found" on a page that
+       * plainly has one.
+       *
+       * The guard is about the behaviour, not about any particular script. A few
+       * redirects are ordinary; four of them inside six seconds is a page
+       * fighting itself, and at that point we keep the document we already have
+       * and go on watching it for requests.
+       */
+      const navigations = []
+      let navFrozen = false
+      let sawFrameEvents = false
+      const guardNavigation = (event) => {
+        if (done) return
+        const now = Date.now()
+        while (navigations.length && now - navigations[0] > 6000) navigations.shift()
+        navigations.push(now)
+        if (navigations.length <= 4) return
+        if (!navFrozen) {
+          navFrozen = true
+          note('sayfa kendini yeniliyor — yenilemeler durduruldu')
+        }
+        try {
+          event.preventDefault()
+        } catch {
+          /* not a cancellable navigation */
+        }
+      }
+
+      // `will-frame-navigate` covers every frame, which is what matters here: the
+      // document that reloads itself is usually the player's iframe. It also
+      // fires for the main frame, and just before `will-navigate` does — so the
+      // older event only counts on an Electron too old to have the newer one,
+      // otherwise every main-frame navigation would be counted twice.
+      win.webContents.on('will-frame-navigate', (event) => {
+        sawFrameEvents = true
+        guardNavigation(event)
+      })
+      win.webContents.on('will-navigate', (event) => {
+        if (!sawFrameEvents) guardNavigation(event)
+      })
+
       // Get the hooks in as early as possible: a player that builds its source
       // immediately would otherwise do it before the first pass comes round.
       win.webContents.on('dom-ready', () => {

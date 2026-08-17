@@ -162,6 +162,32 @@ export interface Settings {
   syncSubtitles: boolean
   embedSubtitleFile: boolean
   skipSameLanguageSubtitles: boolean
+
+  /** The app runs its own tor when this is on; empty path means "go and find it". */
+  torAutoStart: boolean
+  torPath: string
+  playerSubtitleSize: 'small' | 'normal' | 'large' | 'huge'
+}
+
+export interface TorStatus {
+  state: 'off' | 'starting' | 'on' | 'error'
+  percent: number
+  message: string
+  port: number | null
+  binary: string | null
+  /** Whether a tor binary exists on this machine at all. */
+  available?: boolean
+  hint?: string
+}
+
+/**
+ * When everything outstanding finishes, and when each transfer does — worked out
+ * against the whole queue rather than one connection at a time.
+ */
+export interface Outlook {
+  etas: Record<string, number>
+  total: number | null
+  lineSpeed: number
 }
 
 export interface SubtitleHit {
@@ -174,7 +200,13 @@ export interface SubtitleHit {
   fps: number | null
   /** Timed against this exact file — already in sync. */
   hashMatch: boolean
+  trusted?: boolean
+  machine?: boolean
   uploader: string
+  /** How the list was ordered, and the reason in words. */
+  score?: number
+  why?: string
+  recommended?: boolean
 }
 
 export interface SubtitleSearch {
@@ -234,12 +266,20 @@ export interface BrowserOption {
   available: boolean
 }
 
+/** Where a video was left off. Keyed `file:<path>` or `vault:<id>`. */
+export interface PlaybackPosition {
+  at: number
+  duration: number
+  seen: number
+}
+
 export interface AppState {
   version: number
   sources: Source[]
   items: MediaItem[]
   downloads: Download[]
   categories: Category[]
+  positions?: Record<string, PlaybackPosition>
   settings: Settings
 }
 

@@ -46,6 +46,10 @@ function defaultSettings() {
     proxyUrl: 'socks5://127.0.0.1:40000',
     // Whether the toggle beside the URL field starts switched on.
     proxyByDefault: false,
+    // The app runs its own tor when this is on, so nobody has to keep a terminal
+    // open. Empty path means "find it": PATH first, then Tor Browser's copy.
+    torAutoStart: false,
+    torPath: '',
 
     // yt-dlp does the probing and the fetching unless this is off, in which case
     // the in-house resolver finds the stream and ffmpeg/HTTP fetches it.
@@ -71,6 +75,9 @@ function defaultSettings() {
     embedSubtitleFile: false,
     // Don't put Turkish subtitles on a Turkish-language video.
     skipSameLanguageSubtitles: true,
+    // How big the app's own player draws subtitles, and how loud it starts.
+    playerSubtitleSize: 'normal', // small | normal | large | huge
+    playerVolume: 1,
   }
 }
 
@@ -88,6 +95,9 @@ function emptyState() {
     // path for a library file and by id for a vault entry, so a vaulted file
     // remembers its place without its name appearing here.
     positions: {},
+    // key -> seconds. A subtitle aligned by hand stays aligned: the same release
+    // is off by the same amount every time it is opened.
+    delays: {},
     settings: defaultSettings(),
   }
 }
@@ -134,6 +144,7 @@ function init() {
       hostProfiles:
         loaded.hostProfiles && typeof loaded.hostProfiles === 'object' ? loaded.hostProfiles : {},
       positions: loaded.positions && typeof loaded.positions === 'object' ? loaded.positions : {},
+      delays: loaded.delays && typeof loaded.delays === 'object' ? loaded.delays : {},
     }
   }
   migrateCookieBrowser()
@@ -300,6 +311,38 @@ function positionOf(key) {
   return entry && entry.at > 0 ? entry.at : 0
 }
 
+/**
+ * A subtitle nudged into place by hand.
+ *
+ * Worth keeping because the mismatch belongs to the pair, not to the sitting: the
+ * same subtitle against the same release is off by the same amount tomorrow, and
+ * asking the user to find the offset again every time is asking them to redo work
+ * they have already done.
+ */
+function rememberDelay(key, seconds) {
+  if (!key || !Number.isFinite(seconds)) return
+  commit((s) => {
+    if (!seconds) delete s.delays[key]
+    else s.delays[key] = Math.round(seconds * 10) / 10
+
+    const keys = Object.keys(s.delays)
+    if (keys.length > MAX_POSITIONS) {
+      // No timestamps here, so age is judged by the position record that goes
+      // with the same key; anything with no position left is the stalest thing
+      // in the file.
+      keys
+        .sort((a, b) => ((s.positions[a] || {}).seen || 0) - ((s.positions[b] || {}).seen || 0))
+        .slice(0, keys.length - MAX_POSITIONS)
+        .forEach((stale) => delete s.delays[stale])
+    }
+  })
+}
+
+function delayOf(key) {
+  const value = key ? state.delays[key] : 0
+  return Number.isFinite(value) ? value : 0
+}
+
 function ensureDownloadDir() {
   const dir = state.settings.downloadDir
   fs.mkdirSync(dir, { recursive: true })
@@ -324,5 +367,7 @@ module.exports = {
   ensureDownloadDir,
   rememberPosition,
   positionOf,
+  rememberDelay,
+  delayOf,
   defaultSettings,
 }

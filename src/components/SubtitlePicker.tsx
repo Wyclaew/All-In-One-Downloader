@@ -149,14 +149,18 @@ export default function SubtitlePicker({ download, onClose, onToast, onOpenSetti
                       <Chip tone={hit.hashMatch ? 'ok' : undefined} lang="en">
                         {hit.language || '??'}
                       </Chip>
+                      {hit.recommended ? <Chip tone="ok">{T.subs.recommended}</Chip> : null}
                       {hit.hashMatch ? <Chip tone="ok">{T.subs.inSync}</Chip> : null}
+                      {hit.machine ? <Chip>{T.subs.machine}</Chip> : null}
                       {hit.hearingImpaired ? <Chip>SDH</Chip> : null}
                     </div>
                     <span className="subs-release truncate" title={hit.release || hit.fileName}>
                       {hit.release || hit.fileName}
                     </span>
+                    {/* The order is a judgement, so it says what the judgement
+                        was rather than leaving the user to infer it. */}
                     <span className="subs-meta mono">
-                      {hit.downloads.toLocaleString('tr-TR')} {T.subs.downloads}
+                      {hit.why || `${hit.downloads.toLocaleString('tr-TR')} ${T.subs.downloads}`}
                       {hit.uploader ? ` · ${hit.uploader}` : ''}
                     </span>
                   </div>

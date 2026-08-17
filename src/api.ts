@@ -3,11 +3,13 @@ import type {
   BrowserOption,
   Category,
   DownloadRequest,
+  Outlook,
   Settings,
   SubtitleOutcome,
   SubtitleSearch,
   Toast,
   Tools,
+  TorStatus,
   UserScript,
   VaultEntry,
   VaultState,
@@ -25,6 +27,9 @@ interface Bridge {
   addSource(input: string, useProxy?: boolean): Promise<Result<{ added: number }>>
   checkProxy(): Promise<Result<{ ok: boolean; message: string }>>
   proxyPresets(): Promise<Result<{ id: string; label: string; url: string; note: string; up: boolean }[]>>
+  torStatus(): Promise<Result<TorStatus>>
+  torStart(): Promise<Result<TorStatus>>
+  torStop(): Promise<Result<TorStatus>>
   removeSource(id: string): Promise<Result<boolean>>
   toggleSource(id: string, collapsed?: boolean): Promise<Result<boolean>>
   rescanSource(id: string): Promise<Result<boolean>>
@@ -81,6 +86,8 @@ interface Bridge {
   onState(handler: (state: AppState) => void): () => void
   onVault(handler: (state: VaultState) => void): () => void
   onProgress(handler: (p: unknown) => void): () => void
+  onOutlook(handler: (p: Outlook) => void): () => void
+  onTor(handler: (p: TorStatus) => void): () => void
   onToast(handler: (t: Toast) => void): () => void
   onFinished(handler: (p: { id: string; title: string }) => void): () => void
   onMenu(handler: (action: string) => void): () => void
@@ -128,6 +135,9 @@ export const api = {
   addSource: (input: string, useProxy = false) => call(bridge.addSource(input, useProxy)),
   checkProxy: () => call(bridge.checkProxy()),
   proxyPresets: () => call(bridge.proxyPresets()),
+  torStatus: () => call(bridge.torStatus()),
+  torStart: () => call(bridge.torStart()),
+  torStop: () => call(bridge.torStop()),
   removeSource: (id: string) => call(bridge.removeSource(id)),
   toggleSource: (id: string, collapsed?: boolean) => call(bridge.toggleSource(id, collapsed)),
   rescanSource: (id: string) => call(bridge.rescanSource(id)),

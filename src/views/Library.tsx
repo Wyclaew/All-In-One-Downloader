@@ -3,7 +3,7 @@ import { api } from '../api'
 import * as fmt from '../format'
 import { describe } from '../quality'
 import { T } from '../strings'
-import type { AppState, Category, Download } from '../types'
+import type { AppState, Category, Download, Outlook } from '../types'
 import { Btn, Chip, Empty, Icon, IconBtn, Menu, MenuItem, Meter, Modal, Thumb } from '../components/ui'
 import SubtitlePicker from '../components/SubtitlePicker'
 
@@ -13,6 +13,8 @@ const PROBLEM = new Set(['error', 'canceled'])
 interface Props {
   state: AppState
   downloads: Download[]
+  /** Finish times worked out against the whole queue, not one connection. */
+  outlook: Outlook
   category: string | null
   query: string
   onClearFilters: () => void
@@ -30,6 +32,7 @@ const STAGE_LABEL: Record<string, string> = {
 export default function Library({
   state,
   downloads,
+  outlook,
   category,
   query,
   onClearFilters,
@@ -67,6 +70,38 @@ export default function Library({
   const done = filtered.filter((d) => d.status === 'done')
   const problems = filtered.filter((d) => PROBLEM.has(d.status))
 
+  /**
+   * Half-watched files, most recent first.
+   *
+   * The position is already recorded for every file the app's own player opens;
+   * this is just the shelf that makes it reachable. Two deliberate exclusions.
+   * Vault entries, because their names only exist while the vault is unlocked and
+   * the point of putting something in there was that it does not turn up in a
+   * list like this. And anything whose library record is gone: clearing a row is
+   * a decision, and a shelf that puts the title back on screen afterwards would
+   * be quietly undoing it.
+   */
+  const continueWatching = useMemo(() => {
+    const positions = state.positions || {}
+    const byPath = new Map(downloads.filter((d) => d.filePath).map((d) => [d.filePath as string, d]))
+    return Object.entries(positions)
+      .filter(([key]) => key.startsWith('file:'))
+      .map(([key, value]) => ({ download: byPath.get(key.slice(5)), filePath: key.slice(5), ...value }))
+      .filter((entry) => entry.download && entry.at > 0)
+      .map((entry) => ({
+        filePath: entry.filePath,
+        at: entry.at,
+        duration: entry.duration,
+        seen: entry.seen,
+        title: (entry.download as Download).title,
+        thumbnail: (entry.download as Download).thumbnail,
+      }))
+      .sort((a, b) => (b.seen || 0) - (a.seen || 0))
+      .slice(0, 6)
+  }, [state.positions, downloads])
+
+  const showShelf = continueWatching.length > 0 && !query.trim() && !category
+
   if (!downloads.length) {
     return (
       <Empty
@@ -101,6 +136,7 @@ export default function Library({
     categories: state.categories,
     categoryById,
     vaultingId: vaulting,
+    outlook,
     onRemove: (d: Download) => {
       setAlsoDeleteFile(deletePolicy === 'always' && !!d.filePath)
       setPendingRemove(d)
@@ -119,8 +155,54 @@ export default function Library({
 
   return (
     <>
+      {showShelf ? (
+        <section className="section">
+          <div className="section-head">
+            <span className="label">{T.library.continueWatching}</span>
+            <span className="count">{continueWatching.length}</span>
+          </div>
+          <div className="shelf">
+            {continueWatching.map((entry) => (
+              <button
+                key={entry.filePath}
+                type="button"
+                className="shelf-card"
+                title={entry.filePath}
+                onClick={() => api.playFile(entry.filePath)}
+              >
+                <Thumb src={entry.thumbnail} duration={fmt.duration(entry.duration || null)} />
+                <span className="shelf-title clamp2">{entry.title}</span>
+                <span className="shelf-meta">
+                  {fmt.duration(entry.at)}
+                  {entry.duration ? ` / ${fmt.duration(entry.duration)}` : ''}
+                </span>
+                <span className="shelf-bar">
+                  <span
+                    style={{
+                      width: entry.duration
+                        ? `${Math.min(100, (entry.at / entry.duration) * 100)}%`
+                        : '0%',
+                    }}
+                  />
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {active.length ? (
-        <Section title={T.library.active} count={active.length}>
+        <Section
+          title={T.library.active}
+          count={active.length}
+          action={
+            outlook.total ? (
+              <span className="dim" style={{ fontSize: 12 }}>
+                {T.library.allRemaining} {fmt.eta(outlook.total)}
+              </span>
+            ) : null
+          }
+        >
           {active.map((d) => (
             <Row key={d.id} download={d} {...rowProps} />
           ))}
@@ -240,6 +322,7 @@ function Row({
   categories,
   categoryById,
   vaultingId,
+  outlook,
   onRemove,
   onFindSubtitle,
   onToVault,
@@ -248,6 +331,7 @@ function Row({
   categories: Category[]
   categoryById: Map<string, Category>
   vaultingId: string | null
+  outlook: Outlook
   onRemove: (d: Download) => void
   onFindSubtitle: (d: Download) => void
   onToVault: (d: Download) => void
@@ -260,6 +344,12 @@ function Row({
   const stage = d.stage && d.stage !== 'downloading' ? STAGE_LABEL[d.stage] : null
 
   const tone = d.status === 'done' ? 'done' : failed ? 'bad' : paused ? 'paused' : 'running'
+
+  // The queue-aware figure when there is one: it knows this transfer is sharing
+  // the line, and that the ones behind it are waiting for a slot. The engine's
+  // own number is the fallback for the first seconds, before anything is measured.
+  const queueEta = outlook.etas[d.id]
+  const eta = queueEta ?? d.eta
 
   // A segmented stream reports no total of its own, but the item measured one
   // before the transfer started — so the meter still has a figure to show.
@@ -297,7 +387,14 @@ function Row({
           {d.finishedAt ? <span className="sep" /> : null}
           {d.finishedAt ? <span>{fmt.relativeTime(d.finishedAt)}</span> : null}
           {queued ? <span className="sep" /> : null}
-          {queued ? <span style={{ color: 'var(--signal)' }}>{T.topbar.queued}</span> : null}
+          {queued ? (
+            <span style={{ color: 'var(--signal)' }}>
+              {T.topbar.queued}
+              {/* A queued item's start time is perfectly predictable; saying
+                  nothing about it was the part that felt like a black box. */}
+              {eta ? ` — ${T.library.finishesIn} ${fmt.eta(eta)}` : ''}
+            </span>
+          ) : null}
         </div>
 
         {running || paused ? (
@@ -317,9 +414,7 @@ function Row({
                 <>
                   <span>{fmt.speed(d.speed)}</span>
                   <span className="eta">
-                    {d.eta !== null && d.eta !== undefined
-                      ? `${fmt.eta(d.eta)} ${T.library.remaining}`
-                      : ''}
+                    {eta !== null && eta !== undefined ? `${fmt.eta(eta)} ${T.library.remaining}` : ''}
                   </span>
                 </>
               )}

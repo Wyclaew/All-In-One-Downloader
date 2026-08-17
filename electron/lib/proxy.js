@@ -312,10 +312,15 @@ function probePresets(timeoutMs = 700) {
  * Only for a credential-free loopback proxy on Tor's own ports: anywhere else an
  * invented username is at best ignored and at worst a rejected login.
  */
+// 9050 is a system tor, 9150 is Tor Browser's, and 9061-9065 is the range the app
+// starts its own on. Missing one of these is not cosmetic: it is what decides
+// whether the parts of a download get their own circuits or share one.
+const TOR_PORTS = new Set([9050, 9150, 9061, 9062, 9063, 9064, 9065])
+
 function looksLikeTor(proxy) {
   if (!proxy || !isSocks(proxy) || proxy.username) return false
   const local = proxy.host === '127.0.0.1' || proxy.host === 'localhost' || proxy.host === '::1'
-  return local && (proxy.port === 9050 || proxy.port === 9150)
+  return local && TOR_PORTS.has(proxy.port)
 }
 
 function circuitFor(raw, lane) {

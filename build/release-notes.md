@@ -1,18 +1,73 @@
 ## Bu sürümde
 
-- **Kaldığın yeri hatırlıyor.** Kitaplıktaki oynat düğmesi ve kasadaki videolar
-  artık uygulamanın kendi oynatıcısında açılıyor ve nerede bıraktığını hatırlıyor —
-  kapatınca, duraklatınca ve oynarken beş saniyede bir kaydediyor. Başa çok yakın
-  bir yer kaydedilmiyor (izlenmemişten farkı yok), sona çok yakın olan da siliniyor
-  (bitmiş demektir). **Dış oynatıcılar için bunu yapamıyorum:** VLC ve QuickTime
-  yer imlerini kendi depolarında tutuyor ve başka bir uygulamanın onları okumasının
-  bir yolu yok. Menüdeki "sistem oynatıcısında aç" seçeneği bunu açıkça yazıyor.
-- **"Kapıyı aç" tarifi ciddi şekilde sıkılaştırıldı.** İlk hâli cesaret verici
-  yazan her şeye basıyordu; sayfayı gezdiren bir şeye basması muhtemelen dizibox'ta
-  gördüğün 500 hatasının sebebi. Artık kural davranış üzerine: form içindekilere,
-  gerçek bağlantılara ve submit düğmelerine **hiç** dokunmuyor, yalnızca sayfanın
-  üstünde duran katmanlardaki düğmelere basıyor. Bir kapıyı kaçırmak tek bir sayfaya
-  mal olur; sayfayı gezdirmek çözümlemenin tamamına mal olur.
+Bu sürümün büyük parçası **kendi oynatıcımız**. Artık bir video oynatıcısı taklidi
+değil, gerçekten kullanılabilir bir oynatıcı — ve altyazı işini kökünden çözüyor.
+
+- **Altyazı neden görünmüyordu.** Chromium, MP4 veya MKV içine gömülü bir altyazı
+  izini hiçbir şekilde göstermiyor. Yani kitaplıkta "altyazı eklendi" yazması da,
+  oynatıcıda hiçbir şey görünmemesi de aynı anda doğruydu. Artık altyazı izlerini
+  ana süreçte buluyoruz — videonun yanındaki dosyalar, kabın içine gömülü izler ve
+  istendiğinde OpenSubtitles — satırlara çevirip kendimiz çiziyoruz. Windows kod
+  sayfasıyla yazılmış Türkçe altyazılar da (ı, ş, ğ bozulmadan) doğru okunuyor.
+- **Oynatıcıda altyazı paneli.** Dil seç, **Ara**'ya bas: bulunan sürümler *en iyi
+  eşleşmeden en kötüye* sıralı geliyor ve en üstteki **önerilen** olarak
+  işaretleniyor. Her satır neden o sırada olduğunu yazıyor ("dosyanla birebir
+  eşleşiyor, senkron", "9.506 indirme", "makine çevirisi"). Bulunmazsa bulunmadığını
+  söylüyor.
+- **Zamanlama ayarı.** Altyazı kayıyorsa **G / H** ile yarım saniyelik adımlarla
+  hizala. Bunu o dosya için **hatırlıyor** — aynı altyazı yarın da aynı kadar kaymış
+  olacağı için, kaymayı bir daha bulmana gerek yok.
+- **Kısayollar.** Boşluk/K oynat-duraklat, ←/→ 10 sn, J/L 30 sn, ↑/↓ ses, 0–9
+  yüzdeye atla, F tam ekran, Esc çık, M sessiz, V altyazı aç/kapat, B sonraki
+  altyazı, C panel, G/H zamanlama, </> hız, N sonraki bölüm, **?** bu listeyi açar.
+- **Sonraki bölüm.** Aynı klasörde sıradaki bölümü bulup videonun sonuna doğru
+  öneriyor. Kendi başına başlatmıyor — düğmeye basmak sana kalıyor.
+- **İzlemeye devam et rafı.** Kitaplığın üstünde, yarım bıraktığın videolar en son
+  izlenene göre sıralı. Kasadaki videolar ve kayıttan sildiğin satırlar buraya
+  **çıkmıyor**: birini kasaya koymanın ya da kaydı silmenin anlamı böyle bir listede
+  görünmemesiydi.
+- **Açılmayan biçim için çıkış yolu.** Chromium'un açamadığı bir kapta (genelde MKV
+  içinde H.264) siyah ekran yerine "hızlı dönüştür" çıkıyor: akışlara dokunmadan
+  sadece kabı MP4'e çeviriyor, kalite aynı kalıyor.
+
+**Altyazı arama dizilerde neden hiç bulamıyordu.** Kayıttaki dosya yolu bayatladığında
+arama elinde yalnızca başlıkla kalıyordu — ve başlıktan sezon/bölüm çıkarılırken
+`path.extname` "Mr. Robot 2. Sezon 1. Bölüm" içindeki ". Bölüm" kısmını uzantı sanıp
+bölüm numarasını kesiyordu. Bölüm numarası olmayan bir dizi sorgusunu hiçbir sağlayıcı
+yanıtlayamaz. İkisi de düzeltildi: dosya taşınmışsa bulunuyor, başlıktan sezon ve
+bölüm doğru okunuyor. Aynı arama artık aynı dosya için 5 Türkçe altyazı buluyor.
+
+- **Tor artık terminal istemiyor.** Ayarlar → Erişim'de **"Tor'u arka planda
+  başlat"**: uygulama kendi tor'unu kendi portunda (9061) ve kendi veri klasöründe
+  çalıştırıyor, bağlanma yüzdesini gösteriyor, vekil adresini kendi ayarlıyor ve
+  uygulama kapanınca tor'u da kapatıyor. `brew install tor` varsa onu, yoksa Tor
+  Browser'ın içindeki tor'u kullanıyor (Tor Browser'ın açık olması gerekmiyor).
+  Burada ölçtüğümde 12 saniyede bağlandı. Her indirme parçası ayrı devre kullanıyor.
+- **Tahmini süre artık kuyruğun tamamını hesaba katıyor.** Aynı hattı paylaşan
+  indirmeler birbirini yavaşlatır, biri bitince diğerleri hızlanır ve sırada bekleyen
+  bir işin ne zaman biteceği aslında hesaplanabilir. Artık tahtanın tamamı
+  benzetimle hesaplanıyor: her satır kendi süresini, başlık da hepsi için toplam
+  süreyi gösteriyor. Ölçülmüş hiçbir şey yoksa sayı uydurmuyor.
+- **Kendini yenileyip duran sayfalar.** dizibox'un oynatıcı çerçevesi, geliştirici
+  aracı sezdiğini düşününce `window.stop()` + `location.reload()` çağıran bir betik
+  çalıştırıyor. Tarama içinde bu bir döngüye dönüşüyordu: çerçeve hiç bitmiyor, video
+  isteği hiç çıkmıyor ve site bir süre sonra 500 vermeye başlıyor — gördüğün 500
+  hatası da, "video bulunamadı" da bundandı. Artık altı saniyede dörtten fazla
+  yenileme yapan bir sayfanın yenilemeleri durduruluyor ve elimizdeki belgeyle devam
+  ediliyor. **Bildirdiğin dizibox bağlantısı bu düzeltmeyle çözülüyor** (28 saniyede).
+- **Yeni hazır tarif: "Şifreli gömüleri oku".** Bir sürü gömülü oynatıcı tek satır
+  AES bloğu gönderip kendini CryptoJS ile çözüyor; adres ne sayfa kaynağında ne bir
+  istekte var. Bu tarif, sayfanın kendi oynatıcısına verdiği çözülmüş metne aynı anda
+  bakıp adresi alıyor. Anahtara dokunmuyor: sayfa kendi payını kendi anahtarıyla
+  çözüyor.
+
+Bu turda yakalanıp düzeltilen hatalar: oynatıcıda `hidden` özniteliği CSS'e yenildiği
+için altyazı paneli, kısayol kartı ve hata örtüsü aynı anda ekranda kalıyordu; yan
+altyazı taraması "Dune.mp4" için "Dune 2.tr.srt" dosyasını kabul ediyordu; sonraki
+bölüme geçerken kapanış anında kaydedilen konum yeni bölümün adına yazılıyordu; tor
+başlatma hatası hemen ardından "kapalı" durumuyla silinip kullanıcıya sebep
+gösterilmiyordu; kuyruk tahmini zamanlayıcısı, otomatik başlatma kapalıyken sonsuza
+kadar boşa dönüyordu; Tor'un kendi portu devre yalıtımı listesinde yoktu.
 
 ## Önceki sürümde
 

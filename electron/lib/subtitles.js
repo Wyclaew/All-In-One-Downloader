@@ -61,8 +61,20 @@ function movieHash(filePath) {
 
 /** Pull a title and, for episodes, season/episode numbers out of a filename. */
 function parseName(filePath) {
-  const base = path.basename(filePath, path.extname(filePath))
-  let text = base.replace(/[._]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return parseTitle(path.basename(filePath, path.extname(filePath)))
+}
+
+/**
+ * The same reading, for a name that is not a file.
+ *
+ * Worth its own entry point because `path.extname` is wrong for a title: given
+ * "Mr. Robot 2. Sezon 1. Bölüm" it calls ". Bölüm" the extension and strips the
+ * episode number off the end — and an episode query without an episode number is
+ * one no provider can answer, which is exactly how a series ended up with no
+ * subtitles at all.
+ */
+function parseTitle(base) {
+  let text = String(base || '').replace(/[._]+/g, ' ').replace(/\s+/g, ' ').trim()
 
   let season = null
   let episode = null
@@ -154,7 +166,21 @@ async function search({ filePath, languages, apiKey, title: titleOverride }) {
     .join(',')
 
   const hashed = filePath ? movieHash(filePath) : null
-  const parsed = filePath ? parseName(filePath) : { title: titleOverride || '', season: null, episode: null }
+
+  // Read the filename when there is one, and the title otherwise — but if the
+  // filename yields no episode number and the title does, believe the title. A
+  // download named after the page it came from often keeps "3. Bölüm" when the
+  // file on disk has already had it trimmed away.
+  const parsed = filePath ? parseName(filePath) : parseTitle(titleOverride || '')
+  if (!parsed.episode && titleOverride) {
+    const fromTitle = parseTitle(titleOverride)
+    if (fromTitle.episode) {
+      parsed.season = fromTitle.season
+      parsed.episode = fromTitle.episode
+      if (!parsed.title || parsed.title.length < 2) parsed.title = fromTitle.title
+    }
+  }
+
   const results = []
   const seen = new Set()
 
@@ -174,6 +200,8 @@ async function search({ filePath, languages, apiKey, title: titleOverride }) {
         fps: a.fps || null,
         // A hash match was timed against this exact file.
         hashMatch: !!a.moviehash_match || viaHash,
+        trusted: !!a.from_trusted,
+        machine: !!a.ai_translated || !!a.machine_translated,
         uploader: (a.uploader && a.uploader.name) || '',
       })
     }
@@ -189,7 +217,9 @@ async function search({ filePath, languages, apiKey, title: titleOverride }) {
     }
   }
 
-  const query = (titleOverride || parsed.title || '').trim()
+  // The parsed title, not the raw one: "Mr Robot" finds the series, while
+  // "Mr. Robot 2. Sezon 1. Bölüm" finds nothing at all.
+  const query = (parsed.title || titleOverride || '').trim()
   if (query) {
     const params = new URLSearchParams({ query, languages: langs })
     if (parsed.season) params.set('season_number', String(parsed.season))
@@ -197,9 +227,49 @@ async function search({ filePath, languages, apiKey, title: titleOverride }) {
     collect(await request(`${API}/subtitles?${params.toString()}`, apiKey), false)
   }
 
-  // In-sync first, then by how many people have used it.
-  results.sort((a, b) => Number(b.hashMatch) - Number(a.hashMatch) || b.downloads - a.downloads)
-  return { results: results.slice(0, 40), parsed, hashed: !!hashed }
+  // Best to worst, and say why. "Pick one of these forty" is not a choice anyone
+  // can make well from release names alone — what actually decides it is whether
+  // the timings were authored against this exact file, and after that how many
+  // people have kept using it.
+  for (const r of results) rate(r)
+  results.sort((a, b) => b.score - a.score)
+  const ranked = results.slice(0, 40)
+  if (ranked.length) ranked[0].recommended = true
+
+  return { results: ranked, parsed, hashed: !!hashed }
+}
+
+/** Score a hit and put the reason in words, since the reason is the useful part. */
+function rate(hit) {
+  let score = 0
+  const why = []
+
+  if (hit.hashMatch) {
+    score += 1000
+    why.push('dosyanla birebir eşleşiyor, senkron')
+  }
+  if (hit.trusted) {
+    score += 60
+    why.push('güvenilir yükleyici')
+  }
+  if (hit.machine) {
+    score -= 150
+    why.push('makine çevirisi')
+  }
+  if (hit.hearingImpaired) {
+    score -= 15
+    why.push('işitme engelli sürümü')
+  }
+  // Downloads say "this one worked for other people", but the difference between
+  // 9 000 and 9 500 says nothing — so it is weighed on a log scale and capped.
+  if (hit.downloads > 0) {
+    score += Math.min(120, Math.log10(hit.downloads + 1) * 30)
+    if (hit.downloads > 500) why.push(`${hit.downloads.toLocaleString('tr-TR')} indirme`)
+  }
+
+  hit.score = Math.round(score)
+  hit.why = why.join(' · ')
+  return hit
 }
 
 /** Resolve a file_id to bytes. */
@@ -357,4 +427,4 @@ async function apply({ videoPath, fileId, language, apiKey, sync, embedTrack, ha
   return outcome
 }
 
-module.exports = { search, apply, movieHash, parseName, subtitlePathFor, ffsubsyncPath }
+module.exports = { search, apply, movieHash, parseName, parseTitle, subtitlePathFor, ffsubsyncPath }

@@ -15,7 +15,8 @@ const ALL = null
 const UNCATEGORIZED = '__none__'
 
 export default function App() {
-  const { state, tools, progress, toasts, pushToast, dismissToast, refreshTools, menuAction } = useApp()
+  const { state, tools, progress, outlook, toasts, pushToast, dismissToast, refreshTools, menuAction } =
+    useApp()
   const { vault } = useVault()
   const [view, setView] = useState<View>('sources')
   const [category, setCategory] = useState<string | null>(ALL)
@@ -448,6 +449,7 @@ export default function App() {
               <Library
                 state={state}
                 downloads={downloads}
+                outlook={outlook}
                 category={category}
                 query={query}
                 onClearFilters={() => {

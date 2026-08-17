@@ -2,7 +2,14 @@ import { type ReactNode, useEffect, useState } from 'react'
 import { api } from '../api'
 import { QUALITY_OPTIONS } from '../quality'
 import { T } from '../strings'
-import type { BrowserOption, Settings as SettingsShape, Tools, UserScript as UserScriptInfo } from '../types'
+import type {
+  BrowserOption,
+  Settings as SettingsShape,
+  Tools,
+  TorStatus,
+  UserScript as UserScriptInfo,
+} from '../types'
+import { bridge } from '../api'
 import { Btn, Icon, Info, Toggle } from '../components/ui'
 
 interface Props {
@@ -309,7 +316,7 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
                 </Btn>
               ))}
             </div>
-            <div className="set-hint" style={{ marginTop: 0 }}>{T.settings.proxyTor}</div>
+            <TorPanel onToast={onToast} />
             <Toggle
               checked={!!settings.proxyByDefault}
               onChange={(v) => patch({ proxyByDefault: v })}
@@ -652,6 +659,77 @@ function Row({
         </span>
       </div>
       <div className="set-control">{children}</div>
+    </div>
+  )
+}
+
+/**
+ * Tor, started and stopped from here.
+ *
+ * The point is that nobody has to keep a terminal open: the app runs its own tor
+ * on its own port, sets the proxy address to match, and takes it down on quit. If
+ * no tor binary exists on the machine we say exactly that and how to get one,
+ * rather than offering a switch that cannot do anything.
+ */
+function TorPanel({ onToast }: { onToast: (message: string, kind?: 'info' | 'warn' | 'error' | 'ok') => void }) {
+  const [tor, setTor] = useState<TorStatus | null>(null)
+  const [working, setWorking] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    api.torStatus().then((s) => alive && s && setTor(s))
+    // Bootstrapping reports its progress as it goes, so the button is not the
+    // only thing the user has to look at while it takes half a minute.
+    const off = bridge.onTor((s) => setTor((prev) => ({ ...(prev || s), ...s })))
+    return () => {
+      alive = false
+      off()
+    }
+  }, [])
+
+  if (!tor) return null
+
+  const on = tor.state === 'on'
+  const starting = tor.state === 'starting'
+  const line = on
+    ? `Açık — socks5://127.0.0.1:${tor.port}`
+    : starting
+      ? `Bağlanıyor… %${tor.percent}${tor.message ? ` — ${tor.message}` : ''}`
+      : tor.state === 'error'
+        ? tor.message
+        : tor.available
+          ? 'Kapalı. Açtığında vekil adresi kendiliğinden ayarlanır.'
+          : `Bu makinede tor yok. ${tor.hint || ''}`
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div className="set-inline">
+        <Btn
+          size="sm"
+          icon={on ? 'check' : 'shield'}
+          variant={on ? 'default' : 'ghost'}
+          spinning={working || starting}
+          disabled={working || starting || (!tor.available && !on)}
+          onClick={async () => {
+            setWorking(true)
+            const next = on ? await api.torStop() : await api.torStart()
+            setWorking(false)
+            if (next) setTor(next)
+            if (!on && next && next.state !== 'on') onToast(next.message || 'Tor açılamadı.', 'error')
+          }}
+        >
+          {on ? "Tor'u kapat" : starting ? 'Bağlanıyor…' : "Tor'u arka planda başlat"}
+        </Btn>
+        {tor.binary ? (
+          <span className="mono dim" style={{ fontSize: 11 }} title={tor.binary}>
+            {tor.binary.split('/').slice(-3).join('/')}
+          </span>
+        ) : null}
+      </div>
+      <div className="set-hint" style={{ marginTop: 0, color: on ? 'var(--ok, #5c9c74)' : undefined }}>
+        {line}
+      </div>
+      <div className="set-hint" style={{ marginTop: 0 }}>{T.settings.proxyTor}</div>
     </div>
   )
 }
