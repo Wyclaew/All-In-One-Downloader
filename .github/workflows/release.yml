@@ -78,20 +78,13 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      - name: Keep the installers as build artifacts too
-        uses: actions/upload-artifact@v7
-        with:
-          name: installers-${{ matrix.os }}
-          if-no-files-found: ignore
-          # electron-builder already published these to the release above, and a
-          # release asset never expires and costs no storage quota. This copy is
-          # only a convenience for inspecting a run, so it expires straight away
-          # instead of sitting in the 2 GB artifact quota for the default 90 days.
-          retention-days: 1
-          path: |
-            release/*.dmg
-            release/*.zip
-            release/*.exe
+      # No artifact copy of the installers. electron-builder has already published
+      # them to the release above, where they never expire and cost no storage
+      # quota — so the copy was only ever a convenience, and it was buying that
+      # convenience with the one resource that runs out. When the 2 GB artifact
+      # quota is full the upload fails, which marked a run red for a release that
+      # had in fact been published in full: a build that lies about its outcome is
+      # worse than a missing convenience.
 
   # electron-builder creates the release but never writes a body, so the first-open
   # instructions would be missing exactly where people download the build.
