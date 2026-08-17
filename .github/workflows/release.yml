@@ -83,6 +83,11 @@ jobs:
         with:
           name: installers-${{ matrix.os }}
           if-no-files-found: ignore
+          # electron-builder already published these to the release above, and a
+          # release asset never expires and costs no storage quota. This copy is
+          # only a convenience for inspecting a run, so it expires straight away
+          # instead of sitting in the 2 GB artifact quota for the default 90 days.
+          retention-days: 1
           path: |
             release/*.dmg
             release/*.zip
