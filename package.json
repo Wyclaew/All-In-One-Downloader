@@ -1,7 +1,7 @@
 {
   "name": "all-in-one-downloader",
   "productName": "All in One Downloader",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "description": "Bir bağlantı yapıştır, sayfadaki videoları çıkar ve indir.",
   "private": true,
   "main": "electron/main.js",

@@ -25,8 +25,16 @@ const state = {
   seeking: false,
   ready: false,
   next: null,
+  prev: null,
   upNextShown: false,
   switching: false,
+  vault: false,
+  chapters: [],
+  audio: [],
+  boost: 1,
+  fit: 'contain',
+  autoNext: true,
+  subtitleStyle: 'box',
 }
 
 /* ---- icons -------------------------------------------------------------- */
@@ -46,6 +54,9 @@ const ICON = {
   full: svg('<path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/>'),
   exitFull: svg('<path d="M9 4v5H4"/><path d="M15 4v5h5"/><path d="M9 20v-5H4"/><path d="M15 20v-5h5"/>'),
   close: svg('<path d="M6 6l12 12"/><path d="M18 6L6 18"/>'),
+  next: svg('<polygon points="5 5 15 12 5 19 5 5" fill="currentColor" stroke="none"/><path d="M19 5v14"/>'),
+  prev: svg('<polygon points="19 5 9 12 19 19 19 5" fill="currentColor" stroke="none"/><path d="M5 5v14"/>'),
+  gear: svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
 }
 
 const setIcon = (el, name) => {
@@ -95,7 +106,21 @@ async function boot() {
   state.tracks = info.tracks || []
   state.size = info.subtitleSize || 'normal'
   state.next = info.next || null
+  state.prev = info.prev || null
+  state.vault = !!info.vault
+  state.chapters = Array.isArray(info.chapters) ? info.chapters : []
+  state.audio = Array.isArray(info.audio) ? info.audio : []
+  state.autoNext = info.autoNext !== false
   subsBox.dataset.size = state.size
+  setRate(info.rate || 1, { save: false, quiet: true })
+  setFit(info.fit || 'contain', { save: false })
+  setSubtitleStyle(info.subtitleStyle || 'box', { save: false })
+  state.boost = Number(info.boost) || 1
+  $('prev').hidden = !state.prev
+  $('q-autonext').checked = state.autoNext
+  $('q-autonext-row').hidden = !state.next
+  // A screenshot of a vaulted film would be a plaintext picture of it.
+  $('q-shot').hidden = state.vault
   setDelay(Number(info.delay) || 0, { save: false })
   setVolume(Number.isFinite(info.volume) ? info.volume : 1, { save: false })
 
@@ -126,6 +151,7 @@ async function boot() {
 
   video.src = info.src
   video.load()
+  $('probe').src = info.src
 
   // Resume once the duration is known: a seek issued before then is discarded.
   video.addEventListener(
@@ -133,6 +159,10 @@ async function boot() {
     () => {
       state.duration = video.duration
       state.ready = true
+      paintChapters()
+      paintAudio()
+      // Boost needs Web Audio, which is only wired up when it is actually used.
+      if (state.boost > 1) setBoost(state.boost, { save: false })
       const at = Number(info.resumeAt) || 0
       if (at > 20 && Number.isFinite(video.duration) && at < video.duration - 10) {
         video.currentTime = at
@@ -159,9 +189,17 @@ async function boot() {
 
 /* ---- subtitles ---------------------------------------------------------- */
 
-/** Cue text may carry <i>, <b> and <u>. Everything else is text, so it is escaped. */
+/**
+ * Cue text may carry <i>, <b> and <u>; those survive. Every other tag — <font
+ * color=…>, the {\\an8} positioning codes of converted ASS files — is removed
+ * rather than escaped, because escaped it showed up on screen as literal markup.
+ * Whatever is left is text, and is escaped before it touches innerHTML.
+ */
 function cueHtml(text) {
-  const escaped = text
+  const cleaned = String(text)
+    .replace(/\{\\[^}]*\}/g, '')
+    .replace(/<(?!\/?[ibu]>)[^>]*>/gi, '')
+  const escaped = cleaned
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -349,18 +387,73 @@ async function goNext() {
   }
 }
 
-/**
- * Offered near the end rather than only after it, so it is on screen while the
- * closing credits run — and never on its own initiative: nothing starts playing
- * without the user saying so.
- */
+async function goPrev() {
+  if (!state.prev || state.switching) return
+  remember()
+  state.switching = true
+  app.classList.add('busy')
+  try {
+    await window.aioPlayer.prev()
+  } catch (err) {
+    state.switching = false
+    app.classList.remove('busy')
+    flash(err && err.message ? err.message : 'Önceki bölüm açılamadı.')
+  }
+}
+
+/** Offered near the end, so it is on screen while the closing credits run. */
 function maybeOfferNext() {
   if (!state.next || state.upNextShown) return
   const duration = video.duration
   if (!Number.isFinite(duration) || duration < 120) return
   if (duration - video.currentTime > 45) return
   state.upNextShown = true
+  $('upnext-label').textContent = 'Sonraki bölüm'
   $('upnext').hidden = false
+}
+
+/**
+ * When the episode ends: count down and move on, the way a video site does —
+ * with the countdown on screen and one click to stop it. Off in the settings
+ * popover for anyone who would rather choose.
+ */
+let countdownTimer = null
+function startCountdown() {
+  if (!state.next) return
+  $('upnext').hidden = false
+  if (!state.autoNext) {
+    $('upnext-label').textContent = 'Sonraki bölüm'
+    return
+  }
+  let left = 8
+  const card = document.querySelector('.upnext-card')
+  let bar = card.querySelector('.countdown')
+  if (!bar) {
+    bar = document.createElement('div')
+    bar.className = 'countdown'
+    bar.innerHTML = '<span></span>'
+    card.appendChild(bar)
+  }
+  const tick = () => {
+    $('upnext-label').textContent = `Sonraki bölüm ${left} sn içinde`
+    bar.firstChild.style.width = `${((8 - left) / 8) * 100}%`
+    if (left <= 0) {
+      stopCountdown()
+      goNext()
+      return
+    }
+    left -= 1
+  }
+  stopCountdown()
+  tick()
+  countdownTimer = setInterval(tick, 1000)
+}
+
+function stopCountdown() {
+  clearInterval(countdownTimer)
+  countdownTimer = null
+  const bar = document.querySelector('.upnext-card .countdown')
+  if (bar) bar.remove()
 }
 
 /* ---- transport ---------------------------------------------------------- */
@@ -383,12 +476,205 @@ function skip(seconds) {
 
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
 
+function setRate(rate, { save = true, quiet = false } = {}) {
+  const next = RATES.includes(Number(rate)) ? Number(rate) : 1
+  video.playbackRate = next
+  // The probe decodes nothing audible, but keep it in step so seeking matches.
+  $('rate').textContent = `${String(next).replace('.', ',')}×`
+  if (!quiet) flash(`Hız ${String(next).replace('.', ',')}×`)
+  for (const b of $('q-rate').querySelectorAll('button')) b.classList.toggle('on', Number(b.dataset.rate) === next)
+  if (save) window.aioPlayer.prefs({ rate: next })
+}
+
 function cycleRate(step) {
   const index = RATES.indexOf(video.playbackRate)
-  const next = RATES[Math.min(RATES.length - 1, Math.max(0, (index < 0 ? 2 : index) + step))]
-  video.playbackRate = next
-  $('rate').textContent = `${String(next).replace('.', ',')}×`
-  flash(`Hız ${String(next).replace('.', ',')}×`)
+  setRate(RATES[Math.min(RATES.length - 1, Math.max(0, (index < 0 ? 2 : index) + step))])
+}
+
+/* ---- picture, sound, extras --------------------------------------------- */
+
+/**
+ * The frame under the pointer on the scrub bar. A second decoder does the
+ * seeking, one request at a time; while it is busy only the latest position is
+ * remembered, so dragging fast never queues up a backlog of stale frames.
+ */
+const preview = { busy: false, want: null }
+function previewAt(seconds) {
+  const probe = $('probe')
+  if (state.audioOnly || !probe.src) return
+  preview.want = seconds
+  if (preview.busy || probe.readyState < 1) return
+  preview.busy = true
+  preview.want = null
+  probe.currentTime = seconds
+  setTimeout(() => {
+    preview.busy = false
+  }, 1500)
+}
+
+function toggleMute() {
+  // Muting is not a volume of zero: the level the user chose comes back intact.
+  video.muted = !video.muted
+  setIcon($('mute'), video.muted || video.volume === 0 ? 'muted' : 'volume')
+  flash(video.muted ? 'Ses kapalı' : `Ses %${Math.round(video.volume * 100)}`)
+}
+
+
+const FITS = ['contain', 'cover', 'fill']
+const FIT_NAMES = { contain: 'Sığdır', cover: 'Doldur', fill: 'Uzat' }
+
+function setFit(fit, { save = true } = {}) {
+  state.fit = FITS.includes(fit) ? fit : 'contain'
+  video.dataset.fit = state.fit
+  for (const b of $('q-fit').querySelectorAll('button')) b.classList.toggle('on', b.dataset.fit === state.fit)
+  if (save) {
+    window.aioPlayer.prefs({ fit: state.fit })
+    flash(`Görüntü: ${FIT_NAMES[state.fit]}`)
+  }
+}
+
+function setSubtitleStyle(style, { save = true } = {}) {
+  state.subtitleStyle = style === 'outline' ? 'outline' : 'box'
+  subsBox.dataset.style = state.subtitleStyle
+  for (const b of $('q-style').querySelectorAll('button')) b.classList.toggle('on', b.dataset.style === state.subtitleStyle)
+  if (save) window.aioPlayer.prefs({ subtitleStyle: state.subtitleStyle })
+}
+
+/**
+ * Louder than the file allows. The element tops out at 100%, so quiet rips go
+ * through a Web Audio gain node instead — created on first use only, because
+ * once an element is routed through an audio graph it stays there.
+ */
+let audioGraph = null
+function setBoost(boost, { save = true } = {}) {
+  state.boost = [1, 1.5, 2].includes(Number(boost)) ? Number(boost) : 1
+  for (const b of $('q-boost').querySelectorAll('button')) b.classList.toggle('on', Number(b.dataset.boost) === state.boost)
+  if (state.boost > 1 && !audioGraph) {
+    try {
+      const ctx = new AudioContext()
+      const source = ctx.createMediaElementSource(video)
+      const gain = ctx.createGain()
+      // A limiter after the gain, so 200% means louder, not clipped.
+      const limiter = ctx.createDynamicsCompressor()
+      limiter.threshold.value = -2
+      limiter.ratio.value = 20
+      source.connect(gain).connect(limiter).connect(ctx.destination)
+      audioGraph = { ctx, gain }
+    } catch {
+      flash('Ses yükseltme bu dosyada çalışmadı.')
+      state.boost = 1
+    }
+  }
+  if (audioGraph) {
+    audioGraph.gain.gain.value = state.boost
+    if (audioGraph.ctx.state === 'suspended') audioGraph.ctx.resume().catch(() => {})
+  }
+  if (save) {
+    window.aioPlayer.prefs({ boost: state.boost })
+    flash(`Ses yükseltme %${Math.round(state.boost * 100)}`)
+  }
+}
+
+/** The file's own audio tracks, when it has more than one. */
+function paintAudio() {
+  const tracks = video.audioTracks
+  const list = $('audio-list')
+  list.innerHTML = ''
+  if (!tracks || tracks.length < 2) {
+    $('audio').hidden = true
+    return
+  }
+  $('audio').hidden = false
+  for (let i = 0; i < tracks.length; i += 1) {
+    const track = tracks[i]
+    const known = state.audio[i]
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = track.enabled ? 'on' : ''
+    button.textContent = (known && known.label) || track.label || track.language || `Ses ${i + 1}`
+    button.addEventListener('click', () => selectAudio(i))
+    list.appendChild(button)
+  }
+}
+
+function selectAudio(index) {
+  const tracks = video.audioTracks
+  if (!tracks || !tracks[index]) return
+  const at = video.currentTime
+  for (let i = 0; i < tracks.length; i += 1) tracks[i].enabled = i === index
+  // Some files only switch cleanly after a nudge of the clock.
+  video.currentTime = at
+  paintAudio()
+  flash(`Ses: ${$('audio-list').children[index].textContent}`)
+}
+
+function cycleAudio() {
+  const tracks = video.audioTracks
+  if (!tracks || tracks.length < 2) return flash('Bu videoda tek ses parçası var.')
+  let current = 0
+  for (let i = 0; i < tracks.length; i += 1) if (tracks[i].enabled) current = i
+  selectAudio((current + 1) % tracks.length)
+}
+
+/** Chapter marks on the scrub bar, and the current chapter's name beside the clock. */
+function paintChapters() {
+  const box = $('chapters')
+  box.innerHTML = ''
+  const duration = video.duration
+  if (!state.chapters.length || !Number.isFinite(duration) || duration <= 0) return
+  for (const chapter of state.chapters) {
+    if (chapter.start <= 0.5 || chapter.start >= duration) continue
+    const tick = document.createElement('span')
+    tick.style.left = `${(chapter.start / duration) * 100}%`
+    box.appendChild(tick)
+  }
+}
+
+function chapterAt(seconds) {
+  let found = null
+  for (const chapter of state.chapters) if (chapter.start <= seconds) found = chapter
+  return found
+}
+
+function jumpChapter(step) {
+  if (!state.chapters.length) return skip(step * 60)
+  const now = video.currentTime
+  const starts = state.chapters.map((c) => c.start)
+  const target =
+    step > 0 ? starts.find((t) => t > now + 1) : [...starts].reverse().find((t) => t < now - 3)
+  if (target === undefined) return
+  video.currentTime = target
+  const chapter = chapterAt(target)
+  flash(chapter && chapter.title ? chapter.title : clock(target))
+}
+
+async function screenshot() {
+  if (state.vault) return flash('Kasadaki videolardan ekran görüntüsü alınmaz.')
+  if (!video.videoWidth) return
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    canvas.getContext('2d').drawImage(video, 0, 0)
+    const saved = await window.aioPlayer.screenshot(canvas.toDataURL('image/png'), video.currentTime)
+    flash('Ekran görüntüsü Resimler klasörüne kaydedildi')
+    state.lastShot = saved && saved.path
+  } catch (err) {
+    flash(err && err.message ? err.message.replace(/^Error invoking remote method[^:]*: (Error: )?/, '') : 'Kaydedilemedi.')
+  }
+}
+
+async function toggleOnTop(force) {
+  const want = typeof force === 'boolean' ? force : !$('q-ontop').checked
+  const on = await window.aioPlayer.onTop(want)
+  $('q-ontop').checked = !!on
+  flash(on ? 'Her zaman üstte' : 'Üstte tutma kapalı')
+}
+
+function togglePopover(id) {
+  for (const other of ['quick', 'audio-menu']) if (other !== id) $(other).hidden = true
+  $(id).hidden = !$(id).hidden
+  if (!$(id).hidden) wake()
 }
 
 function toggleFullscreen() {
@@ -398,7 +684,7 @@ function toggleFullscreen() {
 
 function setVolume(value, { save = true } = {}) {
   video.volume = Math.max(0, Math.min(1, Number(value) || 0))
-  video.muted = video.volume === 0
+  if (video.volume > 0) video.muted = false
   $('volume').value = String(video.volume)
   setIcon($('mute'), video.muted || video.volume === 0 ? 'muted' : 'volume')
   if (save) window.aioPlayer.setVolume(video.volume)
@@ -431,6 +717,11 @@ function paintProgress() {
   $('seek-played').style.width = `${ratio * 100}%`
   $('seek-knob').style.left = `${ratio * 100}%`
   $('time').textContent = `${clock(video.currentTime)} / ${clock(duration)}`
+  if (state.chapters.length) {
+    const chapter = chapterAt(video.currentTime)
+    const name = chapter && chapter.title ? chapter.title : ''
+    if ($('chapter-name').textContent !== name) $('chapter-name').textContent = name
+  }
 
   let buffered = 0
   for (let i = 0; i < video.buffered.length; i += 1) {
@@ -450,13 +741,42 @@ function wire() {
   setIcon($('pip'), 'pip')
   setIcon($('full'), 'full')
   setIcon($('panel-close'), 'close')
+  setIcon($('next'), 'next')
+  setIcon($('prev'), 'prev')
+  setIcon($('gear'), 'gear')
+
+  for (const rate of RATES) {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.dataset.rate = String(rate)
+    b.textContent = `${String(rate).replace('.', ',')}×`
+    b.addEventListener('click', () => setRate(rate))
+    $('q-rate').appendChild(b)
+  }
+  for (const b of $('q-fit').querySelectorAll('button')) b.addEventListener('click', () => setFit(b.dataset.fit))
+  for (const b of $('q-boost').querySelectorAll('button')) b.addEventListener('click', () => setBoost(b.dataset.boost))
+  for (const b of $('q-style').querySelectorAll('button')) b.addEventListener('click', () => setSubtitleStyle(b.dataset.style))
+  $('q-autonext').addEventListener('change', (e) => {
+    state.autoNext = e.target.checked
+    window.aioPlayer.prefs({ autoNext: state.autoNext })
+  })
+  $('q-ontop').addEventListener('change', (e) => toggleOnTop(e.target.checked))
+  $('q-shot').addEventListener('click', screenshot)
+  $('gear').addEventListener('click', () => togglePopover('quick'))
+  $('audio').addEventListener('click', () => togglePopover('audio-menu'))
+  $('prev').addEventListener('click', goPrev)
+  // Tracks can appear after metadata in some containers.
+  if (video.audioTracks) {
+    video.audioTracks.addEventListener('addtrack', paintAudio)
+    video.audioTracks.addEventListener('change', paintAudio)
+  }
 
   $('play').addEventListener('click', togglePlay)
   $('back').addEventListener('click', () => skip(-10))
   $('fwd').addEventListener('click', () => skip(10))
-  $('mute').addEventListener('click', () => setVolume(video.volume > 0 ? 0 : 1))
+  $('mute').addEventListener('click', toggleMute)
   $('volume').addEventListener('input', (e) => setVolume(Number(e.target.value)))
-  $('rate').addEventListener('click', () => cycleRate(1))
+  $('rate').addEventListener('click', () => togglePopover('quick'))
   $('full').addEventListener('click', toggleFullscreen)
   $('pip').addEventListener('click', () => {
     if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {})
@@ -478,6 +798,7 @@ function wire() {
   $('next').addEventListener('click', goNext)
   $('upnext-go').addEventListener('click', goNext)
   $('upnext-stay').addEventListener('click', () => {
+    stopCountdown()
     $('upnext').hidden = true
   })
 
@@ -534,7 +855,7 @@ function wire() {
     remember()
     if (state.next) {
       state.upNextShown = true
-      $('upnext').hidden = false
+      startCountdown()
     }
   })
   video.addEventListener('durationchange', () => {
@@ -543,6 +864,7 @@ function wire() {
   video.addEventListener('error', () => {
     app.classList.remove('busy')
     const code = video.error ? video.error.code : 0
+    $('fault-remux').hidden = state.vault
     $('fault-text').textContent =
       code === 4
         ? 'Bu videonun biçimini pencere içinde açamadık — genelde MKV içindeki H.264 sesi/görüntüsü olur. Hızlı dönüştürme akışlara dokunmaz, sadece kabı değiştirir.'
@@ -551,14 +873,42 @@ function wire() {
   })
 
   /* clicking the picture */
+  const onSurface = (event) =>
+    !event.target.closest('#controls, #resume, #fault, #upnext, .popover, #panel, #help')
+  let clickTimer = null
   $('stage').addEventListener('click', (event) => {
-    if (event.target.closest('#controls') || event.target.closest('#resume') || event.target.closest('#fault')) return
-    togglePlay()
+    if (!onSurface(event)) return
+    // Any open popover closes on a click elsewhere, without also pausing.
+    if (!$('quick').hidden || !$('audio-menu').hidden) {
+      $('quick').hidden = true
+      $('audio-menu').hidden = true
+      return
+    }
+    // Wait a moment: the first click of a double-click must not toggle play.
+    clearTimeout(clickTimer)
+    clickTimer = setTimeout(togglePlay, 220)
   })
   $('stage').addEventListener('dblclick', (event) => {
-    if (event.target.closest('#controls')) return
-    toggleFullscreen()
+    if (!onSurface(event)) return
+    clearTimeout(clickTimer)
+    // Like a phone player: the outer thirds skip, the middle goes full screen.
+    const rect = $('stage').getBoundingClientRect()
+    const x = (event.clientX - rect.left) / rect.width
+    if (x < 0.3) skip(-10)
+    else if (x > 0.7) skip(10)
+    else toggleFullscreen()
   })
+  // The wheel over the picture is volume, as in VLC.
+  $('stage').addEventListener(
+    'wheel',
+    (event) => {
+      if (!onSurface(event)) return
+      event.preventDefault()
+      setVolume(video.volume + (event.deltaY < 0 ? 0.05 : -0.05))
+      flash(`Ses %${Math.round(video.volume * 100)}`)
+    },
+    { passive: false }
+  )
 
   /* seek bar */
   const seek = $('seek')
@@ -578,14 +928,35 @@ function wire() {
     const duration = video.duration || 0
     if (duration) {
       const tip = $('seek-tip')
+      const at = seekRatio(event) * duration
       tip.hidden = false
-      tip.textContent = clock(seekRatio(event) * duration)
-      tip.style.left = `${seekRatio(event) * 100}%`
+      $('seek-time').textContent = clock(at)
+      const chapter = chapterAt(at)
+      $('seek-chapter').textContent = chapter && chapter.title ? chapter.title : ''
+      // Keep the preview inside the window at both ends of the bar.
+      const rect = seek.getBoundingClientRect()
+      const half = 100
+      const x = Math.min(rect.width - half, Math.max(half, event.clientX - rect.left))
+      tip.style.left = `${x}px`
+      previewAt(at)
     }
     if (state.seeking) applySeek(event)
   })
   seek.addEventListener('pointerleave', () => {
     $('seek-tip').hidden = true
+  })
+
+  const probe = $('probe')
+  probe.addEventListener('seeked', () => {
+    const canvas = $('seek-frame')
+    try {
+      canvas.getContext('2d').drawImage(probe, 0, 0, canvas.width, canvas.height)
+      canvas.hidden = false
+    } catch {
+      canvas.hidden = true
+    }
+    preview.busy = false
+    if (preview.want !== null && Math.abs(preview.want - probe.currentTime) > 1) previewAt(preview.want)
   })
   seek.addEventListener('pointerup', (event) => {
     state.seeking = false
@@ -625,7 +996,14 @@ const SHORTCUTS = [
   ['C', 'Altyazı panelini aç'],
   ['G / H', 'Altyazıyı 0,5 sn geciktir, öne al'],
   ['< / >', 'Oynatma hızı'],
-  ['N', 'Sonraki bölüm'],
+  ['N / P', 'Sonraki, önceki bölüm'],
+  ['Page Up / Down', 'Önceki, sonraki bölüm işareti (chapter)'],
+  ['A', 'Ses dilini değiştir'],
+  ['Z', 'Görüntü: sığdır, doldur, uzat'],
+  ['S', 'Ekran görüntüsü'],
+  ['T', 'Her zaman üstte'],
+  ['Çift tık', 'Kenarlarda ±10 sn, ortada tam ekran'],
+  ['Tekerlek', 'Ses'],
   ['?', 'Bu liste'],
 ]
 
@@ -664,7 +1042,14 @@ function onKey(event) {
     ArrowUp: () => setVolume(video.volume + 0.1),
     ArrowDown: () => setVolume(video.volume - 0.1),
     f: toggleFullscreen,
-    m: () => setVolume(video.volume > 0 ? 0 : 1),
+    m: toggleMute,
+    a: cycleAudio,
+    p: goPrev,
+    s: screenshot,
+    t: () => toggleOnTop(),
+    z: () => setFit(FITS[(FITS.indexOf(state.fit) + 1) % FITS.length]),
+    PageUp: () => jumpChapter(-1),
+    PageDown: () => jumpChapter(1),
     v: () => (state.trackId ? selectTrack(null) : cycleTrack()),
     b: cycleTrack,
     c: () => {
@@ -694,7 +1079,10 @@ function onKey(event) {
     event.preventDefault()
     video.currentTime = (Number(key) / 10) * video.duration
   } else if (key === 'Escape') {
-    if (!$('help').hidden) $('help').hidden = true
+    if (!$('quick').hidden || !$('audio-menu').hidden) {
+      $('quick').hidden = true
+      $('audio-menu').hidden = true
+    } else if (!$('help').hidden) $('help').hidden = true
     else if (!panel.hidden) panel.hidden = true
     else if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
   }

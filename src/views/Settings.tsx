@@ -7,6 +7,7 @@ import type {
   Settings as SettingsShape,
   Tools,
   TorStatus,
+  UpdateState,
   UserScript as UserScriptInfo,
 } from '../types'
 import { bridge } from '../api'
@@ -579,6 +580,23 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
             />
           </div>
         </Row>
+
+        <Row label="Güncellemeler" hint="GitHub'da yeni sürüm çıkınca üstte bildirim gösterir; tek tıkla indirip doğrular ve kurar.">
+          <UpdateRow
+            auto={settings.autoCheckUpdates !== false}
+            onAuto={(v) => patch({ autoCheckUpdates: v })}
+            onToast={onToast}
+          />
+        </Row>
+
+        <Row
+          label="İndirme klasörü"
+          hint="Eski sürümlerden kalan oynat.html dosyalarını kaldırır; videonun yanındaki .vtt/.srt altyazıları videonun içine gömer (ya da uygulamanın kendi klasörüne taşır). Hiçbir altyazı silinip atılmaz."
+        >
+          <Btn size="sm" icon="refresh" onClick={() => api.tidyFolder()}>
+            Klasörü şimdi toparla
+          </Btn>
+        </Row>
       </Section>
 
       <Section title={T.settings.sectionTools}>
@@ -730,6 +748,116 @@ function TorPanel({ onToast }: { onToast: (message: string, kind?: 'info' | 'war
         {line}
       </div>
       <div className="set-hint" style={{ marginTop: 0 }}>{T.settings.proxyTor}</div>
+    </div>
+  )
+}
+
+function UpdateRow({
+  auto,
+  onAuto,
+  onToast,
+}: {
+  auto: boolean
+  onAuto: (v: boolean) => void
+  onToast: (message: string, kind?: 'info' | 'warn' | 'error' | 'ok') => void
+}) {
+  const [update, setUpdate] = useState<UpdateState | null>(null)
+  const [checking, setChecking] = useState(false)
+  useEffect(() => {
+    let alive = true
+    api.updateStatus().then((u) => alive && u && setUpdate(u))
+    const off = bridge.onUpdate((u) => setUpdate(u))
+    return () => {
+      alive = false
+      off()
+    }
+  }, [])
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div className="set-inline">
+        <span className="mono dim" style={{ fontSize: 12 }}>
+          v{update?.current || '…'}
+        </span>
+        <Btn
+          size="sm"
+          icon="refresh"
+          spinning={checking}
+          disabled={checking}
+          onClick={async () => {
+            setChecking(true)
+            const res = await api.updateCheck()
+            setChecking(false)
+            if (res && res.phase === 'current') onToast('Uygulama güncel.', 'ok')
+            if (res && res.phase === 'error') onToast(res.message, 'error')
+          }}
+        >
+          Şimdi denetle
+        </Btn>
+        {update && update.phase === 'available' ? (
+          <Btn size="sm" variant="primary" icon="download" onClick={() => api.updateInstall()}>
+            v{update.latest} kur
+          </Btn>
+        ) : null}
+      </div>
+      <Toggle checked={auto} onChange={onAuto} label="Açılışta ve birkaç saatte bir yeni sürüm ara" />
+      {update && update.phase === 'error' && update.message ? (
+        <div className="set-hint" style={{ marginTop: 0, color: 'var(--bad)' }}>{update.message}</div>
+      ) : null}
+      <TokenField has={!!update?.hasToken} onToast={onToast} onSaved={setUpdate} />
+    </div>
+  )
+}
+
+/**
+ * Only needed while the repository is private. The value is sent once to the
+ * main process, sealed with the OS keystore there, and never shown again.
+ */
+function TokenField({
+  has,
+  onToast,
+  onSaved,
+}: {
+  has: boolean
+  onToast: (message: string, kind?: 'info' | 'warn' | 'error' | 'ok') => void
+  onSaved: (u: UpdateState) => void
+}) {
+  const [value, setValue] = useState('')
+  return (
+    <div className="set-inline">
+      <input
+        className="input wide"
+        type="password"
+        value={value}
+        spellCheck={false}
+        placeholder={has ? 'GitHub anahtarı kayıtlı (değiştirmek için yenisini yaz)' : 'Gizli depo için GitHub anahtarı (isteğe bağlı)'}
+        onChange={(e) => setValue(e.target.value)}
+      />
+      <Btn
+        size="sm"
+        disabled={!value.trim()}
+        onClick={async () => {
+          const res = await api.updateSetToken(value)
+          setValue('')
+          if (res) {
+            onSaved(res)
+            onToast('GitHub anahtarı şifreli olarak kaydedildi.', 'ok')
+          }
+        }}
+      >
+        Kaydet
+      </Btn>
+      {has ? (
+        <Btn
+          size="sm"
+          variant="ghost"
+          onClick={async () => {
+            const res = await api.updateSetToken('')
+            if (res) onSaved(res)
+          }}
+        >
+          Sil
+        </Btn>
+      ) : null}
     </div>
   )
 }

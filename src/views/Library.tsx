@@ -6,6 +6,7 @@ import { T } from '../strings'
 import type { AppState, Category, Download, Outlook } from '../types'
 import { Btn, Chip, Empty, Icon, IconBtn, Menu, MenuItem, Meter, Modal, Thumb } from '../components/ui'
 import SubtitlePicker from '../components/SubtitlePicker'
+import { useFileThumb } from '../thumbs'
 
 const ACTIVE = new Set(['running', 'queued', 'paused'])
 const PROBLEM = new Set(['error', 'canceled'])
@@ -40,7 +41,8 @@ export default function Library({
   onToast,
   onOpenSettings,
 }: Props) {
-  const [pendingRemove, setPendingRemove] = useState<Download | null>(null)
+  const [pendingRemove, setPendingRemove] = useState<Download[] | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [alsoDeleteFile, setAlsoDeleteFile] = useState(false)
   const [subtitleFor, setSubtitleFor] = useState<Download | null>(null)
   const [vaulting, setVaulting] = useState<string | null>(null)
@@ -67,40 +69,9 @@ export default function Library({
   }, [downloads, query, category, categoryById])
 
   const active = filtered.filter((d) => ACTIVE.has(d.status))
+  const missingCount = filtered.filter((d) => d.status === 'done' && d.missing).length
   const done = filtered.filter((d) => d.status === 'done')
   const problems = filtered.filter((d) => PROBLEM.has(d.status))
-
-  /**
-   * Half-watched files, most recent first.
-   *
-   * The position is already recorded for every file the app's own player opens;
-   * this is just the shelf that makes it reachable. Two deliberate exclusions.
-   * Vault entries, because their names only exist while the vault is unlocked and
-   * the point of putting something in there was that it does not turn up in a
-   * list like this. And anything whose library record is gone: clearing a row is
-   * a decision, and a shelf that puts the title back on screen afterwards would
-   * be quietly undoing it.
-   */
-  const continueWatching = useMemo(() => {
-    const positions = state.positions || {}
-    const byPath = new Map(downloads.filter((d) => d.filePath).map((d) => [d.filePath as string, d]))
-    return Object.entries(positions)
-      .filter(([key]) => key.startsWith('file:'))
-      .map(([key, value]) => ({ download: byPath.get(key.slice(5)), filePath: key.slice(5), ...value }))
-      .filter((entry) => entry.download && entry.at > 0)
-      .map((entry) => ({
-        filePath: entry.filePath,
-        at: entry.at,
-        duration: entry.duration,
-        seen: entry.seen,
-        title: (entry.download as Download).title,
-        thumbnail: (entry.download as Download).thumbnail,
-      }))
-      .sort((a, b) => (b.seen || 0) - (a.seen || 0))
-      .slice(0, 6)
-  }, [state.positions, downloads])
-
-  const showShelf = continueWatching.length > 0 && !query.trim() && !category
 
   if (!downloads.length) {
     return (
@@ -132,15 +103,46 @@ export default function Library({
     )
   }
 
+  const liveSelected = new Set(filtered.filter((d) => selected.has(d.id)).map((d) => d.id))
+  const toggle = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  const setMany = (ids: string[], on: boolean) =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      for (const id of ids) {
+        if (on) next.add(id)
+        else next.delete(id)
+      }
+      return next
+    })
+  const askRemove = (list: Download[]) => {
+    setAlsoDeleteFile(deletePolicy === 'always' && list.some((d) => !!d.filePath && !d.missing))
+    setPendingRemove(list)
+  }
+  const sectionSelect = (list: Download[]) => {
+    const ids = list.map((d) => d.id)
+    const all = ids.length > 0 && ids.every((id) => liveSelected.has(id))
+    return (
+      <label className="dl-check" title={all ? T.library.selectNone : T.library.selectAll}>
+        <input type="checkbox" checked={all} onChange={() => setMany(ids, !all)} />
+      </label>
+    )
+  }
+
   const rowProps = {
     categories: state.categories,
+    selected: liveSelected,
+    selecting: liveSelected.size > 0,
+    onToggle: toggle,
     categoryById,
     vaultingId: vaulting,
     outlook,
-    onRemove: (d: Download) => {
-      setAlsoDeleteFile(deletePolicy === 'always' && !!d.filePath)
-      setPendingRemove(d)
-    },
+    onRemove: (d: Download) => askRemove([d]),
     onFindSubtitle: (d: Download) => setSubtitleFor(d),
     onToVault: async (d: Download) => {
       setVaulting(d.id)
@@ -153,48 +155,50 @@ export default function Library({
     },
   }
 
+  const selectedList = filtered.filter((d) => liveSelected.has(d.id))
+
   return (
     <>
-      {showShelf ? (
-        <section className="section">
-          <div className="section-head">
-            <span className="label">{T.library.continueWatching}</span>
-            <span className="count">{continueWatching.length}</span>
-          </div>
-          <div className="shelf">
-            {continueWatching.map((entry) => (
-              <button
-                key={entry.filePath}
-                type="button"
-                className="shelf-card"
-                title={entry.filePath}
-                onClick={() => api.playFile(entry.filePath)}
-              >
-                <Thumb src={entry.thumbnail} duration={fmt.duration(entry.duration || null)} />
-                <span className="shelf-title clamp2">{entry.title}</span>
-                <span className="shelf-meta">
-                  {fmt.duration(entry.at)}
-                  {entry.duration ? ` / ${fmt.duration(entry.duration)}` : ''}
-                </span>
-                <span className="shelf-bar">
-                  <span
-                    style={{
-                      width: entry.duration
-                        ? `${Math.min(100, (entry.at / entry.duration) * 100)}%`
-                        : '0%',
-                    }}
-                  />
-                </span>
-              </button>
+      {selectedList.length ? (
+        <div className="bulk-bar">
+          <span className="grow">
+            <b>{selectedList.length}</b> {T.library.selectedCount}
+          </span>
+          <select
+            className="select compact"
+            value=""
+            onChange={(e) => {
+              const value = e.target.value
+              if (!value) return
+              api.setDownloadCategory(
+                selectedList.map((d) => d.id),
+                value === '__none__' ? null : value
+              )
+              onToast(T.library.categorySet, 'ok')
+            }}
+          >
+            <option value="">{T.library.setCategory}…</option>
+            <option value="__none__">{T.nav.uncategorized}</option>
+            {state.categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
             ))}
-          </div>
-        </section>
+          </select>
+          <Btn size="sm" icon="trash" variant="danger" onClick={() => askRemove(selectedList)}>
+            {T.library.removeSelected}
+          </Btn>
+          <Btn size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+            {T.library.selectNone}
+          </Btn>
+        </div>
       ) : null}
 
       {active.length ? (
         <Section
           title={T.library.active}
           count={active.length}
+          select={sectionSelect(active)}
           action={
             outlook.total ? (
               <span className="dim" style={{ fontSize: 12 }}>
@@ -213,10 +217,26 @@ export default function Library({
         <Section
           title={T.library.finished}
           count={done.length}
+          select={sectionSelect(done)}
           action={
-            <Btn size="sm" variant="ghost" icon="trash" onClick={() => api.clearDownloads('done')}>
-              {T.library.clearDone}
-            </Btn>
+            <>
+              {missingCount ? (
+                <Btn
+                  size="sm"
+                  variant="ghost"
+                  icon="alert"
+                  onClick={async () => {
+                    const removed = await api.clearMissing()
+                    if (removed) onToast(`${removed} ${T.library.missingCleared}`, 'ok')
+                  }}
+                >
+                  {T.library.clearMissing} ({missingCount})
+                </Btn>
+              ) : null}
+              <Btn size="sm" variant="ghost" icon="trash" onClick={() => api.clearDownloads('done')}>
+                {T.library.clearDone}
+              </Btn>
+            </>
           }
         >
           {done.map((d) => (
@@ -229,6 +249,7 @@ export default function Library({
         <Section
           title={T.library.problems}
           count={problems.length}
+          select={sectionSelect(problems)}
           action={
             <Btn size="sm" variant="ghost" icon="trash" onClick={() => api.clearDownloads('failed')}>
               {T.library.clearFailed}
@@ -252,16 +273,22 @@ export default function Library({
 
       {pendingRemove ? (
         <Modal
-          title={T.confirm.removeDownload}
+          title={
+            pendingRemove.length > 1
+              ? `${pendingRemove.length} ${T.confirm.removeMany}`
+              : T.confirm.removeDownload
+          }
           onClose={() => setPendingRemove(null)}
           footer={
             <>
               <Btn onClick={() => setPendingRemove(null)}>{T.confirm.cancel}</Btn>
               <Btn
                 variant="primary"
-                onClick={() => {
-                  api.removeDownload(pendingRemove.id, alsoDeleteFile)
+                onClick={async () => {
+                  const ids = pendingRemove.map((d) => d.id)
                   setPendingRemove(null)
+                  await api.removeDownloads(ids, alsoDeleteFile && deletePolicy !== 'never')
+                  setMany(ids, false)
                 }}
               >
                 {T.confirm.confirm}
@@ -278,7 +305,7 @@ export default function Library({
               <input
                 type="checkbox"
                 checked={alsoDeleteFile}
-                disabled={!pendingRemove.filePath}
+                disabled={!pendingRemove.some((d) => d.filePath && !d.missing)}
                 onChange={(e) => setAlsoDeleteFile(e.target.checked)}
               />
               <span className="toggle-track" />
@@ -297,16 +324,19 @@ function Section({
   title,
   count,
   action,
+  select,
   children,
 }: {
   title: string
   count: number
   action?: ReactNode
+  select?: ReactNode
   children: ReactNode
 }) {
   return (
     <section className="section">
       <div className="section-head">
+        {select}
         <span className="label">{title}</span>
         <span className="count">{count}</span>
         <span className="spacer" />
@@ -320,6 +350,9 @@ function Section({
 function Row({
   download: d,
   categories,
+  selected,
+  selecting,
+  onToggle,
   categoryById,
   vaultingId,
   outlook,
@@ -329,6 +362,9 @@ function Row({
 }: {
   download: Download
   categories: Category[]
+  selected: Set<string>
+  selecting: boolean
+  onToggle: (id: string) => void
   categoryById: Map<string, Category>
   vaultingId: string | null
   outlook: Outlook
@@ -344,6 +380,16 @@ function Row({
   const stage = d.stage && d.stage !== 'downloading' ? STAGE_LABEL[d.stage] : null
 
   const tone = d.status === 'done' ? 'done' : failed ? 'bad' : paused ? 'paused' : 'running'
+  const playable = d.status === 'done' && !!d.filePath && !d.missing
+  // A frame from the file itself once it exists; the site's picture until then.
+  const localThumb = useFileThumb(playable && !d.audioOnly ? d.filePath : null, d.duration)
+  const isSelected = selected.has(d.id)
+  // While picking several, a click on the row picks it; otherwise a finished
+  // video plays, which is what clicking a video should do.
+  const onRowClick = () => {
+    if (selecting) onToggle(d.id)
+    else if (playable) api.playFile(d.filePath as string)
+  }
 
   // The queue-aware figure when there is one: it knows this transfer is sharing
   // the line, and that the ones behind it are waiting for a slot. The engine's
@@ -360,11 +406,24 @@ function Row({
   const sizeIsEstimate = shownSize !== null && d.fileSize == null && d.total == null
 
   return (
-    <div className={`dl${running ? ' running' : ''}`}>
-      <Thumb src={d.thumbnail} duration={fmt.duration(d.duration)} audio={d.audioOnly} />
+    <div className={`dl${running ? ' running' : ''}${isSelected ? ' selected' : ''}`}>
+      <label className="dl-check" onClick={(e) => e.stopPropagation()}>
+        <input type="checkbox" checked={isSelected} onChange={() => onToggle(d.id)} />
+      </label>
+      <div
+        className={playable || selecting ? 'dl-play-hit' : undefined}
+        onClick={onRowClick}
+        title={playable && !selecting ? T.library.play : undefined}
+      >
+        <Thumb src={localThumb || d.thumbnail} duration={fmt.duration(d.duration)} audio={d.audioOnly} />
+      </div>
 
       <div className="dl-ident">
-        <span className="dl-title clamp2" title={d.title}>
+        <span
+          className={`dl-title clamp2${playable || selecting ? ' dl-play-hit' : ''}`}
+          title={d.title}
+          onClick={onRowClick}
+        >
           {d.title}
         </span>
 
@@ -427,11 +486,18 @@ function Row({
           </>
         ) : null}
 
-        {d.status === 'done' && d.filePath ? (
+        {d.status === 'done' && d.missing ? (
+          <span className="dl-missing">
+            <Icon name="alert" size={12} />
+            {T.library.missingFile}
+          </span>
+        ) : null}
+
+        {playable ? (
           <button
             type="button"
             className="dl-path truncate"
-            title={d.filePath}
+            title={d.filePath ?? undefined}
             onClick={() => api.revealFile(d.filePath as string)}
           >
             {fmt.shortPath(d.filePath, 64)}
@@ -442,7 +508,7 @@ function Row({
           <span className="dl-path">{T.library.fileMissing}</span>
         ) : null}
 
-        {d.subtitlePath ? (
+        {d.subtitlePath || d.subtitleLanguage ? (
           <span className="dl-sub mono">
             <Icon name="captions" size={12} />
             {(d.subtitleLanguage || 'srt').toUpperCase()} altyazı eklendi
@@ -465,7 +531,10 @@ function Row({
           <IconBtn icon="x" title={T.library.cancel} variant="danger" onClick={() => api.cancel(d.id)} />
         ) : null}
         {failed ? <IconBtn icon="refresh" title={T.library.retry} onClick={() => api.retry(d.id)} /> : null}
-        {d.status === 'done' && d.filePath ? (
+        {d.status === 'done' && d.missing ? (
+          <IconBtn icon="download" title={T.library.redownload} onClick={() => api.redownload(d.id)} />
+        ) : null}
+        {playable ? (
           <>
             <IconBtn
               icon="play"
@@ -506,7 +575,7 @@ function Row({
                 </MenuItem>
               ))}
               <div className="menu-sep" />
-              {d.status === 'done' && d.filePath ? (
+              {playable ? (
                 <MenuItem
                   icon="captions"
                   onClick={() => {
@@ -517,7 +586,7 @@ function Row({
                   {T.subs.find}
                 </MenuItem>
               ) : null}
-              {d.status === 'done' && d.filePath ? (
+              {playable ? (
                 <MenuItem
                   icon="lock"
                   onClick={() => {
@@ -528,7 +597,7 @@ function Row({
                   {vaultingId === d.id ? T.library.movingToVault : T.library.toVault}
                 </MenuItem>
               ) : null}
-              {d.status === 'done' && d.filePath ? (
+              {playable ? (
                 <MenuItem
                   icon="play"
                   onClick={() => {

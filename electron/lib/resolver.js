@@ -246,7 +246,7 @@ function decodeHexEscapes(text) {
  * format list, subtitles and metadata.
  */
 const EMBED_HOST =
-  /^https?:\/\/(?:[\w-]+\.)*(?:youtube\.com\/embed|youtube-nocookie\.com\/embed|youtu\.be|player\.vimeo\.com|dailymotion\.com\/(?:embed|player)|ok\.ru\/videoembed|vk\.com\/video_ext|facebook\.com\/plugins\/video|player\.twitch\.tv|streamable\.com|sproutvideo\.com|wistia\.(?:com|net)|players\.brightcove\.net|cdn\.jwplayer\.com|content\.jwplatform\.com|kaltura\.com|rutube\.ru\/play|bitchute\.com\/embed|odysee\.com\/\$\/embed|archive\.org\/embed|w\.soundcloud\.com\/player|iframe\.mediadelivery\.net|embed\.redtube|players\.akamai)/i
+  /^https?:\/\/(?:[\w-]+\.)*(?:youtube\.com\/embed|youtube-nocookie\.com\/embed|youtu\.be|player\.vimeo\.com|dailymotion\.com\/(?:embed|player)|ok\.ru\/videoembed|vk\.com\/video_ext|facebook\.com\/plugins\/video|player\.twitch\.tv|streamable\.com|sproutvideo\.com|wistia\.(?:com|net)|players\.brightcove\.net|cdn\.jwplayer\.com|content\.jwplatform\.com|kaltura\.com|rutube\.ru\/play|bitchute\.com\/embed|odysee\.com\/\$\/embed|archive\.org\/embed|w\.soundcloud\.com\/player|iframe\.mediadelivery\.net|embed\.redtube|players\.akamai|rumble\.com\/embed|geo\.dailymotion\.com\/player|tiktok\.com\/embed|embed\.ted\.com|[\w.-]+\/videos\/embed\/[0-9a-f-]{8,}|my\.mail\.ru\/video\/embed|coub\.com\/embed)/i
 
 /**
  * Watch URL -> embed URL.
@@ -655,19 +655,75 @@ function originOf(url) {
   }
 }
 
+/**
+ * Players a page offers, whether as an iframe or as a button that will load one.
+ *
+ * Besides real iframes (and lazy ones, and iframe markup written inside script
+ * strings with escaped quotes), this reads the "alternative player" switches a
+ * great many streaming sites use: a row of buttons whose data attribute holds the
+ * embed address — often base64'd — and which only becomes an iframe when clicked.
+ * Each of those is a player we can open directly, without clicking anything.
+ */
+const ALT_PLAYER_ATTR =
+  /\bdata-(?:src|frame|iframe|embed|link|url|player|video|lazy-src|lazy|href|source|target|hash|id)\s*=\s*["']([^"']{8,600})["']/gi
+
+function decodeMaybeBase64(value) {
+  const v = String(value).trim()
+  if (/^https?:\/\//i.test(v) || v.startsWith('//')) return v
+  if (/^[A-Za-z0-9+/_-]{16,}={0,2}$/.test(v)) {
+    try {
+      const decoded = Buffer.from(v.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')
+      if (/^https?:\/\/[^\s"'<>]+$/i.test(decoded.trim())) return decoded.trim()
+      const inner = decoded.match(/<iframe[^>]+src=["']([^"']+)["']/i)
+      if (inner) return inner[1]
+    } catch {
+      /* not base64 after all */
+    }
+  }
+  return null
+}
+
 function collectIframes(html, baseUrl) {
   const urls = []
-  const re = /<iframe\b[^>]*?\b(?:src|data-src|data-litespeed-src)\s*=\s*["']([^"']+)["']/gi
-  let match
-  while ((match = re.exec(html)) !== null) {
+  // Iframe markup inside a JS or JSON string arrives with escaped quotes.
+  const text = normaliseText(html).replace(/\\"/g, '"').replace(/\\'/g, "'")
+  const push = (raw) => {
     try {
-      const abs = new URL(normaliseText(match[1]), baseUrl).href
-      if (isHttp(abs) && !blocker.shouldBlock(abs)) urls.push(abs)
+      const abs = new URL(decodeEntities(raw), baseUrl).href
+      if (isHttp(abs) && !blocker.shouldBlock(abs) && !urls.includes(abs)) urls.push(abs)
     } catch {
       /* malformed src */
     }
   }
-  return urls
+  const re = /<iframe\b[^>]*?\b(?:src|data-src|data-litespeed-src|data-lazy-src)\s*=\s*["']([^"']+)["']/gi
+  let match
+  while ((match = re.exec(text)) !== null) push(match[1])
+
+  const page = (() => {
+    try {
+      return new URL(baseUrl).hostname
+    } catch {
+      return ''
+    }
+  })()
+  while ((match = ALT_PLAYER_ATTR.exec(text)) !== null) {
+    const decoded = decodeMaybeBase64(match[1])
+    if (!decoded) continue
+    let abs
+    try {
+      abs = new URL(decodeEntities(decoded), baseUrl)
+    } catch {
+      continue
+    }
+    // An address on another host, or a path that reads like a player, is an
+    // embed; an image or a stylesheet on the page's own host is not.
+    if (/\.(?:jpe?g|png|gif|webp|svg|css|js|woff2?)(?:\?|$)/i.test(abs.pathname)) continue
+    if (abs.hostname === page && !/(embed|player|iframe|video|watch|play|source|ajax)/i.test(abs.pathname + abs.search)) {
+      continue
+    }
+    push(abs.href)
+  }
+  return urls.slice(0, 24)
 }
 
 function pageTitleOf(html) {
@@ -943,12 +999,32 @@ const HOOK_SCRIPT = `(() => {
 
     var interesting = /\\.(m3u8|mpd|mp4|webm|m4v|mkv|mov|flv|mp3|m4a)(\\?|#|$)|\\/(?:manifest|playlist|config|master|index|source|stream|video)(?:[./?]|$)/i;
 
+    var remember = function (abs) {
+      if (window.__aioSeen.length < 80 && window.__aioSeen.indexOf(abs) === -1) window.__aioSeen.push(abs);
+    };
+    // Relative addresses count too: a player that requests "/hls/master" is
+    // asking for exactly what we are looking for.
+    var absolute = function (value) {
+      try { return new URL(String(value), location.href).href; } catch (e) { return ''; }
+    };
     var note = function (value) {
       try {
-        if (typeof value !== 'string' || value.slice(0, 4) !== 'http') return;
-        if (!interesting.test(value)) return;
-        if (window.__aioSeen.length < 80 && window.__aioSeen.indexOf(value) === -1) {
-          window.__aioSeen.push(value);
+        if (typeof value !== 'string' || !value || value.slice(0, 5) === 'blob:' || value.slice(0, 5) === 'data:') return;
+        var abs = absolute(value);
+        if (abs.slice(0, 4) !== 'http' || !interesting.test(abs)) return;
+        remember(abs);
+      } catch (e) {}
+    };
+    // Some sites serve the playlist from an address that looks like nothing —
+    // "/api/v2/x?id=9", "seg.txt", "image.png" — so the body is the only
+    // reliable tell. A playlist starts with #EXTM3U; a DASH manifest has <MPD.
+    var sniff = function (url, text) {
+      try {
+        if (typeof text !== 'string') return;
+        var head = text.slice(0, 600);
+        if (head.indexOf('#EXTM3U') !== -1 || /<MPD[\s>]/.test(head)) {
+          var abs = absolute(url);
+          if (abs.slice(0, 4) === 'http') remember(abs);
         }
       } catch (e) {}
     };
@@ -956,20 +1032,41 @@ const HOOK_SCRIPT = `(() => {
     var originalFetch = window.fetch;
     if (typeof originalFetch === 'function') {
       window.fetch = function (input) {
-        try { note(typeof input === 'string' ? input : input && input.url); } catch (e) {}
-        return originalFetch.apply(this, arguments);
+        var url = '';
+        try { url = typeof input === 'string' ? input : input && input.url; note(url); } catch (e) {}
+        var result = originalFetch.apply(this, arguments);
+        try {
+          result.then(function (res) {
+            try {
+              var type = (res.headers.get('content-type') || '').toLowerCase();
+              var size = Number(res.headers.get('content-length') || 0);
+              if (/video\/|audio\/|image\/|font\//.test(type) || size > 2000000) return;
+              res.clone().text().then(function (t) { sniff(res.url || url, t); }).catch(function () {});
+            } catch (e) {}
+          }).catch(function () {});
+        } catch (e) {}
+        return result;
       };
     }
 
     var originalOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function (method, url) {
-      try { note(url); } catch (e) {}
+      try {
+        note(url);
+        var xhr = this;
+        xhr.addEventListener('load', function () {
+          try {
+            if (xhr.responseType === '' || xhr.responseType === 'text') sniff(xhr.responseURL || url, xhr.responseText);
+          } catch (e) {}
+        });
+      } catch (e) {}
       return originalOpen.apply(this, arguments);
     };
 
-    var descriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
-    if (descriptor && descriptor.set) {
-      Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+    var hookSrc = function (proto) {
+      var descriptor = proto && Object.getOwnPropertyDescriptor(proto, 'src');
+      if (!descriptor || !descriptor.set) return;
+      Object.defineProperty(proto, 'src', {
         configurable: true,
         enumerable: descriptor.enumerable,
         get: descriptor.get,
@@ -978,7 +1075,17 @@ const HOOK_SCRIPT = `(() => {
           return descriptor.set.call(this, value);
         },
       });
-    }
+    };
+    hookSrc(HTMLMediaElement.prototype);
+    hookSrc(window.HTMLSourceElement && HTMLSourceElement.prototype);
+
+    var originalSetAttribute = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function (name, value) {
+      try {
+        if (String(name).toLowerCase() === 'src' && /^(VIDEO|AUDIO|SOURCE)$/.test(this.tagName)) note(value);
+      } catch (e) {}
+      return originalSetAttribute.apply(this, arguments);
+    };
     return 0;
   } catch (e) { return -1; }
 })()`

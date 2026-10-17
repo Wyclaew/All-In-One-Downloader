@@ -6,6 +6,7 @@ export const T = {
   appName: 'All in One Downloader',
 
   nav: {
+    home: 'Ana sayfa',
     sources: 'Kaynaklar',
     library: 'Kitaplık',
     vault: 'Kasa',
@@ -57,6 +58,7 @@ export const T = {
   },
 
   item: {
+    missing: 'Dosya yok',
     download: 'İndir',
     queued: 'Sırada',
     inQueue: 'Sırada',
@@ -80,6 +82,26 @@ export const T = {
   quality: {
     best: 'En iyi',
     audio: 'Sadece ses',
+  },
+
+  home: {
+    continue: 'İzlemeye devam et',
+    all: 'Videoların',
+    play: 'Oynat',
+    resume: 'Kaldığın yerden oynat',
+    watched: 'İZLENDİ',
+    filterAll: 'Tümü',
+    filterNew: 'İzlenmemiş',
+    filterProgress: 'Yarım kalan',
+    filterWatched: 'İzlenen',
+    sortNew: 'En yeni',
+    sortRecent: 'Son izlenen',
+    sortOld: 'En eski',
+    sortName: 'Ada göre',
+    sortSize: 'Boyuta göre',
+    none: 'Bu filtreye uyan video yok.',
+    emptyTitle: 'Henüz izlenecek bir şey yok',
+    emptyBody: 'İndirdiğin videolar burada kapaklarıyla görünür; tıklayınca uygulamanın oynatıcısında açılır ve kaldığın yeri hatırlar.',
   },
 
   library: {
@@ -114,6 +136,15 @@ export const T = {
     stageStarting: 'Başlıyor',
     of: '/',
     fileMissing: 'Dosya bulunamadı',
+    missingFile: 'Dosya diskte yok — silinmiş ya da taşınmış',
+    redownload: 'Yeniden indir',
+    clearMissing: 'Eksikleri temizle',
+    missingCleared: 'eksik kayıt temizlendi.',
+    selectAll: 'Hepsini seç',
+    selectNone: 'Seçimi bırak',
+    selectedCount: 'kayıt seçili',
+    removeSelected: 'Seçilenleri sil',
+    categorySet: 'Kategori atandı.',
   },
 
   empty: {
@@ -142,7 +173,7 @@ export const T = {
     subsLangsHint: 'Sırayla denenir. Örn. tr,en',
     subsAuto: 'İndirme bitince uygun altyazıyı kendiliğinden ekle',
     subsSync: 'Ada göre bulunan altyazıyı sesle hizala',
-    subsEmbed: 'Altyazıyı video dosyasına göm',
+    subsEmbed: 'Altyazıyı videonun içine göm (klasörde ayrı .srt/.vtt dosyası kalmaz)',
     subsSkipSame: 'Videonun sesi zaten o dildeyse altyazı ekleme',
     blocker: 'Reklam ve izleyici engelleme',
     blockerHint:
@@ -292,7 +323,14 @@ export const T = {
       'Kasaya attığın videolar diskte şifreli durur: dosya adları rastgele kimliklere döner, içerikleri okunamaz. Sadece burada, şifreni girerek açabilirsin.',
     passphrase: 'Şifre',
     passphraseAgain: 'Şifre (yeniden)',
-    tooShort: 'En az 6 karakter.',
+    tooShort: 'En az 8 karakter.',
+    changeTitle: 'Şifreyi değiştir',
+    currentPass: 'Şimdiki şifre',
+    newPass: 'Yeni şifre',
+    newPassAgain: 'Yeni şifre (yeniden)',
+    changed: 'Kasa şifresi değişti. Dosyalar yerinde; sadece anahtarın kilidi yenilendi.',
+    upgrading: (n: number) => `Kasa daha güçlü biçime çevriliyor — ${n} dosya kaldı. Bu sırada da kullanabilirsin.`,
+    retry: (n: number) => `Çok fazla yanlış deneme — ${n} sn sonra tekrar dene.`,
     mismatch: 'İki şifre aynı değil.',
     noRecovery:
       'Bu şifrenin bir kopyası hiçbir yerde tutulmuyor. Unutursan kasadaki dosyalar kurtarılamaz — kurtarma yolu bırakmak, şifreyi baştan anlamsız kılardı.',
@@ -304,8 +342,8 @@ export const T = {
     unlocked: 'Kasa açıldı.',
     lock: 'Kilitle',
     open: 'Aç',
-    opened: 'Dosya şifresi çözülüp oynatıcıya verildi. Kasayı kilitleyince kopya silinir.',
-    openExternal: 'Sistem oynatıcısında aç (adı geçmişe düşer)',
+    opened: 'Kasa oynatıcısı açıldı — video bellekte çözülüyor, diske hiçbir kopya yazılmıyor.',
+    openExternal: 'Sistem oynatıcısında aç (geçici şifresiz kopya yazar)',
     export: 'Şifresiz kopya çıkar',
     remove: 'Kasadan sil',
     removeTitle: 'Kasadan silinsin mi?',
@@ -325,12 +363,14 @@ export const T = {
       'Bu klasörü yedeklersen kasan da yedeklenmiş olur; içindekiler zaten şifreli. İçeride rastgele adlı bloklar, bir de şifreli dizin dosyası görürsün — adları ve başlıkları tutan yer orası. Bu dosyaları elle silersen o kayıtlar geri gelmez.',
     howTitle: 'Güvenlik katmanları',
     how: [
-      'Her dosya AES-256-GCM ile, kendine ait rastgele bir nonce ile şifrelenir. Doğrulama etiketi dosyaya iliştirilir: kurcalanan bir dosya bozuk çözülmez, hiç açılmaz.',
-      'Şifreden anahtar scrypt ile türetilir (N=32768, r=8) ve rastgele bir tuz kullanılır. Her deneme yaklaşık 100 ms ve 32 MB bellek ister — deneyerek bulmayı pahalı kılar.',
-      'Dosya adları diskte rastgele kimliklerdir. Gerçek adlar, başlıklar ve boyutlar yalnızca şifreli dizinde durur; klasöre bakan biri ne olduğunu göremez.',
-      'Anahtar sadece ana sürecin belleğinde, sadece kasa açıkken durur. Diske yazılmaz, arayüze geçmez; kilitlenince bellekteki kopya üzerine sıfır yazılır.',
-      'Şifre kontrolü kayıtlı bir özetle karşılaştırma değil: yanlış şifre GCM doğrulamasında düşer.',
-      'Bir dosyayı oynatmak, onu geçici ve yalnızca sana açık bir klasöre şifresiz kopyalamayı gerektirir. O kopyalar kasa kilitlenince, uygulama kapanınca ve boşta kalma süresi dolunca silinir. Kasa açıkken bilgisayarının başındaki birine karşı koruma sağlamaz.',
+      'Her dosya 1 MB\'lık parçalara bölünüp her parça ayrı AES-256-GCM mesajı olarak şifrelenir. Parça sırası, dosya boyutu ve "son parça" işareti her parçanın doğrulamasına bağlıdır: tek bir bayt değiştirmek, parçaların yerini değiştirmek ya da dosyayı kısaltmak açılmasını engeller.',
+      'Oynatırken diske hiçbir şifresiz kopya yazılmaz. Oynatıcı yalnızca izlediğin aralığı ister; o parçalar bellekte çözülür ve atılır. Uygulama çökse bile geride okunabilir bir dosya kalmaz.',
+      'Dosyaları rastgele bir 256 bitlik ana anahtar şifreler. Bu anahtar diskte yalnızca şifrenden türetilen anahtarla sarılmış hâlde durur. Türetme scrypt ile yapılır (N=131072, r=8): her deneme yaklaşık 128 MB bellek ve yarım saniye ister — milyonlarca şifre denemeyi pratikte imkânsız kılar.',
+      'Şifre hiçbir yerde, özet olarak bile, saklanmaz. Yanlış şifre, ana anahtarın kilidinin doğrulamada düşmesinden anlaşılır. Üç yanlış denemeden sonra uygulama giderek uzayan süreler bekletir.',
+      'Dosya adları diskte rastgele kimliklerdir. Gerçek adlar, başlıklar, boyutlar ve kapak kareleri yalnızca şifreli dizinde ve şifreli bloklarda durur. Kasaya taşınan bir videonun kitaplıktaki kaydı, kapak karesi, altyazıları, izleme geçmişi ve tarayıcı önbelleğindeki kapağı da silinir.',
+      'Kasa boşta kaldığında, bilgisayar uykuya geçtiğinde ve ekran kilitlendiğinde kendiliğinden kilitlenir. Kilitlenince bellekteki anahtarların üzerine sıfır yazılır ve kasa oynatıcıları kapanır.',
+      'Şifreyi değiştirmek yalnızca ana anahtarın kilidini yeniler; dosyalara dokunmaz. Eski sürümlerde kurulmuş kasalar ilk açılışta otomatik olarak bu biçime çevrilir.',
+      'Korumadığı tek durum: kasa açıkken bilgisayarının başındaki biri. "Sistem oynatıcısında aç" ve "Şifresiz kopya çıkar" da bilerek düz dosya yazar.',
     ],
   },
 
@@ -338,6 +378,7 @@ export const T = {
     removeSource: 'Bu kaynağı ve altındaki listeyi kaldır?',
     removeSourceBody: 'İndirilmiş dosyalar silinmez, sadece liste kaybolur.',
     removeDownload: 'Bu kaydı sil?',
+    removeMany: 'kaydı sil?',
     removeDownloadBody: 'Diskteki dosyayı da silmek istersen aşağıdaki kutuyu işaretle.',
     removeRecordOnly:
       'Yalnızca kayıt silinecek; diskteki dosya yerinde kalır. (Ayarlar → Aktarım\'da "asla dosyayı silme" seçili.)',

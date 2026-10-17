@@ -1,7 +1,7 @@
 'use strict'
 
 const path = require('path')
-const { app, BrowserWindow, ipcMain, shell, dialog, clipboard, Menu } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, dialog, clipboard, Menu, powerMonitor } = require('electron')
 
 const store = require('./lib/store')
 const probe = require('./lib/probe')
@@ -14,11 +14,15 @@ const proxy = require('./lib/proxy')
 const userscripts = require('./lib/userscripts')
 const player = require('./lib/player')
 const tor = require('./lib/tor')
-const { uid, extractUrls, isProbablyUrl, safeName } = require('./lib/util')
+const locate = require('./lib/locate')
+const updater = require('./lib/updater')
+const { uid, extractUrls, isProbablyUrl } = require('./lib/util')
 
 // The player streams the file over a private scheme, and a scheme has to claim
 // its privileges before the app is ready — after that the list is frozen.
 player.registerScheme()
+// Lets the player list and switch the audio tracks of a dual-language file.
+app.commandLine.appendSwitch('enable-blink-features', 'AudioVideoTracks')
 
 // Load from the Vite dev server only when we were actually started by `npm run
 // dev`; a plain `electron .` should use the built bundle in dist/.
@@ -50,8 +54,11 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // The preload needs nothing but the IPC bridge, so the renderer runs in
+      // Chromium's sandbox like any web page would.
+      sandbox: true,
       spellcheck: false,
+      webviewTag: false,
     },
   })
 
@@ -68,11 +75,28 @@ function createWindow() {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url)
     return { action: 'deny' }
   })
+  // The only document this window may show is our own: the dev server in
+  // development, dist/index.html otherwise. Any other file:// page would get the
+  // full preload bridge.
+  const ownPage = require('url').pathToFileURL(path.join(__dirname, '..', 'dist', 'index.html')).href
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    const isLocal = url.startsWith(DEV_URL) || url.startsWith('file://')
+    const isLocal = (IS_DEV && url.startsWith(DEV_URL)) || url.split('#')[0].split('?')[0] === ownPage
     if (!isLocal) {
       event.preventDefault()
       if (/^https?:\/\//i.test(url)) shell.openExternal(url)
+    }
+  })
+
+  // Coming back to the window is when a file deleted in Finder in the meantime
+  // should show up as missing, not the next time someone clicks "play" on it.
+  let lastVerify = 0
+  mainWindow.on('focus', () => {
+    if (Date.now() - lastVerify < 5000) return
+    lastVerify = Date.now()
+    try {
+      downloader.verifyFiles()
+    } catch (err) {
+      console.error('[verify]', err)
     }
   })
 
@@ -108,8 +132,21 @@ function pushVault() {
 function forgetVaultedFile({ downloadId = null, filePath = null }) {
   const state = store.getState()
   const gone = state.downloads.filter(
-    (d) => (downloadId && d.id === downloadId) || (filePath && d.filePath === filePath)
+    (d) => (downloadId && d.id === downloadId) || (filePath && locate.samePath(d.filePath, filePath))
   )
+
+  // Every plain-text trace of the file, not just the library row: its poster
+  // frame, its kept subtitles, the watch history keyed by its path (which is its
+  // title), and the browser cache holding the site's thumbnail of it.
+  const paths = new Set([filePath, ...gone.map((d) => d.filePath)].filter(Boolean))
+  for (const p of paths) {
+    require('./lib/thumbs').forget(p)
+    subtitles.forgetStored(p)
+    store.forgetFile(p)
+  }
+  if (gone.some((d) => d.thumbnail) && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.session.clearCache().catch(() => {})
+  }
   if (!gone.length && !downloadId) return
 
   const urls = new Set(gone.map((d) => d.url).filter(Boolean))
@@ -137,14 +174,8 @@ function forgetVaultedFile({ downloadId = null, filePath = null }) {
 }
 
 
-async function playVaulted(id) {
-  const prepared = await vault.prepareEntry(id)
-  return player.open({
-    file: prepared.path,
-    title: prepared.title,
-    key: `vault:${id}`,
-    vault: true,
-  })
+function playVaulted(id) {
+  return player.openVault(id)
 }
 
 /**
@@ -157,34 +188,60 @@ async function playVaulted(id) {
  * first, then by the title the download was given.
  */
 function locateDownloadFile(download) {
+  return locate.locateDownload(download, store.getState().settings.downloadDir)
+}
+
+/**
+ * The real location of a library file, or a clear error.
+ *
+ * The folder button used to hand a dead path to the OS, which silently did
+ * nothing — so a file that had been moved looked like a button that was broken.
+ * Now the path is looked for, the record corrected if it is found, and the user
+ * told plainly if it is not.
+ */
+/**
+ * Whether the renderer may ask us to open or reveal `p`.
+ *
+ * shell.openPath runs whatever it is given — an application, a script — so a
+ * path from the interface is only honoured if it is something the app itself put
+ * there: the download folder or a file in it, a library file wherever it lives,
+ * or the vault folder (which only ever holds ciphertext).
+ */
+function mayTouch(p) {
+  if (!p || typeof p !== 'string') return false
+  const target = path.resolve(p).normalize('NFC')
+  const inside = (dir) => {
+    if (!dir) return false
+    const base = path.resolve(dir).normalize('NFC')
+    return target === base || target.startsWith(base + path.sep)
+  }
+  if (inside(store.getState().settings.downloadDir)) return true
+  if (inside(vault.status().dir)) return true
+  return store.getState().downloads.some((d) => d.filePath && locate.samePath(d.filePath, p))
+}
+
+function resolveLibraryPath(p) {
+  if (!mayTouch(p)) throw new Error('Bu konum uygulamanın yönettiği bir dosya değil.')
   const fs = require('fs')
-  if (!download) return null
-  if (download.filePath && fs.existsSync(download.filePath)) return download.filePath
-
-  const dir = store.getState().settings.downloadDir
-  const wanted = []
-  if (download.filePath) wanted.push(path.basename(download.filePath))
-  if (download.title) wanted.push(safeName(download.title))
-
-  let names = []
-  try {
-    names = fs.readdirSync(dir)
-  } catch {
-    return null
+  if (!p) throw new Error('Dosya yolu yok.')
+  if (fs.existsSync(p)) return p
+  const download = store.getState().downloads.find((d) => locate.samePath(d.filePath, p))
+  const found = locateDownloadFile(download || { filePath: p })
+  if (found) {
+    if (download) {
+      store.commit(() => {
+        download.filePath = found
+        download.missing = false
+      })
+    }
+    return found
   }
-
-  for (const want of wanted) {
-    const exact = names.find((n) => n === want)
-    if (exact) return path.join(dir, exact)
-    // Post-processing rewrites the extension, so compare on the stem — and
-    // anchor with the dot, or "Dune" would happily match "Dune 2.mp4".
-    const stem = path.basename(want, path.extname(want))
-    const sibling = names.find(
-      (n) => n.startsWith(`${stem}.`) && !n.endsWith('.part') && !n.endsWith('.ytdl')
-    )
-    if (sibling) return path.join(dir, sibling)
+  if (download && !download.missing) {
+    store.commit(() => {
+      download.missing = true
+    })
   }
-  return null
+  throw new Error('Dosya diskte yok — silinmiş ya da taşınmış. Kitaplıktan yeniden indirebilirsin.')
 }
 
 function toRenderer(action) {
@@ -361,6 +418,15 @@ function registerIpc() {
 
   /* ---- Tor, managed by us ------------------------------------------------ */
 
+  handle('update:status', () => updater.getStatus())
+  handle('update:check', () => updater.check({ manual: true }))
+  handle('update:install', () => updater.install())
+  // One way only: the token goes in, encrypted with the OS keystore, and never comes back out.
+  handle('update:setToken', (value) => {
+    updater.setToken(value)
+    return updater.getStatus()
+  })
+
   handle('tor:status', () => tor.getStatus())
   handle('tor:start', async () => {
     await tor.start()
@@ -493,6 +559,23 @@ function registerIpc() {
   handle('dl:cancel', (id) => downloader.cancel(id))
   handle('dl:retry', (id) => downloader.retry(id))
   handle('dl:remove', ({ id, deleteFile }) => downloader.remove(id, { deleteFile }))
+  handle('dl:removeMany', ({ ids, deleteFile }) => {
+    const list = Array.isArray(ids) ? ids : []
+    for (const id of list) downloader.remove(id, { deleteFile: !!deleteFile })
+    downloader.forgetMissing()
+    return list.length
+  })
+  handle('dl:verify', () => downloader.verifyFiles())
+  // Only for files the library knows about: this reads a file and hands back a
+  // picture of it, and the renderer has no business pointing that elsewhere.
+  handle('thumb:file', ({ path: p, duration } = {}) => {
+    const known = store.getState().downloads.some((d) => d.filePath && locate.samePath(d.filePath, p))
+    if (!known) return null
+    return require('./lib/thumbs').thumbFor(p, duration)
+  })
+  handle('folder:tidy', () => runTidy())
+  handle('dl:redownload', (id) => downloader.redownload(id))
+  handle('dl:clearMissing', () => downloader.clearMissing())
 
   handle('dl:category', ({ ids, categoryId }) => {
     const list = Array.isArray(ids) ? ids : [ids]
@@ -556,7 +639,13 @@ function registerIpc() {
     return true
   })
 
-  handle('settings:update', (patch) => {
+  handle('settings:update', (raw) => {
+    // Settings the interface has no business writing: an executable path the
+    // app will later spawn, a sealed credential, bookkeeping. A compromised page
+    // in the main window must not be able to turn a settings write into running
+    // a program of its choosing.
+    const patch = { ...(raw && typeof raw === 'object' ? raw : {}) }
+    for (const key of ['torPath', 'updateTokenSealed', 'settingsRev']) delete patch[key]
     store.commit((s) => {
       s.settings = { ...s.settings, ...patch }
     })
@@ -593,14 +682,18 @@ function registerIpc() {
     if (!p) throw new Error('Dosya yolu yok.')
     // The download folder is the one path that may legitimately not exist yet.
     if (p === store.getState().settings.downloadDir) store.ensureDownloadDir()
-    const err = await shell.openPath(p)
+    const target = p === store.getState().settings.downloadDir ? p : resolveLibraryPath(p)
+    // Opening is for media and folders; never hand the OS something it would run.
+    if (/\.(app|command|sh|bat|cmd|exe|msi|scpt|jar|pkg|dmg|ps1|vbs|js|py|lnk|url|webloc|terminal|workflow)$/i.test(target)) {
+      throw new Error('Bu dosya türü buradan açılmaz.')
+    }
+    const err = await shell.openPath(target)
     if (err) throw new Error(err)
     return true
   })
 
   handle('file:reveal', (p) => {
-    if (!p) throw new Error('Dosya yolu yok.')
-    shell.showItemInFolder(p)
+    shell.showItemInFolder(resolveLibraryPath(p))
     return true
   })
 
@@ -614,22 +707,11 @@ function registerIpc() {
   player.registerIpc()
 
   handle('file:play', async (filePath) => {
-    const fs = require('fs')
-    if (!filePath) throw new Error('Dosya yolu yok.')
-    // A record whose path went stale still has a file; find it rather than
-    // refusing to play something that is sitting in the download folder.
-    let file = filePath
-    if (!fs.existsSync(file)) {
-      const download = store.getState().downloads.find((d) => d.filePath === filePath)
-      file = locateDownloadFile(download) || ''
-      if (!file) throw new Error('Dosya bulunamadı.')
-      store.commit(() => {
-        if (download) download.filePath = file
-      })
-    }
+    const file = resolveLibraryPath(filePath)
+    const download = store.getState().downloads.find((d) => locate.samePath(d.filePath, file))
     return player.open({
       file,
-      title: path.basename(file),
+      title: download && download.title ? download.title : path.basename(file),
       key: `file:${file}`,
     })
   })
@@ -677,7 +759,10 @@ function registerIpc() {
       hashMatch,
       apiKey: settings.subtitleApiKey,
       sync: settings.syncSubtitles,
-      embedTrack: settings.embedSubtitleFile,
+      // Never rewrite a file a player is reading: its next range request would
+      // land in a different file. The subtitle waits in our folder instead,
+      // where that player finds it straight away.
+      embedTrack: settings.embedSubtitleFile !== false && !player.openFiles().has(videoPath),
     })
 
     store.commit(() => {
@@ -728,9 +813,20 @@ function registerIpc() {
   })
 
   handle('vault:unlock', async (passphrase) => {
-    await vault.unlock(passphrase)
+    try {
+      await vault.unlock(passphrase)
+    } catch (err) {
+      // The wait after repeated failures has to reach the screen too.
+      pushVault()
+      throw err
+    }
     vault.configure({ autoLockMinutes: store.getState().settings.vaultAutoLockMinutes })
     pushVault()
+    return vaultState()
+  })
+
+  handle('vault:changePassphrase', async ({ current, next } = {}) => {
+    await vault.changePassphrase(current, next)
     return vaultState()
   })
 
@@ -761,6 +857,9 @@ function registerIpc() {
       })
     }
 
+    // A player reading the file would lose it mid-film when the original is
+    // removed, and keep showing a title that is meant to be locked away.
+    player.closeFile(found)
     const entry = await vault.addFile(found, {
       title: download.title,
       site: download.site,
@@ -781,6 +880,7 @@ function registerIpc() {
     let added = 0
     for (const file of result.filePaths) {
       try {
+        player.closeFile(file)
         await vault.addFile(file, { title: path.basename(file) })
         // The picker can point at a file the library downloaded, and that record
         // would otherwise keep pointing at a path that no longer exists.
@@ -819,6 +919,37 @@ function registerIpc() {
   handle('vault:audit', () => vault.audit())
 }
 
+/** Clear old player pages and loose subtitles out of the download folder. */
+async function runTidy({ quiet = false } = {}) {
+  const tidy = require('./lib/tidy')
+  const state = store.getState()
+  const busy = player.openFiles()
+  for (const d of state.downloads) {
+    if (d.filePath && (d.status === 'running' || d.status === 'queued' || d.status === 'paused')) {
+      busy.add(d.filePath)
+    }
+  }
+  try {
+    const report = await tidy.tidyFolder(state.settings.downloadDir, { busy })
+    const total = report.pages + report.embedded + report.removed + report.moved
+    if (total || !quiet) {
+      const parts = []
+      if (report.embedded) parts.push(`${report.embedded} altyazı videonun içine gömüldü`)
+      if (report.removed) parts.push(`${report.removed} yinelenen altyazı dosyası kaldırıldı`)
+      if (report.moved) parts.push(`${report.moved} altyazı uygulamanın klasörüne taşındı`)
+      if (report.pages) parts.push(`${report.pages} eski oynat.html silindi`)
+      store.toast(
+        total ? `İndirme klasörü toparlandı: ${parts.join(', ')}.` : 'İndirme klasöründe toparlanacak bir şey yok.',
+        'ok'
+      )
+    }
+    return report
+  } catch (err) {
+    console.error('[tidy]', err)
+    return null
+  }
+}
+
 // ---- lifecycle -----------------------------------------------------------
 
 if (!app.requestSingleInstanceLock()) {
@@ -849,12 +980,30 @@ if (!app.requestSingleInstanceLock()) {
       player.closeVaultWindows()
       pushVault()
     })
+    vault.onChanged(() => pushVault())
+    // Plaintext a crashed run left behind from "open in the system player".
+    vault.sweepStaleTemps()
+    // Walking away from the machine should not leave the vault open: sleep and
+    // the screen lock both count as walking away.
+    for (const event of ['suspend', 'lock-screen']) {
+      powerMonitor.on(event, () => {
+        if (!vault.isUnlocked()) return
+        player.closeVaultWindows()
+        vault.lock({ reason: event })
+      })
+    }
     registerIpc()
     buildMenu()
     createWindow()
     await binaries.detectTools()
     store.send('state', store.getState())
+    downloader.verifyFiles()
     downloader.pumpQueue()
+    // What older versions left lying in the download folder — the player page
+    // and loose subtitle files — is cleared up once per launch, after the window
+    // is up so it never delays it.
+    setTimeout(() => runTidy({ quiet: true }), 8000)
+    updater.schedule()
     // Tor was left running last time: bring it back up so the proxy address in
     // settings keeps meaning something across a restart.
     tor.restoreIfWanted()

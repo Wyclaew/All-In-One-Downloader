@@ -38,7 +38,8 @@ function runJson(url, extraArgs, settings, trackKey = null) {
     } catch (err) {
       return reject(err)
     }
-    const args = [...baseArgs(settings), ...extraArgs, url]
+    // `--` so the address can only ever be read as an address, never as an option.
+    const args = [...baseArgs(settings), ...extraArgs, '--', url]
     const child = spawn(bin, args, { env: toolEnv(), windowsHide: true })
     if (trackKey) running.set(trackKey, child)
     let out = ''

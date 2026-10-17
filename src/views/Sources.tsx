@@ -491,7 +491,8 @@ function Row({
         ) : null}
 
         {status === 'queued' ? <Chip tone="signal">{T.item.inQueue}</Chip> : null}
-        {status === 'done' ? <Chip tone="ok">{T.item.done}</Chip> : null}
+        {status === 'done' && !download?.missing ? <Chip tone="ok">{T.item.done}</Chip> : null}
+        {status === 'done' && download?.missing ? <Chip tone="bad">{T.item.missing}</Chip> : null}
         {status === 'error' ? <Chip tone="bad">{T.item.failed}</Chip> : null}
 
         {idle ? (
@@ -534,11 +535,29 @@ function Row({
         {download && download.status === 'error' ? (
           <IconBtn icon="refresh" title={T.library.retry} onClick={() => api.retry(download.id)} />
         ) : null}
-        {download && download.status === 'done' && download.filePath ? (
+        {download && download.status === 'done' && download.filePath && !download.missing ? (
+          <>
+            <IconBtn
+              icon="play"
+              title={T.library.play}
+              onClick={() => api.playFile(download.filePath as string)}
+            />
+            <IconBtn
+              icon="folder"
+              title={T.library.reveal}
+              onClick={() => api.revealFile(download.filePath as string)}
+            />
+          </>
+        ) : null}
+        {/* Finished once, but the file has since gone from the disk: say so, and
+            offer the one action that helps, instead of a folder button that
+            silently opens nothing. */}
+        {download && download.status === 'done' && download.missing ? (
           <IconBtn
-            icon="folder"
-            title={T.library.reveal}
-            onClick={() => api.revealFile(download.filePath as string)}
+            icon="download"
+            title={`${T.library.missingFile}. ${T.library.redownload}`}
+            variant="danger"
+            onClick={() => api.redownload(download.id)}
           />
         ) : null}
 
@@ -581,7 +600,7 @@ function Row({
                   {T.item.copyStream}
                 </MenuItem>
               ) : null}
-              {download && download.status === 'done' && download.filePath ? (
+              {download && download.status === 'done' && download.filePath && !download.missing ? (
                 <MenuItem
                   icon="play"
                   onClick={() => {
@@ -592,7 +611,7 @@ function Row({
                   {T.library.play}
                 </MenuItem>
               ) : null}
-              {download && download.status === 'done' && download.filePath ? (
+              {download && download.status === 'done' && download.filePath && !download.missing ? (
                 <MenuItem
                   icon="lock"
                   onClick={() => {

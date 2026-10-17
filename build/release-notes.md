@@ -1,5 +1,50 @@
 ## Bu sürümde
 
+- **Ana sayfa.** YouTube'daki gibi: indirdiğin videolar kendi dosyalarından alınmış
+  kapaklarla, yarım bıraktıklarının altında kırmızı ilerleme çubuğuyla. Kapağa
+  tıklayınca uygulamanın oynatıcısında açılıyor, kaldığın yerden devam ediyor.
+  Üstte "İzlemeye devam et", altta tüm videolar; İzlenmemiş / Yarım kalan / İzlenen
+  süzgeci ve sıralama.
+- **Kitaplıkta tıkla-oynat ve çoklu seçim.** Bir satırın kapağına ya da başlığına
+  tıklamak videoyu açıyor. Satırların solundaki kutularla birden çok kayıt seçip
+  topluca silebilir ya da kategori atayabilirsin.
+- **"İndirildi görünüyor ama klasörde yok" düzeltildi.** Uygulama dosyaların
+  diskte olup olmadığını hiç kontrol etmiyordu. Artık açılışta ve pencereye her
+  dönüşünde bakıyor: taşınan dosyayı bulup kaydı düzeltiyor, silineni "Dosya diskte
+  yok" diye işaretleyip **Yeniden indir** düğmesi sunuyor. "Eksikleri temizle" tek
+  tıkla hepsini kaldırıyor. İndirme bitip dosya gerçekten yoksa artık "tamamlandı"
+  değil hata olarak gösteriliyor.
+- **Kasaya taşırken "dosya bulunamadı" ve tıklanamayan klasör düğmesi.** İki
+  sebebi vardı: macOS'un "Ç/ş" gibi harfleri farklı Unicode biçiminde döndürmesi ve
+  yt-dlp'nin `|` yerine `｜` yazması. Dosya arama artık ikisine de dayanıklı.
+- **Klasörde .vtt ve oynat.html kalmıyor.** Altyazılar videonun içine gömülüyor;
+  eski sürümlerin bıraktığı dosyalar ilk açılışta toparlanıyor (hiçbir altyazı
+  silinip atılmıyor — ya videoya gömülüyor ya uygulamanın kendi klasörüne
+  taşınıyor).
+- **Otomatik güncelleme.** GitHub'da yeni sürüm çıkınca üstte bildirim; "İndir ve
+  güncelle" dosyayı indirip SHA-512 ile doğruluyor, kuruyor ve uygulamayı yeniden
+  açıyor.
+- **Oynatıcı:** ses dili seçimi (çift dilli bölümler), sürgüde kare önizlemesi,
+  bölüm (chapter) işaretleri, önceki/sonraki bölüm ve bitince geri sayımla sonrakine
+  geçiş, %200'e kadar ses yükseltme, sığdır/doldur/uzat, her zaman üstte, ekran
+  görüntüsü, tekerlekle ses, kenarlara çift tıkla ±10 sn, hızı hatırlama, kenarlıklı
+  altyazı görünümü. Altyazılardaki `<font>` ve `{\an8}` kodları artık ekranda yazı
+  olarak görünmüyor.
+- **Çözücü:** sayfadaki "Alternatif 1/2/Sunucu 3" düğmelerinin (çoğu base64 ile
+  gizli) gömülü adresleri doğrudan açılıyor; yeni tarif bu düğmeleri sırayla
+  deniyor. Uzantısı gizlenmiş oynatma listeleri içeriğinden (#EXTM3U) tanınıyor.
+- **Kasa baştan sağlamlaştırıldı.** Oynatırken artık diske hiçbir şifresiz kopya
+  yazılmıyor (parçalı şifreleme, bellekte çözme); anahtar türetme 4 kat güçlü;
+  rastgele ana anahtar ve **şifre değiştirme**; uykuda ve ekran kilidinde otomatik
+  kilit; yanlış şifre denemelerinde bekleme; kasaya taşınan videonun her izi
+  (kapak, altyazı, izleme geçmişi, tarayıcı önbelleği) temizleniyor. Eski kasan
+  ilk açılışta otomatik çevriliyor.
+- **Güvenlik taraması:** pencereler Chromium kum havuzunda; arayüz yalnızca
+  uygulamanın yönettiği dosyaları açabiliyor; yt-dlp'ye giden adresler seçenek
+  olarak yorumlanamıyor; derlenmiş sayfada satır içi betik yasak.
+
+## Önceki sürümde (0.9.3)
+
 Bu sürümün büyük parçası **kendi oynatıcımız**. Artık bir video oynatıcısı taklidi
 değil, gerçekten kullanılabilir bir oynatıcı — ve altyazı işini kökünden çözüyor.
 

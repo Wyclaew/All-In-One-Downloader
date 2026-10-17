@@ -23,6 +23,27 @@ const API = 'https://api.opensubtitles.com/api/v1'
 const APP_UA = 'AllInOneDownloader v0.2'
 const CHUNK = 65536
 
+/**
+ * Subtitle files are still routinely written in a Windows code page, and a
+ * Turkish one decoded as UTF-8 turns every ı, ş and ğ into a replacement
+ * character. Try UTF-8 strictly first — a real UTF-8 file always survives it —
+ * and fall back to the code page that covers Turkish.
+ */
+function decodeText(buffer) {
+  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    return buffer.slice(3).toString('utf8')
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer)
+  } catch {
+    try {
+      return new TextDecoder('windows-1254').decode(buffer)
+    } catch {
+      return buffer.toString('latin1')
+    }
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* hashing and name parsing                                                    */
 /* -------------------------------------------------------------------------- */
@@ -57,6 +78,19 @@ function movieHash(filePath) {
       }
     }
   }
+}
+
+/** The same hash from the two 64 KiB ends and the size, for a file we cannot open by path. */
+function movieHashOf(size, head, tail) {
+  if (size < CHUNK * 2 || head.length < CHUNK || tail.length < CHUNK) return null
+  const mask = (1n << 64n) - 1n
+  let hash = BigInt(size) & mask
+  for (const buffer of [head, tail]) {
+    for (let offset = 0; offset + 8 <= CHUNK; offset += 8) {
+      hash = (hash + buffer.readBigUInt64LE(offset)) & mask
+    }
+  }
+  return { hash: hash.toString(16).padStart(16, '0'), size }
 }
 
 /** Pull a title and, for episodes, season/episode numbers out of a filename. */
@@ -150,7 +184,7 @@ async function request(url, apiKey, init = {}) {
  * Search for subtitles matching a file.
  * Hash matches come first and are flagged, because those are the in-sync ones.
  */
-async function search({ filePath, languages, apiKey, title: titleOverride }) {
+async function search({ filePath, languages, apiKey, title: titleOverride, hash = null }) {
   if (!apiKey) {
     const err = new Error(
       'OpenSubtitles API anahtarı gerekiyor. Ayarlar → Altyazı bölümünden ekle (opensubtitles.com üzerinden ücretsiz alınır).'
@@ -165,7 +199,9 @@ async function search({ filePath, languages, apiKey, title: titleOverride }) {
     .filter(Boolean)
     .join(',')
 
-  const hashed = filePath ? movieHash(filePath) : null
+  // A vaulted film has no path; its caller works the hash out from the decrypted
+  // first and last 64 KiB instead and passes it in.
+  const hashed = hash || (filePath ? movieHash(filePath) : null)
 
   // Read the filename when there is one, and the title otherwise — but if the
   // filename yields no episode number and the title does, believe the title. A
@@ -299,12 +335,39 @@ async function fetchSubtitle(fileId, apiKey) {
 /* placing, syncing, embedding                                                 */
 /* -------------------------------------------------------------------------- */
 
-/** `<video>.<lang>.srt` beside the video, which is what players look for. */
+/**
+ * Where a video's loose subtitle files live: inside the app, not beside the video.
+ *
+ * A download folder full of `Film.tr.vtt`, `Film.en.srt` and `oynat.html` was the
+ * complaint. Subtitles are either muxed into the video itself — which is where
+ * every player looks first — or, when that is not possible, kept in a folder of
+ * ours keyed by the video's path, where our player finds them and nobody else
+ * has to look at them.
+ */
+function storeDirFor(videoPath) {
+  const crypto = require('crypto')
+  const { app } = require('electron')
+  const id = crypto
+    .createHash('sha1')
+    .update(path.resolve(String(videoPath)).normalize('NFC'))
+    .digest('hex')
+  return path.join(app.getPath('userData'), 'subtitles', id)
+}
+
 function subtitlePathFor(videoPath, language) {
-  const dir = path.dirname(videoPath)
-  const base = path.basename(videoPath, path.extname(videoPath))
-  const lang = (language || 'sub').toLowerCase().slice(0, 5)
-  return path.join(dir, `${base}.${lang}.srt`)
+  const lang = (language || 'sub').toLowerCase().replace(/[^a-z-]/g, '').slice(0, 8) || 'sub'
+  const dir = storeDirFor(videoPath)
+  fs.mkdirSync(dir, { recursive: true })
+  return path.join(dir, `${lang}.srt`)
+}
+
+/** Drop the stored subtitles of a video that is gone or moved into the vault. */
+function forgetStored(videoPath) {
+  try {
+    fs.rmSync(storeDirFor(videoPath), { recursive: true, force: true })
+  } catch {
+    /* nothing stored */
+  }
 }
 
 function ffsubsyncPath() {
@@ -338,56 +401,92 @@ function syncToAudio(videoPath, srtPath) {
   })
 }
 
-/** Mux the subtitle into the container as a selectable track. */
-function embed(videoPath, srtPath, language) {
+function probeStreams(videoPath) {
   return new Promise((resolve) => {
-    const bin = ffmpegPath()
-    if (!bin) return resolve({ ok: false, reason: 'missing' })
-
-    const ext = path.extname(videoPath).toLowerCase()
-    const codec = ext === '.mp4' || ext === '.m4v' || ext === '.mov' ? 'mov_text' : 'srt'
-    const temp = `${videoPath}.subbed${ext || '.mkv'}`
-
+    const bin = require('./binaries').ffprobePath()
+    if (!bin) return resolve(null)
     execFile(
       bin,
-      [
-        '-y',
-        '-i',
-        videoPath,
-        '-i',
-        srtPath,
-        '-map',
-        '0',
-        '-map',
-        '1',
-        '-c',
-        'copy',
-        '-c:s',
-        codec,
-        '-metadata:s:s:0',
-        `language=${(language || 'und').slice(0, 3)}`,
-        temp,
-      ],
-      { env: toolEnv(), timeout: 600000, windowsHide: true },
-      (err) => {
-        if (err) {
-          try {
-            fs.unlinkSync(temp)
-          } catch {
-            /* nothing to clean */
-          }
-          return resolve({ ok: false, reason: 'failed' })
-        }
+      ['-v', 'quiet', '-print_format', 'json', '-show_streams', videoPath],
+      { env: toolEnv(), timeout: 30000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+      (err, out) => {
+        if (err) return resolve(null)
         try {
-          fs.renameSync(temp, videoPath)
-          resolve({ ok: true })
+          resolve(JSON.parse(out).streams || [])
         } catch {
-          resolve({ ok: false, reason: 'failed' })
+          resolve(null)
         }
       }
     )
   })
 }
+
+/** Two-letter to the three-letter tag containers carry. */
+const ISO3 = {
+  tr: 'tur', en: 'eng', de: 'ger', fr: 'fre', es: 'spa', it: 'ita', pt: 'por', ru: 'rus',
+  ar: 'ara', ja: 'jpn', ko: 'kor', zh: 'chi', nl: 'dut', el: 'gre', fa: 'per', hi: 'hin',
+  pl: 'pol', sv: 'swe',
+}
+const iso3 = (lang) => {
+  const l = String(lang || '').toLowerCase()
+  return ISO3[l.slice(0, 2)] || (l.length === 3 ? l : 'und')
+}
+
+/**
+ * Mux subtitle files into the video as selectable tracks, in one pass.
+ *
+ * The language tag is set on the *new* track's index, after the tracks the file
+ * already has — tagging `s:0` relabelled the first existing track instead. A
+ * track for a language the file already carries is skipped rather than doubled.
+ * The streams are copied, never re-encoded, so this takes seconds and the
+ * picture is untouched.
+ */
+async function embedMany(videoPath, subs) {
+  const bin = ffmpegPath()
+  if (!bin || !subs.length) return { ok: false, reason: 'missing', embedded: [] }
+
+  const ext = path.extname(videoPath).toLowerCase()
+  const codec =
+    ext === '.mp4' || ext === '.m4v' || ext === '.mov' ? 'mov_text' : ext === '.webm' ? 'webvtt' : 'srt'
+  if (!['.mp4', '.m4v', '.mov', '.mkv', '.webm'].includes(ext)) {
+    return { ok: false, reason: 'container', embedded: [] }
+  }
+
+  const streams = (await probeStreams(videoPath)) || []
+  const existing = streams.filter((st) => st.codec_type === 'subtitle')
+  const have = new Set(existing.map((st) => String((st.tags && st.tags.language) || '').toLowerCase()))
+  const todo = subs.filter((sub) => sub.path && fs.existsSync(sub.path) && !have.has(iso3(sub.lang)))
+  if (!todo.length) return { ok: true, embedded: [], already: true }
+
+  const temp = `${videoPath}.aio-subs${ext}`
+  const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-i', videoPath]
+  for (const sub of todo) args.push('-i', sub.path)
+  args.push('-map', '0')
+  todo.forEach((_, i) => args.push('-map', String(i + 1)))
+  args.push('-c', 'copy', '-c:s', codec)
+  todo.forEach((sub, i) => {
+    args.push(`-metadata:s:s:${existing.length + i}`, `language=${iso3(sub.lang)}`)
+  })
+  if (codec === 'mov_text') args.push('-movflags', '+faststart')
+  args.push(temp)
+
+  const ok = await new Promise((resolve) => {
+    execFile(bin, args, { env: toolEnv(), timeout: 900000, windowsHide: true }, (err) => resolve(!err))
+  })
+  if (!ok || !fs.existsSync(temp) || fs.statSync(temp).size < fs.statSync(videoPath).size * 0.9) {
+    fs.rmSync(temp, { force: true })
+    return { ok: false, reason: 'failed', embedded: [] }
+  }
+  try {
+    fs.renameSync(temp, videoPath)
+  } catch {
+    // Windows will not rename over a file something else has open.
+    fs.rmSync(temp, { force: true })
+    return { ok: false, reason: 'busy', embedded: [] }
+  }
+  return { ok: true, embedded: todo.map((t) => t.lang) }
+}
+
 
 /**
  * Download a chosen subtitle, put it beside the video, optionally align it to
@@ -399,7 +498,9 @@ async function apply({ videoPath, fileId, language, apiKey, sync, embedTrack, ha
   const target = videoPath
     ? subtitlePathFor(videoPath, language)
     : path.join(os.tmpdir(), `subtitle-${fileId}.srt`)
-  fs.writeFileSync(target, buffer)
+  // Stored as UTF-8 whatever it arrived as: ffmpeg refuses a Windows code page
+  // SRT outright, and that refusal was quietly costing us the embed.
+  fs.writeFileSync(target, decodeText(buffer), 'utf8')
 
   const outcome = { path: target, synced: false, embedded: false, notes: [] }
 
@@ -418,13 +519,36 @@ async function apply({ videoPath, fileId, language, apiKey, sync, embedTrack, ha
     outcome.notes.push('Dosya imzası birebir eşleşti — altyazı hâlihazırda senkron.')
   }
 
-  if (embedTrack && videoPath) {
-    const result = await embed(videoPath, target, language)
+  // Muxed into the file unless the caller says not to: that is where every
+  // player looks first, and it keeps the download folder free of loose .srt and
+  // .vtt files. The copy we kept is dropped once it is inside the video, or our
+  // own player would list the same subtitle twice.
+  if (embedTrack !== false && videoPath) {
+    const result = await embedMany(videoPath, [{ path: target, lang: language }])
     outcome.embedded = result.ok
-    if (!result.ok) outcome.notes.push('Videoya gömme başarısız oldu; .srt dosyası yanında duruyor.')
+    if (result.ok) {
+      fs.rmSync(target, { force: true })
+      outcome.path = null
+    } else {
+      outcome.notes.push('Videoya gömülemedi; altyazı uygulamanın kendi klasöründe saklanıyor ve oynatıcıda görünüyor.')
+    }
   }
 
   return outcome
 }
 
-module.exports = { search, apply, movieHash, parseName, parseTitle, subtitlePathFor, ffsubsyncPath }
+module.exports = {
+  search,
+  apply,
+  movieHash,
+  movieHashOf,
+  parseName,
+  parseTitle,
+  subtitlePathFor,
+  storeDirFor,
+  forgetStored,
+  embedMany,
+  decodeText,
+  ffsubsyncPath,
+  iso3,
+}

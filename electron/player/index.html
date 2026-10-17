@@ -18,7 +18,10 @@
       </header>
 
       <div id="stage">
-        <video id="video" playsinline></video>
+        <video id="video" playsinline crossorigin="anonymous"></video>
+        <!-- A second, silent decoder for the scrub-bar preview: seeking it never
+             disturbs the one you are watching. -->
+        <video id="probe" muted preload="metadata" crossorigin="anonymous" hidden></video>
         <div id="subs" data-size="normal"></div>
 
         <div id="pulse" aria-hidden="true"></div>
@@ -31,11 +34,11 @@
 
         <div id="upnext" hidden>
           <div class="upnext-card">
-            <span class="upnext-label">Sonraki bölüm</span>
+            <span class="upnext-label" id="upnext-label">Sonraki bölüm</span>
             <strong id="upnext-title"></strong>
             <div class="upnext-actions">
-              <button type="button" id="upnext-go" class="primary">Oynat</button>
-              <button type="button" id="upnext-stay">Kal</button>
+              <button type="button" id="upnext-go" class="primary">Şimdi oynat</button>
+              <button type="button" id="upnext-stay">Vazgeç</button>
             </div>
           </div>
         </div>
@@ -54,12 +57,18 @@
             <div id="seek-track">
               <div id="seek-buffer"></div>
               <div id="seek-played"></div>
+              <div id="chapters"></div>
               <div id="seek-knob"></div>
             </div>
-            <div id="seek-tip" hidden></div>
+            <div id="seek-tip" hidden>
+              <canvas id="seek-frame" width="192" height="108" hidden></canvas>
+              <span id="seek-chapter"></span>
+              <span id="seek-time"></span>
+            </div>
           </div>
 
           <div id="row">
+            <button type="button" id="prev" class="ico" title="Önceki bölüm (P)" hidden></button>
             <button type="button" id="play" class="ico" title="Oynat / Duraklat (Boşluk)"></button>
             <button type="button" id="back" class="ico" title="10 sn geri (←)"></button>
             <button type="button" id="fwd" class="ico" title="10 sn ileri (→)"></button>
@@ -70,15 +79,62 @@
             </div>
 
             <span id="time" class="mono">0:00 / 0:00</span>
+            <span id="chapter-name" class="chapter-name"></span>
             <span class="spacer"></span>
 
-            <button type="button" id="rate" class="pill" title="Oynatma hızı">1×</button>
-            <button type="button" id="next" class="pill" title="Sonraki bölüm (N)" hidden>Sonraki</button>
+            <button type="button" id="rate" class="pill" title="Oynatma hızı (&lt; &gt;)">1×</button>
+            <button type="button" id="audio" class="pill" title="Ses dili (A)" hidden>Ses</button>
+            <button type="button" id="next" class="ico" title="Sonraki bölüm (N)" hidden></button>
+            <button type="button" id="gear" class="ico" title="Ayarlar"></button>
             <button type="button" id="cc" class="ico" title="Altyazı (V açar/kapatır)"></button>
             <button type="button" id="pip" class="ico" title="Küçük pencere"></button>
             <button type="button" id="full" class="ico" title="Tam ekran (F)"></button>
           </div>
         </div>
+      </div>
+
+      <div id="audio-menu" class="popover" hidden>
+        <div class="panel-label">Ses dili</div>
+        <div id="audio-list"></div>
+      </div>
+
+      <div id="quick" class="popover" hidden>
+        <div class="quick-row">
+          <span>Hız</span>
+          <div class="chips" id="q-rate"></div>
+        </div>
+        <div class="quick-row">
+          <span>Görüntü</span>
+          <div class="chips" id="q-fit">
+            <button type="button" data-fit="contain">Sığdır</button>
+            <button type="button" data-fit="cover">Doldur</button>
+            <button type="button" data-fit="fill">Uzat</button>
+          </div>
+        </div>
+        <div class="quick-row">
+          <span>Ses yükseltme</span>
+          <div class="chips" id="q-boost">
+            <button type="button" data-boost="1">%100</button>
+            <button type="button" data-boost="1.5">%150</button>
+            <button type="button" data-boost="2">%200</button>
+          </div>
+        </div>
+        <div class="quick-row">
+          <span>Altyazı görünümü</span>
+          <div class="chips" id="q-style">
+            <button type="button" data-style="box">Kutulu</button>
+            <button type="button" data-style="outline">Kenarlıklı</button>
+          </div>
+        </div>
+        <label class="quick-toggle" id="q-autonext-row">
+          <input type="checkbox" id="q-autonext" />
+          <span>Bitince sonraki bölüme geç</span>
+        </label>
+        <label class="quick-toggle">
+          <input type="checkbox" id="q-ontop" />
+          <span>Her zaman üstte (T)</span>
+        </label>
+        <button type="button" id="q-shot" class="quick-action">Ekran görüntüsü al (S)</button>
       </div>
 
       <aside id="panel" hidden>

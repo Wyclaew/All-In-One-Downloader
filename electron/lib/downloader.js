@@ -14,6 +14,7 @@ const { resolveCookieArg } = require('./browsers')
 const { uid, num, clamp, fileSizeOf, resolvedArgs, safeName, settingNumber } = require('./util')
 const { readableError, isRetryableWithoutCookies } = require('./probe')
 const ownengine = require('./ownengine')
+const { locateDownload } = require('./locate')
 
 const TAG = '@P@'
 const PROGRESS_TEMPLATE =
@@ -114,12 +115,27 @@ function buildArgs(download, settings, printFile) {
 
   if (settings.embedThumbnail && !download.noEmbedThumbnail) args.push('--embed-thumbnail')
   if (settings.embedMetadata) args.push('--embed-metadata')
-  if (settings.writeSubs) {
-    args.push('--write-subs', '--write-auto-subs', '--sub-langs', settings.subLangs || 'tr,en')
-    if (!download.audioOnly) args.push('--embed-subs')
+  // An audio file has nowhere to put a subtitle, so it gets none — the .vtt files
+  // left beside an mp3 were pure clutter. For video, the tracks are muxed in and
+  // the loose files removed: `no-keep-subs` is what tells yt-dlp to delete them
+  // after embedding, because asking for `--write-subs` explicitly otherwise makes
+  // it keep a copy of every one beside the video.
+  if (settings.writeSubs && !download.audioOnly) {
+    args.push(
+      '--write-subs',
+      '--write-auto-subs',
+      '--sub-langs',
+      settings.subLangs || 'tr,en',
+      '--embed-subs',
+      '--compat-options',
+      'no-keep-subs'
+    )
   }
 
-  args.push(download.url)
+  // `--` ends the options: whatever the address turns out to be, yt-dlp reads it
+  // as an address and never as a flag (an `--exec` smuggled in as a URL would
+  // otherwise run a command).
+  args.push('--', download.url)
   return args
 }
 
@@ -386,6 +402,9 @@ function resolveFinalPath(job, settings) {
 
   for (const c of candidates) {
     const abs = path.isAbsolute(c) ? c : path.resolve(settings.downloadDir, c)
+    // yt-dlp announces subtitle and cover files as "destinations" too; those are
+    // never the download.
+    if (/\.(vtt|srt|ass|ssa|lrc|json|jpe?g|png|webp|description)$/i.test(abs)) continue
     if (fs.existsSync(abs)) return abs
     // Post-processing changes the extension (webm -> mp4, m4a -> mp3). Match on
     // `base.` and not `base`, or "Dune" would happily return "Dune 2.mp4".
@@ -394,7 +413,7 @@ function resolveFinalPath(job, settings) {
     try {
       const sibling = fs
         .readdirSync(dir)
-        .find((f) => f.startsWith(`${base}.`) && !f.endsWith('.part') && !f.endsWith('.ytdl'))
+        .find((f) => f.startsWith(`${base}.`) && require('./locate').isMedia(f))
       if (sibling) return path.join(dir, sibling)
     } catch {
       /* dir gone */
@@ -526,7 +545,28 @@ function settle(job, download, settings, outcome) {
   cleanupTemp(job)
 
   if (outcome.ok) {
-    const finalPath = outcome.filePath
+    // "Done" has to mean "the file is on disk". A transfer whose engine exited
+    // cleanly but whose output we cannot find used to be marked done anyway, with
+    // an error line underneath — which read as "downloaded" in every list while
+    // the folder had nothing in it. Look for it once more, then call it a failure.
+    const finalPath =
+      outcome.filePath && fs.existsSync(outcome.filePath)
+        ? outcome.filePath
+        : locateDownload({ ...download, filePath: outcome.filePath }, settings.downloadDir)
+    if (!finalPath) {
+      store.commit(() => {
+        download.status = 'error'
+        download.stage = null
+        download.note = null
+        download.speed = null
+        download.eta = null
+        download.parts = null
+        download.error = 'İndirme bitti ama dosya klasörde bulunamadı. Tekrar dene.'
+      })
+      sendProgress(download, true)
+      pump_queue()
+      return
+    }
     store.commit(() => {
       download.status = 'done'
       download.stage = null
@@ -536,25 +576,31 @@ function settle(job, download, settings, outcome) {
       download.eta = null
       download.parts = null
       download.filePath = finalPath
-      download.fileSize = finalPath ? fileSizeOf(finalPath) : null
+      download.fileSize = fileSizeOf(finalPath)
       download.finishedAt = Date.now()
-      download.error = finalPath ? null : 'İndirildi ama dosya yolu bulunamadı.'
+      download.missing = false
+      download.error = null
     })
     sendProgress(download, true)
     store.send('finished', { id: download.id, title: download.title })
 
     // Silence was the actual bug here: with subtitles switched on and none found,
     // nothing was said, so "none available" and "we never looked" looked the same.
-    if (settings.writeSubs && finalPath) {
-      fetchStreamSubtitles(download, finalPath, settings)
-        .then(({ found, saved }) => {
+    //
+    // The two steps run one after the other, never together: each rewrites the
+    // video to mux its track in, and two rewrites racing on one file is how a
+    // finished download gets clobbered.
+    if (finalPath && !download.audioOnly && (settings.writeSubs || settings.autoFetchSubtitles)) {
+      ;(async () => {
+        if (settings.writeSubs) {
+          const { found, saved } = await fetchStreamSubtitles(download, finalPath, settings)
           if (saved.length) {
             store.commit(() => {
-              download.subtitlePath = saved[0].path
+              download.subtitlePath = null
               download.subtitleLanguage = saved.map((x) => x.lang).join(', ')
             })
             store.toast(
-              `Altyazı kaydedildi (${saved.map((x) => x.lang).join(', ')}): ${download.title}`,
+              `Altyazı videoya eklendi (${saved.map((x) => x.lang).join(', ')}): ${download.title}`,
               'ok'
             )
           } else if (found) {
@@ -562,17 +608,15 @@ function settle(job, download, settings, outcome) {
               `${download.title}: akışta ${found} altyazı var ama istediğin dillerde değil (Ayarlar → Biçim → Altyazı dilleri).`,
               'warn'
             )
-          } else if (download.resolved) {
+          } else if (download.resolved && !settings.autoFetchSubtitles) {
             store.toast(
               `${download.title}: bu akışta altyazı yok. Ayarlar → Altyazı'dan OpenSubtitles anahtarı girersen aranabilir.`,
               'info'
             )
           }
-        })
-        .catch(() => {})
-    }
-    if (settings.autoFetchSubtitles && finalPath) {
-      autoSubtitles(download, finalPath, settings).catch(() => {})
+        }
+        if (settings.autoFetchSubtitles) await autoSubtitles(download, finalPath, settings)
+      })().catch((err) => console.error('[subs]', err))
     }
     if (settings.notifyOnFinish && Notification.isSupported()) {
       new Notification({ title: 'İndirme tamamlandı', body: download.title || '' }).show()
@@ -785,7 +829,7 @@ async function fetchStreamSubtitles(download, filePath, settings) {
     .map((l) => normaliseLanguage(l) || l.trim().toLowerCase())
     .filter(Boolean)
 
-  const base = filePath.replace(/\.[^.]+$/, '')
+  const subtitles = require('./subtitles')
   const proxy = proxyFor(download, settings)
   const saved = []
 
@@ -793,7 +837,9 @@ async function fetchStreamSubtitles(download, filePath, settings) {
     const track = tracks.find((t) => normaliseLanguage(t.lang) === code && !t.forced)
     if (!track || !track.url) continue
 
-    const out = `${base}.${code}.srt`
+    // Fetched into our own folder, never beside the video: it is muxed in below
+    // and only kept if that fails.
+    const out = subtitles.subtitlePathFor(filePath, code)
     const env = proxy ? { ...toolEnv(), ...(require('./proxy').ffmpegEnv(proxy) || {}) } : toolEnv()
     // A SOCKS proxy cannot be handed to ffmpeg; skip rather than fetch around it.
     if (proxy && !require('./proxy').ffmpegEnv(proxy)) break
@@ -821,6 +867,13 @@ async function fetchStreamSubtitles(download, filePath, settings) {
         /* nothing written */
       }
     }
+  }
+
+  if (saved.length) {
+    const result = await subtitles.embedMany(filePath, saved)
+    // Inside the video now; the loose copies would only show up twice in our
+    // player. If the mux failed they stay in our folder, where the player finds them.
+    if (result.ok) for (const sub of saved) fs.rmSync(sub.path, { force: true })
   }
   return { found: tracks.length, saved }
 }
@@ -878,10 +931,24 @@ async function autoSubtitles(download, filePath, settings) {
     return
   }
 
+  // A hash match first: it was timed against this exact file. Failing that, the
+  // best-ranked human translation — a series ripped from a stream almost never
+  // hash-matches anything, and "no subtitles at all" was the outcome the user kept
+  // reporting. A guess that is a second off is fixable in the player; nothing is not.
   let pick = null
+  let guessed = false
   for (const lang of wanted) {
     pick = found.results.find((r) => r.hashMatch && r.language.toLowerCase() === lang)
     if (pick) break
+  }
+  if (!pick) {
+    for (const lang of wanted) {
+      pick = found.results.find((r) => r.language.toLowerCase() === lang && !r.machine)
+      if (pick) {
+        guessed = true
+        break
+      }
+    }
   }
   if (!pick) return
 
@@ -890,16 +957,21 @@ async function autoSubtitles(download, filePath, settings) {
       videoPath: filePath,
       fileId: pick.fileId,
       language: pick.language,
-      hashMatch: true,
+      hashMatch: !!pick.hashMatch,
       apiKey: settings.subtitleApiKey,
-      sync: false,
-      embedTrack: settings.embedSubtitleFile,
+      sync: guessed && settings.syncSubtitles,
+      embedTrack: settings.embedSubtitleFile !== false,
     })
     store.commit(() => {
       download.subtitlePath = outcome.path
       download.subtitleLanguage = pick.language
     })
-    store.toast(`Altyazı eklendi (${pick.language}): ${download.title}`, 'ok')
+    store.toast(
+      guessed
+        ? `Altyazı eklendi (${pick.language}): ${download.title} — kayarsa oynatıcıda G/H ile ayarla ya da başka sürüm seç.`
+        : `Altyazı eklendi (${pick.language}, senkron): ${download.title}`,
+      'ok'
+    )
   } catch (err) {
     store.toast(`Altyazı eklenemedi: ${err.message}`, 'warn')
   }
@@ -1137,6 +1209,11 @@ function remove(id, { deleteFile = false } = {}) {
     } catch {
       /* already gone */
     }
+    // The poster frame, the kept subtitles and the watch history all describe a
+    // file that no longer exists.
+    require('./thumbs').forget(download.filePath)
+    require('./subtitles').forgetStored(download.filePath)
+    store.forgetFile(download.filePath)
   }
   store.commit((s) => {
     s.downloads = s.downloads.filter((d) => d.id !== id)
@@ -1144,6 +1221,77 @@ function remove(id, { deleteFile = false } = {}) {
   })
   progressLastSent.delete(id)
   pump_queue()
+}
+
+/**
+ * Check that every finished download still has its file.
+ *
+ * Files leave the folder in ways the app never hears about — deleted in Finder,
+ * moved to another disk, renamed. Without this the library kept offering "play"
+ * and "reveal" for nothing, and the buttons looked broken. A file that merely
+ * moved is found again and the record corrected; one that is gone is marked, so
+ * the row can say so and offer to download it again.
+ */
+function verifyFiles() {
+  const state = store.getState()
+  const dir = state.settings.downloadDir
+  const changes = []
+  for (const d of state.downloads) {
+    if (d.status !== 'done') continue
+    const found = locateDownload(d, dir)
+    if (found && (found !== d.filePath || d.missing)) changes.push([d, found, false])
+    else if (!found && !d.missing) changes.push([d, d.filePath, true])
+  }
+  if (!changes.length) return 0
+  store.commit(() => {
+    for (const [d, filePath, missing] of changes) {
+      if (!missing && d.filePath && filePath !== d.filePath) store.moveFileKey(d.filePath, filePath)
+      d.filePath = filePath
+      d.missing = missing
+    }
+  })
+  return changes.filter((c) => c[2]).length
+}
+
+/**
+ * Fetch a finished-but-missing download again, into the same record.
+ *
+ * Retrying is the honest action for a file that disappeared: the link, the
+ * quality and the category are all still known.
+ */
+function redownload(id) {
+  const download = store.findDownload(id)
+  if (!download || jobs.has(id)) return false
+  store.commit(() => {
+    download.status = 'queued'
+    download.error = null
+    download.missing = false
+    download.filePath = null
+    download.fileSize = null
+    download.percent = 0
+    download.downloaded = 0
+    download.total = null
+    download.finishedAt = null
+    download.attempts = 0
+  })
+  pump_queue()
+  startOutlook()
+  return true
+}
+
+/** Drop the records of finished downloads whose files are gone. */
+function clearMissing() {
+  verifyFiles()
+  let removed = 0
+  store.commit((s) => {
+    const before = s.downloads.length
+    const gone = new Set(s.downloads.filter((d) => d.status === 'done' && d.missing).map((d) => d.id))
+    s.downloads = s.downloads.filter((d) => !gone.has(d.id))
+    for (const i of s.items) if (gone.has(i.downloadId)) i.downloadId = null
+    removed = before - s.downloads.length
+  })
+  forgetMissing()
+  return removed
 }
 
 /**
@@ -1182,4 +1330,7 @@ module.exports = {
   pumpQueue: pump_queue,
   activeCount,
   outlook,
+  verifyFiles,
+  redownload,
+  clearMissing,
 }

@@ -13,7 +13,7 @@ interface Props {
 
 export default function Vault({ vault, autoLockMinutes, onToast }: Props) {
   if (!vault.exists) return <Setup onToast={onToast} />
-  if (!vault.unlocked) return <Locked onToast={onToast} />
+  if (!vault.unlocked) return <Locked onToast={onToast} retryAfter={vault.retryAfter || 0} />
   return <Contents vault={vault} autoLockMinutes={autoLockMinutes} onToast={onToast} />
 }
 
@@ -26,9 +26,9 @@ function Setup({ onToast }: { onToast: Props['onToast'] }) {
   const [again, setAgain] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const short = pass.length > 0 && pass.length < 6
+  const short = pass.length > 0 && pass.length < 8
   const mismatch = again.length > 0 && pass !== again
-  const ready = pass.length >= 6 && pass === again && !busy
+  const ready = pass.length >= 8 && pass === again && !busy
 
   const create = async () => {
     if (!ready) return
@@ -100,7 +100,7 @@ function Setup({ onToast }: { onToast: Props['onToast'] }) {
 /* locked                                                                      */
 /* -------------------------------------------------------------------------- */
 
-function Locked({ onToast }: { onToast: Props['onToast'] }) {
+function Locked({ onToast, retryAfter }: { onToast: Props['onToast']; retryAfter: number }) {
   const [pass, setPass] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -137,6 +137,8 @@ function Locked({ onToast }: { onToast: Props['onToast'] }) {
           />
         </label>
 
+        {retryAfter > 0 ? <p className="vault-warn">{T.vault.retry(retryAfter)}</p> : null}
+
         <Btn variant="primary" icon="unlock" disabled={!pass || busy} spinning={busy} onClick={unlock}>
           {T.vault.unlock}
         </Btn>
@@ -160,6 +162,7 @@ function Contents({
 }) {
   const [pendingRemove, setPendingRemove] = useState<VaultEntry | null>(null)
   const [busy, setBusy] = useState(false)
+  const [changing, setChanging] = useState(false)
 
   const totalSize = vault.entries.reduce((sum, e) => sum + (e.size || 0), 0)
 
@@ -184,10 +187,20 @@ function Contents({
           <Btn size="sm" variant="ghost" icon="plus" spinning={busy} onClick={addFiles}>
             {T.vault.addFiles}
           </Btn>
+          <Btn size="sm" variant="ghost" icon="pencil" onClick={() => setChanging(true)}>
+            {T.vault.changeTitle}
+          </Btn>
           <Btn size="sm" icon="lock" onClick={() => api.vaultLock()}>
             {T.vault.lock}
           </Btn>
         </div>
+
+        {vault.upgrading ? (
+          <div className="banner" style={{ marginBottom: 10 }}>
+            <Icon name="spinner" size={14} className="spin" />
+            <span className="grow">{T.vault.upgrading(vault.upgrading)}</span>
+          </div>
+        ) : null}
 
         {vault.entries.length ? (
           <div className="card">
@@ -300,6 +313,8 @@ function Contents({
         </Btn>
       </p>
 
+      {changing ? <ChangePassphrase onClose={() => setChanging(false)} onToast={onToast} /> : null}
+
       {pendingRemove ? (
         <Modal
           title={T.vault.removeTitle}
@@ -323,5 +338,69 @@ function Contents({
         </Modal>
       ) : null}
     </>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/* changing the passphrase                                                     */
+/* -------------------------------------------------------------------------- */
+
+function ChangePassphrase({ onClose, onToast }: { onClose: () => void; onToast: Props['onToast'] }) {
+  const [current, setCurrent] = useState('')
+  const [next, setNext] = useState('')
+  const [again, setAgain] = useState('')
+  const [busy, setBusy] = useState(false)
+  const short = next.length > 0 && next.length < 8
+  const mismatch = again.length > 0 && next !== again
+  const ready = !!current && next.length >= 8 && next === again && !busy
+
+  const submit = async () => {
+    if (!ready) return
+    setBusy(true)
+    const res = await api.vaultChangePassphrase(current, next)
+    setBusy(false)
+    setCurrent('')
+    if (res) {
+      onToast(T.vault.changed, 'ok')
+      onClose()
+    }
+  }
+
+  return (
+    <Modal
+      title={T.vault.changeTitle}
+      onClose={onClose}
+      footer={
+        <>
+          <Btn onClick={onClose}>{T.confirm.cancel}</Btn>
+          <Btn variant="primary" icon="lock" disabled={!ready} spinning={busy} onClick={submit}>
+            {T.vault.changeTitle}
+          </Btn>
+        </>
+      }
+    >
+      {(
+        [
+          [T.vault.currentPass, current, setCurrent],
+          [T.vault.newPass, next, setNext],
+          [T.vault.newPassAgain, again, setAgain],
+        ] as [string, string, (v: string) => void][]
+      ).map(([label, value, set], i) => (
+        <label key={label} className="vault-field">
+          <span>{label}</span>
+          <input
+            className="input"
+            type="password"
+            value={value}
+            autoFocus={i === 0}
+            spellCheck={false}
+            onChange={(e) => set(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && submit()}
+          />
+        </label>
+      ))}
+      {short ? <p className="vault-warn">{T.vault.tooShort}</p> : null}
+      {mismatch ? <p className="vault-warn">{T.vault.mismatch}</p> : null}
+    </Modal>
   )
 }

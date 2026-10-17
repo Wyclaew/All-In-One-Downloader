@@ -5,12 +5,14 @@ import * as fmt from './format'
 import { T } from './strings'
 import { useApp, useTheme, useThroughput, useVault, withProgress } from './store'
 import type { Category } from './types'
+import UpdateBanner from './components/UpdateBanner'
+import Home from './views/Home'
 import Library from './views/Library'
 import Settings from './views/Settings'
 import SourcesView from './views/Sources'
 import VaultView from './views/Vault'
 
-type View = 'sources' | 'library' | 'vault' | 'settings'
+type View = 'home' | 'sources' | 'library' | 'vault' | 'settings'
 const ALL = null
 const UNCATEGORIZED = '__none__'
 
@@ -18,7 +20,7 @@ export default function App() {
   const { state, tools, progress, outlook, toasts, pushToast, dismissToast, refreshTools, menuAction } =
     useApp()
   const { vault } = useVault()
-  const [view, setView] = useState<View>('sources')
+  const [view, setView] = useState<View>('home')
   const [category, setCategory] = useState<string | null>(ALL)
   const [query, setQuery] = useState('')
   const [url, setUrl] = useState('')
@@ -95,6 +97,7 @@ export default function App() {
     if (!menuAction) return
     const { action } = menuAction
     if (action === 'settings') setView('settings')
+    if (action === 'view:home') setView('home')
     if (action === 'view:sources') setView('sources')
     if (action === 'view:library') setView('library')
     if (action === 'focus-url') {
@@ -200,6 +203,9 @@ export default function App() {
 
       {/* ---- compose ---- */}
       <div className="compose">
+        {/* Inside the compose row so the shell's grid keeps its three rows
+            whether or not there is an update to announce. */}
+        <UpdateBanner />
         <div className="compose-row">
           <label className="field">
             <span className="field-tag">URL</span>
@@ -270,6 +276,16 @@ export default function App() {
       {/* ---- body ---- */}
       <div className="body">
         <nav className="rail">
+          <RailItem
+            icon="home"
+            label={T.nav.home}
+            count={downloads.filter((d) => d.status === 'done' && !d.missing).length}
+            active={view === 'home'}
+            onClick={() => {
+              setCategory(ALL)
+              setView('home')
+            }}
+          />
           <RailItem
             icon="layers"
             label={T.nav.sources}
@@ -342,7 +358,9 @@ export default function App() {
         <main className="pane">
           <div className="pane-head">
             <span className="pane-title">
-              {view === 'sources'
+              {view === 'home'
+                ? T.nav.home
+                : view === 'sources'
                 ? T.nav.sources
                 : view === 'library'
                   ? T.nav.library
@@ -351,7 +369,9 @@ export default function App() {
                     : T.settings.title}
             </span>
             <span className="pane-sub">
-              {view === 'sources'
+              {view === 'home'
+                ? ''
+                : view === 'sources'
                 ? `${state.sources.length} kaynak · ${itemCount} öğe`
                 : view === 'library'
                   ? `${downloads.length} kayıt`
@@ -377,7 +397,7 @@ export default function App() {
               </Btn>
             ) : null}
 
-            {view === 'library' ? (
+            {view === 'library' || view === 'home' ? (
               <>
                 <div className="search">
                   <Icon name="search" size={13} />
@@ -442,6 +462,18 @@ export default function App() {
                 }}
                 onGoToLibrary={() => goLibrary(ALL)}
                 onToast={pushToast}
+              />
+            ) : null}
+
+            {view === 'home' ? (
+              <Home
+                state={state}
+                downloads={downloads}
+                category={category}
+                query={query}
+                onToast={pushToast}
+                onOpenSettings={() => setView('settings')}
+                onGoToSources={() => setView('sources')}
               />
             ) : null}
 
@@ -516,7 +548,7 @@ function RailItem({
   onClick,
   swatch,
 }: {
-  icon?: 'layers' | 'archive' | 'sliders' | 'lock' | 'unlock'
+  icon?: 'home' | 'layers' | 'archive' | 'sliders' | 'lock' | 'unlock'
   label: string
   count?: number
   active: boolean

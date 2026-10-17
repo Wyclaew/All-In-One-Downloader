@@ -1285,7 +1285,7 @@ a {
 
 .dl {
   display: grid;
-  grid-template-columns: 104px minmax(0, 1fr) auto;
+  grid-template-columns: 18px 104px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
@@ -2385,4 +2385,390 @@ a {
   display: block;
   height: 100%;
   background: var(--signal);
+}
+
+/* ---- home ------------------------------------------------------------------ */
+
+/* A video site's front page, not a transfer list: big posters, the red bar of
+   how far in you are, and the whole card is the play button. */
+.home {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  padding-bottom: 24px;
+}
+
+.home-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.home-head h2 {
+  margin: 0;
+  font-family: var(--f-display);
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.home-head .count {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--dimmer);
+}
+
+.home-head .spacer {
+  flex: 1;
+}
+
+.home-none {
+  color: var(--dim);
+  font-size: 13px;
+}
+
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 2px;
+  background: var(--panel-2);
+}
+
+.seg button {
+  padding: 3px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.seg button.on {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.select.compact {
+  height: 28px;
+}
+
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  gap: 22px 16px;
+}
+
+.home-strip {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(272px, 300px);
+  gap: 16px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  scroll-snap-type: x proximity;
+}
+
+.home-strip > * {
+  scroll-snap-align: start;
+}
+
+.card-v {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.card-v-poster {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--well);
+  cursor: pointer;
+}
+
+.card-v-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.25s ease;
+}
+
+.card-v:hover .card-v-poster img {
+  transform: scale(1.035);
+}
+
+.card-v.watched .card-v-poster img {
+  filter: saturate(0.6) brightness(0.8);
+}
+
+.card-v-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dimmer);
+}
+
+.card-v-play {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 52px;
+  height: 52px;
+  margin: -26px 0 0 -26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.card-v-poster:hover .card-v-play,
+.card-v-poster:focus-visible .card-v-play {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.card-v-time,
+.card-v-badge {
+  position: absolute;
+  bottom: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  font-family: var(--f-mono);
+  font-size: 11px;
+}
+
+.card-v-time {
+  right: 7px;
+}
+
+.card-v-badge {
+  left: 7px;
+  font-family: var(--f-body);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+
+.card-v-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.card-v-bar > span {
+  display: block;
+  height: 100%;
+  background: #ff2d2d;
+}
+
+.card-v-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-right: 26px;
+  min-width: 0;
+}
+
+.card-v-title {
+  text-align: left;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.card-v-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.card-v-meta .sep {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--dimmer);
+  flex: none;
+}
+
+.card-v-cc {
+  display: inline-flex;
+  color: var(--dimmer);
+}
+
+.card-v-menu {
+  position: absolute;
+  right: -6px;
+  bottom: 14px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.card-v:hover .card-v-menu,
+.card-v-menu:focus-within {
+  opacity: 1;
+}
+
+/* ---- library selection ------------------------------------------------------ */
+
+.dl-check {
+  display: flex;
+  align-items: center;
+  align-self: center;
+}
+
+/* Out of the way until wanted: visible on hover, and always once something is
+   picked, so the list does not grow a column of empty boxes. */
+.dl .dl-check input {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.dl:hover .dl-check input,
+.dl .dl-check input:checked,
+.card:has(.dl-check input:checked) .dl-check input,
+.section-head .dl-check input {
+  opacity: 1;
+}
+
+.dl.selected,
+.dl.selected:hover {
+  background: color-mix(in srgb, var(--signal) 9%, var(--panel));
+}
+
+.dl-check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--signal);
+  cursor: pointer;
+}
+
+.dl-play-hit {
+  cursor: pointer;
+}
+
+.dl-missing {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--bad);
+  font-size: 12px;
+}
+
+.bulk-bar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--signal-deep);
+  border-radius: var(--r);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.bulk-bar .grow {
+  flex: 1;
+  font-size: 12.5px;
+}
+
+/* ---- update banner ----------------------------------------------------------- */
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--signal-deep);
+  border-radius: var(--r);
+  background: color-mix(in srgb, var(--signal) 10%, var(--panel));
+  font-size: 12.5px;
+}
+
+.update-banner .grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.update-banner .bad {
+  color: var(--bad);
+}
+
+.update-meter {
+  width: 140px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--rule);
+  overflow: hidden;
+}
+
+.update-meter > span {
+  display: block;
+  height: 100%;
+  background: var(--signal);
+  transition: width 0.2s linear;
+}
+
+/* The app's base button style is for buttons that look like buttons. These are
+   a poster and a title that happen to be clickable. */
+.card-v-poster,
+.card-v-title,
+.seg button,
+.dl-play-hit {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  box-shadow: none;
+  appearance: none;
+}
+
+.card-v-poster {
+  background: var(--well);
+}
+
+.card-v-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.seg button {
+  padding: 3px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.seg button.on {
+  background: var(--panel);
+  color: var(--text);
 }

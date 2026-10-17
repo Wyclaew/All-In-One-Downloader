@@ -10,6 +10,7 @@ import type {
   Toast,
   Tools,
   TorStatus,
+  UpdateState,
   UserScript,
   VaultEntry,
   VaultState,
@@ -49,6 +50,12 @@ interface Bridge {
   cancel(id: string): Promise<Result<unknown>>
   retry(id: string): Promise<Result<unknown>>
   removeDownload(id: string, deleteFile?: boolean): Promise<Result<unknown>>
+  removeDownloads(ids: string[], deleteFile?: boolean): Promise<Result<number>>
+  verifyDownloads(): Promise<Result<number>>
+  redownload(id: string): Promise<Result<boolean>>
+  clearMissing(): Promise<Result<number>>
+  thumbFile(path: string, duration?: number | null): Promise<Result<string | null>>
+  tidyFolder(): Promise<Result<unknown>>
   setDownloadCategory(ids: string[], categoryId: string | null): Promise<Result<boolean>>
   clearDownloads(which: 'done' | 'failed'): Promise<Result<boolean>>
   addCategory(name: string): Promise<Result<Category>>
@@ -71,9 +78,10 @@ interface Bridge {
   vaultCreate(passphrase: string): Promise<Result<VaultState>>
   vaultUnlock(passphrase: string): Promise<Result<VaultState>>
   vaultLock(): Promise<Result<VaultState>>
+  vaultChangePassphrase(current: string, next: string): Promise<Result<VaultState>>
   vaultTakeDownload(id: string): Promise<Result<VaultEntry>>
   vaultAddFiles(): Promise<Result<{ added: number }>>
-  vaultOpen(id: string): Promise<Result<{ path: string }>>
+  vaultOpen(id: string): Promise<Result<{ ok: boolean }>>
   vaultOpenExternal(id: string): Promise<Result<{ path: string }>>
   vaultExport(id: string): Promise<Result<{ path: string } | null>>
   vaultRemove(id: string): Promise<Result<boolean>>
@@ -88,6 +96,11 @@ interface Bridge {
   onProgress(handler: (p: unknown) => void): () => void
   onOutlook(handler: (p: Outlook) => void): () => void
   onTor(handler: (p: TorStatus) => void): () => void
+  onUpdate(handler: (p: UpdateState) => void): () => void
+  updateStatus(): Promise<Result<UpdateState>>
+  updateCheck(): Promise<Result<UpdateState>>
+  updateInstall(): Promise<Result<UpdateState>>
+  updateSetToken(value: string): Promise<Result<UpdateState>>
   onToast(handler: (t: Toast) => void): () => void
   onFinished(handler: (p: { id: string; title: string }) => void): () => void
   onMenu(handler: (action: string) => void): () => void
@@ -136,6 +149,10 @@ export const api = {
   checkProxy: () => call(bridge.checkProxy()),
   proxyPresets: () => call(bridge.proxyPresets()),
   torStatus: () => call(bridge.torStatus()),
+  updateStatus: () => call(bridge.updateStatus()),
+  updateCheck: () => call(bridge.updateCheck()),
+  updateInstall: () => call(bridge.updateInstall()),
+  updateSetToken: (value: string) => call(bridge.updateSetToken(value)),
   torStart: () => call(bridge.torStart()),
   torStop: () => call(bridge.torStop()),
   removeSource: (id: string) => call(bridge.removeSource(id)),
@@ -155,6 +172,11 @@ export const api = {
   cancel: (id: string) => call(bridge.cancel(id)),
   retry: (id: string) => call(bridge.retry(id)),
   removeDownload: (id: string, deleteFile = false) => call(bridge.removeDownload(id, deleteFile)),
+  removeDownloads: (ids: string[], deleteFile = false) => call(bridge.removeDownloads(ids, deleteFile)),
+  verifyDownloads: () => call(bridge.verifyDownloads()),
+  redownload: (id: string) => call(bridge.redownload(id)),
+  clearMissing: () => call(bridge.clearMissing()),
+  tidyFolder: () => call(bridge.tidyFolder()),
   setDownloadCategory: (ids: string[], categoryId: string | null) =>
     call(bridge.setDownloadCategory(ids, categoryId)),
   clearDownloads: (which: 'done' | 'failed') => call(bridge.clearDownloads(which)),
@@ -184,6 +206,7 @@ export const api = {
   vaultCreate: (passphrase: string) => call(bridge.vaultCreate(passphrase)),
   vaultUnlock: (passphrase: string) => call(bridge.vaultUnlock(passphrase)),
   vaultLock: () => call(bridge.vaultLock()),
+  vaultChangePassphrase: (current: string, next: string) => call(bridge.vaultChangePassphrase(current, next)),
   vaultTakeDownload: (id: string) => call(bridge.vaultTakeDownload(id)),
   vaultAddFiles: () => call(bridge.vaultAddFiles()),
   vaultOpen: (id: string) => call(bridge.vaultOpen(id)),

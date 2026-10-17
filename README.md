@@ -195,17 +195,22 @@ Katmanlar:
 
 | Katman | Ne yapar |
 |---|---|
-| AES-256-GCM | Her dosya kendi rastgele nonce'uyla şifrelenir; doğrulama etiketi iliştirilir, kurcalanan dosya açılmaz |
-| scrypt (N=32768, r=8) | Şifreden anahtar türetme; her deneme ~100 ms ve 32 MB ister |
-| Rastgele blok adları | Klasöre bakan biri ne olduğunu göremez |
-| Anahtar yalnızca bellekte | Diske yazılmaz, arayüze geçmez, kilitlenince üzerine sıfır yazılır |
-| Otomatik kilit | Ayarlanan süre boyunca işlem olmazsa kilitlenir; çözülmüş geçici kopyalar silinir |
+| Parçalı AES-256-GCM | Dosya 1 MB'lık parçalar halinde, her parça ayrı doğrulanarak şifrelenir. Parça sırası, dosya boyutu ve "son parça" işareti doğrulamaya bağlıdır: bayt değiştirmek, parça taşımak ya da dosyayı kısaltmak açılmasını engeller |
+| Diske düz kopya yok | Oynatıcı yalnızca izlenen aralığı ister; o parçalar bellekte çözülür. Çökme sonrasında bile geride okunabilir dosya kalmaz |
+| Sarılmış ana anahtar | Dosyaları rastgele 256 bitlik bir anahtar şifreler; o anahtar diskte yalnızca şifreden türetilen anahtarla sarılı durur. Şifre değiştirmek dosyalara dokunmaz |
+| scrypt (N=131072, r=8) | Şifreden anahtar türetme; her deneme ~128 MB bellek ve ~0,5 sn ister |
+| Deneme frenleme | Üç yanlış şifreden sonra giderek uzayan bekleme |
+| Rastgele blok adları | Klasöre bakan biri ne olduğunu göremez; adlar, başlıklar ve kapak kareleri de şifreli |
+| İz temizliği | Kasaya taşınan videonun kitaplık kaydı, kapak karesi, altyazıları, izleme geçmişi ve tarayıcı önbelleğindeki kapağı silinir |
+| Otomatik kilit | Boşta kalınca, uykuda ve ekran kilitlenince kilitlenir; anahtarların üzerine sıfır yazılır, kasa oynatıcıları kapanır |
 
-Sınırlar açıkça söylenmeli: bir dosyayı oynatmak onu geçici olarak (yalnızca sana
-açık, `0700` bir klasöre) şifresiz kopyalamayı gerektirir; kasa açıkken
-bilgisayarının başındaki birine karşı koruma yoktur; ve şifreyi unutursan
-kurtarma yolu yoktur — bırakılmış bir kurtarma yolu şifreyi baştan anlamsız
-kılardı.
+Eski sürümlerde kurulmuş kasalar ilk açılışta otomatik olarak bu biçime çevrilir
+(eski şifreli dosyadan yeni şifreli dosyaya, arada düz kopya olmadan).
+
+Sınırlar açıkça söylenmeli: kasa açıkken bilgisayarının başındaki birine karşı
+koruma yoktur; "Sistem oynatıcısında aç" ve "Şifresiz kopya çıkar" bilerek düz
+dosya yazar; ve şifreyi unutursan kurtarma yolu yoktur — bırakılmış bir kurtarma
+yolu şifreyi baştan anlamsız kılardı.
 
 ## yt-dlp'yi kapatmak
 
@@ -302,7 +307,7 @@ electron/
     blocklist.js       istek engelleme; reklam SDK'larına bilerek izin verir
     subtitles.js       OpenSubtitles arama, sese hizalama, gömme
     ownengine.js       yt-dlp kapalıyken indirme: parçalı HTTP + ffmpeg
-    vault.js           şifreli kasa: AES-256-GCM, scrypt, şifreli dizin
+    vault.js           şifreli kasa: parçalı AES-256-GCM, sarılmış anahtar, scrypt
 src/                   React arayüzü (görünümler, bileşenler, biçimleyiciler)
 ```
 

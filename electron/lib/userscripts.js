@@ -621,6 +621,83 @@ if (!hook()) {
 `
 
 /**
+ * Try the other players a page offers.
+ *
+ * Streaming sites routinely list two to six "servers" for the same episode, and
+ * the first one is often dead, geo-blocked or an ad wall. A person tries the next
+ * one; this does the same — but only tab-like switches that stay on the page
+ * (no real links, no forms), one every few seconds, and stops after a handful.
+ */
+const BUILTIN_ALT_PLAYERS = `// ==UserScript==
+// @name         Alternatif oynatıcıları dene
+// @description  "Alternatif 2", "Sunucu 3", "Player 2" gibi sayfa içi oynatıcı sekmelerini sırayla dener. İlk oynatıcı ölü ya da reklam duvarıysa sonrakinden video bulunur. Sayfadan ayrılan hiçbir şeye tıklamaz.
+// @match        *
+// @run-at       document-idle
+// ==/UserScript==
+
+var LABEL = new RegExp('^(?:alternatif|alt\\\\.?|kaynak|sunucu|server|player|oynatıcı|oynatici|part|kısım|link|mirror|source|dil|altyazılı|dublaj|tr dublaj)\\\\s*[#:-]?\\\\s*\\\\d{0,2}$|^(?:vidmoly|filemoon|voe|dood|streamtape|mixdrop|okru|ok\\\\.ru|vk|sibnet|fembed|upstream|streamwish|vidhide|mail\\\\.ru|youtube|vimeo|dailymotion|pixeldrain|gdrive|drive)\\\\b', 'i');
+
+var tried = {};
+var counter = 0;
+var rounds = 0;
+
+function staysOnPage(el) {
+  if (el.closest && el.closest('form')) return false;
+  if (el.tagName === 'A') {
+    var href = el.getAttribute('href') || '';
+    if (href && href !== '#' && href.charAt(0) !== '#' && !/^javascript:/i.test(href)) return false;
+    if (el.target && el.target !== '_self') return false;
+  }
+  if (el.tagName === 'INPUT' && /submit|image/i.test(el.type || '')) return false;
+  return true;
+}
+
+function visible(el) {
+  var box = el.getBoundingClientRect();
+  if (box.width < 16 || box.height < 10) return false;
+  var style = getComputedStyle(el);
+  return style.visibility !== 'hidden' && style.display !== 'none';
+}
+
+function candidates() {
+  var out = [];
+  var nodes = document.querySelectorAll('button, a, li, span, div[role=tab], [role=tab], [data-id], [data-link], [data-embed], [data-src]');
+  for (var i = 0; i < nodes.length && i < 800; i += 1) {
+    var el = nodes[i];
+    // Leaf-ish elements only: a container's text is all its children's text.
+    if (el.children.length > 3) continue;
+    var text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+    if (!text || text.length > 28 || !LABEL.test(text)) continue;
+    if (!visible(el) || !staysOnPage(el)) continue;
+    el.__aioAlt = el.__aioAlt || ++counter;
+    if (tried[el.__aioAlt]) continue;
+    out.push({ el: el, text: text });
+  }
+  return out;
+}
+
+function step() {
+  rounds += 1;
+  if (rounds > 6) return;
+  var list = candidates();
+  // The first entry is usually the one already showing; begin with the second.
+  var pick = list.length > 1 && rounds === 1 ? list[1] : list[0];
+  if (!pick) return;
+  tried[pick.el.__aioAlt] = 1;
+  try {
+    pick.el.click();
+    AIO.note('alternatif oynatıcı: ' + pick.text);
+  } catch (e) {}
+}
+
+// Give the default player a fair chance first.
+setTimeout(function () {
+  step();
+  AIO.every(7000, step);
+}, 9000);
+`
+
+/**
  * Written once, then left alone. If the user edits or deletes it, that decision
  * stands — rewriting their file on every launch would make the folder useless as
  * a place to keep your own work.
@@ -631,6 +708,7 @@ const BUILTINS = [
   ['02-kapiyi-ac.user.js', BUILTIN_GATE_CLICKER],
   ['03-degiskenleri-gez.user.js', BUILTIN_VARIABLE_WALK],
   ['04-sifreli-gomuleri-oku.user.js', BUILTIN_CRYPTO_WATCH],
+  ['05-alternatif-oynaticilar.user.js', BUILTIN_ALT_PLAYERS],
 ]
 
 /**
@@ -649,12 +727,12 @@ function ensureBuiltins() {
     } catch {
       /* first run */
     }
-    if (seen === 'v3') return
+    if (seen === 'v4') return
     for (const [name, source] of BUILTINS) {
       const target = path.join(dir(), name)
       if (!fs.existsSync(target)) fs.writeFileSync(target, source, 'utf8')
     }
-    fs.writeFileSync(stamp, 'v3\n', 'utf8')
+    fs.writeFileSync(stamp, 'v4\n', 'utf8')
   } catch (err) {
     console.error('[userscripts] hazır script yazılamadı', err)
   }

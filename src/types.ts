@@ -108,6 +108,8 @@ export interface Download {
   attempts: number
   filePath: string | null
   fileSize: number | null
+  /** Finished, but the file is no longer on disk. */
+  missing?: boolean
   error: string | null
   createdAt: number
   startedAt: number | null
@@ -165,6 +167,7 @@ export interface Settings {
 
   /** The app runs its own tor when this is on; empty path means "go and find it". */
   torAutoStart: boolean
+  autoCheckUpdates: boolean
   torPath: string
   playerSubtitleSize: 'small' | 'normal' | 'large' | 'huge'
 }
@@ -254,6 +257,11 @@ export interface VaultState {
   autoLockMinutes: number
   /** Where the encrypted blobs live on disk. */
   dir: string
+  /** Old-format files still being converted after an upgrade. */
+  upgrading?: number
+  /** Seconds before another unlock attempt is accepted. */
+  retryAfter?: number
+  strong?: boolean
   entries: VaultEntry[]
 }
 
@@ -280,6 +288,8 @@ export interface AppState {
   downloads: Download[]
   categories: Category[]
   positions?: Record<string, PlaybackPosition>
+  /** key -> when it was watched to the end. */
+  watched?: Record<string, number>
   settings: Settings
 }
 
@@ -322,4 +332,20 @@ export interface DownloadRequest {
   quality?: number
   audioOnly?: boolean
   categoryId?: string | null
+}
+
+/** Where the app stands against its latest GitHub release. */
+export interface UpdateState {
+  phase: 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'installing' | 'error'
+  current: string | null
+  latest: string | null
+  notes: string
+  percent: number
+  message: string
+  url: string
+  /** False when this platform or build can only be updated from the release page. */
+  automatic?: boolean
+  /** The repository is private and no token has been given. */
+  private?: boolean
+  hasToken?: boolean
 }

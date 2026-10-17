@@ -41,6 +41,8 @@ export type IconName =
   | 'unlock'
   | 'shield'
   | 'shieldOff'
+  | 'home'
+  | 'grid'
 
 const PATHS: Record<IconName, ReactNode> = {
   chevron: <path d="M6 3.5l4.5 4.5L6 12.5" />,
@@ -133,6 +135,8 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M5.8 7.9l1.6 1.6 3-3.2" />
     </>
   ),
+  home: <path d="M2.4 7.4L8 2.6l5.6 4.8M3.8 6.3v7.1h3V10h2.4v3.4h3V6.3" />,
+  grid: <path d="M2.6 2.6h4.6v4.6H2.6zM8.8 2.6h4.6v4.6H8.8zM2.6 8.8h4.6v4.6H2.6zM8.8 8.8h4.6v4.6H8.8z" />,
   // Same silhouette, struck through: on and off read as one control, not two icons.
   shieldOff: (
     <>

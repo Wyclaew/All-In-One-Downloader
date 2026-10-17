@@ -49,6 +49,11 @@ function defaultSettings() {
     // The app runs its own tor when this is on, so nobody has to keep a terminal
     // open. Empty path means "find it": PATH first, then Tor Browser's copy.
     torAutoStart: false,
+    // Ask GitHub for a newer version at start and every few hours.
+    autoCheckUpdates: true,
+    // A GitHub token for a private repository, encrypted with the OS keystore.
+    // Empty unless the user enters one.
+    updateTokenSealed: '',
     torPath: '',
 
     // yt-dlp does the probing and the fetching unless this is off, in which case
@@ -72,12 +77,21 @@ function defaultSettings() {
     subtitleApiKey: '',
     autoFetchSubtitles: false,
     syncSubtitles: true,
-    embedSubtitleFile: false,
+    // Muxed into the video by default: loose .srt/.vtt files in the download
+    // folder were the complaint. Off keeps them in the app's own folder instead.
+    embedSubtitleFile: true,
     // Don't put Turkish subtitles on a Turkish-language video.
     skipSameLanguageSubtitles: true,
     // How big the app's own player draws subtitles, and how loud it starts.
     playerSubtitleSize: 'normal', // small | normal | large | huge
     playerVolume: 1,
+    // Remembered from the player itself: speed, how far audio is boosted, how
+    // the picture fills the window, and whether the next episode starts by itself.
+    playerRate: 1,
+    playerBoost: 1,
+    playerFit: 'contain',
+    playerAutoNext: true,
+    playerSubtitleStyle: 'box',
   }
 }
 
@@ -98,6 +112,8 @@ function emptyState() {
     // key -> seconds. A subtitle aligned by hand stays aligned: the same release
     // is off by the same amount every time it is opened.
     delays: {},
+    // key -> when it was finished. Same keys as positions.
+    watched: {},
     settings: defaultSettings(),
   }
 }
@@ -145,9 +161,11 @@ function init() {
         loaded.hostProfiles && typeof loaded.hostProfiles === 'object' ? loaded.hostProfiles : {},
       positions: loaded.positions && typeof loaded.positions === 'object' ? loaded.positions : {},
       delays: loaded.delays && typeof loaded.delays === 'object' ? loaded.delays : {},
+      watched: loaded.watched && typeof loaded.watched === 'object' ? loaded.watched : {},
     }
   }
   migrateCookieBrowser()
+  migrateSettings()
 
   // Nothing survives a quit mid-transfer: park those so the user restarts them.
   for (const s of state.sources) {
@@ -165,6 +183,22 @@ function init() {
   }
   save()
   return state
+}
+
+/**
+ * One-off corrections to stored settings, applied once each.
+ *
+ * A default that changes does not reach someone whose settings file already has
+ * the old value written in it, so the changes that matter are carried over here.
+ */
+function migrateSettings() {
+  const s = state.settings
+  const rev = Number(s.settingsRev) || 0
+  if (rev < 2) {
+    // Subtitles go inside the video now, not beside it.
+    s.embedSubtitleFile = true
+  }
+  s.settingsRev = 2
 }
 
 /**
@@ -291,10 +325,16 @@ function rememberPosition(key, seconds, duration) {
   if (duration && seconds > duration - 25) {
     commit((s) => {
       delete s.positions[key]
+      // Finished is worth remembering too: the home page marks it, the way a
+      // video site greys out what you have already seen.
+      s.watched[key] = Date.now()
+      pruneByAge(s.watched)
     })
     return
   }
   commit((s) => {
+    // Rewatching something takes it off the finished list until it is finished again.
+    delete s.watched[key]
     s.positions[key] = { at: Math.round(seconds), duration: Math.round(duration || 0), seen: Date.now() }
     const keys = Object.keys(s.positions)
     if (keys.length > MAX_POSITIONS) {
@@ -302,6 +342,48 @@ function rememberPosition(key, seconds, duration) {
         .sort((a, b) => (s.positions[a].seen || 0) - (s.positions[b].seen || 0))
         .slice(0, keys.length - MAX_POSITIONS)
         .forEach((stale) => delete s.positions[stale])
+    }
+  })
+}
+
+function pruneByAge(map) {
+  const keys = Object.keys(map)
+  if (keys.length <= MAX_POSITIONS) return
+  keys
+    .sort((a, b) => (map[a] || 0) - (map[b] || 0))
+    .slice(0, keys.length - MAX_POSITIONS)
+    .forEach((stale) => delete map[stale])
+}
+
+/**
+ * Forget everything recorded against a file: where it was left, whether it was
+ * finished, how its subtitle was nudged.
+ *
+ * These are keyed by path, and a path is a title. When a file moves into the
+ * vault, leaving `file:/…/Its Title.mp4` behind in the plain-text state file
+ * would put back on disk exactly the name the vault exists to hide.
+ */
+function forgetFile(filePath) {
+  if (!filePath) return
+  const want = `file:${filePath}`.normalize('NFC')
+  commit((s) => {
+    for (const map of [s.positions, s.watched, s.delays]) {
+      for (const key of Object.keys(map)) {
+        if (key.normalize('NFC') === want) delete map[key]
+      }
+    }
+  })
+}
+
+/** Keep the history attached to a file that was found under a new path. */
+function moveFileKey(from, to) {
+  if (!from || !to || from === to) return
+  commit((s) => {
+    for (const map of [s.positions, s.watched, s.delays]) {
+      if (map[`file:${from}`] !== undefined && map[`file:${to}`] === undefined) {
+        map[`file:${to}`] = map[`file:${from}`]
+      }
+      delete map[`file:${from}`]
     }
   })
 }
@@ -369,5 +451,7 @@ module.exports = {
   positionOf,
   rememberDelay,
   delayOf,
+  forgetFile,
+  moveFileKey,
   defaultSettings,
 }

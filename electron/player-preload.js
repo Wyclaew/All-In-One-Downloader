@@ -26,8 +26,18 @@ contextBridge.exposeInMainWorld('aioPlayer', {
   /** Take one of the hits the search came back with. */
   takeSubtitle: (fileId) => ipcRenderer.invoke('player:takeSubtitle', fileId),
 
-  /** Switch this window over to the next episode in the same folder. */
+  /** Switch this window over to the next or previous episode in the same folder. */
   next: () => ipcRenderer.invoke('player:next'),
+  prev: () => ipcRenderer.invoke('player:prev'),
+
+  /** Speed, picture fit, audio boost, auto-next, subtitle style — validated in main. */
+  prefs: (prefs) => ipcRenderer.send('player:prefs', prefs),
+
+  /** Keep the window above others. */
+  onTop: (on) => ipcRenderer.invoke('player:onTop', !!on),
+
+  /** Save the current frame (a PNG data URL) to Pictures. Refused for the vault. */
+  screenshot: (dataUrl, at) => ipcRenderer.invoke('player:screenshot', { dataUrl, at }),
 
   /** A subtitle nudged into place stays there, for this file. */
   setDelay: (seconds) => ipcRenderer.send('player:delay', seconds),
