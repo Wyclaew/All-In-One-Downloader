@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api'
 import * as fmt from '../format'
 import { T } from '../strings'
@@ -13,7 +13,7 @@ interface Props {
 
 export default function Vault({ vault, autoLockMinutes, onToast }: Props) {
   if (!vault.exists) return <Setup onToast={onToast} />
-  if (!vault.unlocked) return <Locked onToast={onToast} retryAfter={vault.retryAfter || 0} />
+  if (!vault.unlocked) return <Locked vault={vault} onToast={onToast} retryAfter={vault.retryAfter || 0} />
   return <Contents vault={vault} autoLockMinutes={autoLockMinutes} onToast={onToast} />
 }
 
@@ -100,12 +100,27 @@ function Setup({ onToast }: { onToast: Props['onToast'] }) {
 /* locked                                                                      */
 /* -------------------------------------------------------------------------- */
 
-function Locked({ onToast, retryAfter }: { onToast: Props['onToast']; retryAfter: number }) {
+function Locked({ vault, onToast, retryAfter }: { vault: VaultState; onToast: Props['onToast']; retryAfter: number }) {
   const [pass, setPass] = useState('')
   const [busy, setBusy] = useState(false)
 
+  const [remaining, setRemaining] = useState(retryAfter)
+  useEffect(() => {
+    setRemaining(retryAfter)
+    const timer = window.setInterval(() => setRemaining((v) => Math.max(0, v - 1)), 1000)
+    return () => window.clearInterval(timer)
+  }, [retryAfter])
+
+  const unlockBiometric = async () => {
+    if (busy) return
+    setBusy(true)
+    const res = await api.vaultUnlockBiometric()
+    setBusy(false)
+    if (res) onToast(T.vault.unlocked, 'ok')
+  }
+
   const unlock = async () => {
-    if (!pass || busy) return
+    if (!pass || busy || remaining > 0) return
     setBusy(true)
     const res = await api.vaultUnlock(pass)
     setBusy(false)
@@ -137,11 +152,14 @@ function Locked({ onToast, retryAfter }: { onToast: Props['onToast']; retryAfter
           />
         </label>
 
-        {retryAfter > 0 ? <p className="vault-warn">{T.vault.retry(retryAfter)}</p> : null}
+        {remaining > 0 ? <p className="vault-warn" role="status">{T.vault.retry(remaining)}</p> : null}
 
-        <Btn variant="primary" icon="unlock" disabled={!pass || busy} spinning={busy} onClick={unlock}>
+        <Btn variant="primary" icon="unlock" disabled={!pass || busy || remaining > 0} spinning={busy} onClick={unlock}>
           {T.vault.unlock}
         </Btn>
+        {vault.biometricAvailable && vault.biometricEnabled ? (
+          <Btn variant="ghost" icon="unlock" disabled={busy} spinning={busy} onClick={unlockBiometric}>Touch ID ile aç</Btn>
+        ) : null}
       </div>
     </div>
   )
@@ -190,6 +208,14 @@ function Contents({
           <Btn size="sm" variant="ghost" icon="pencil" onClick={() => setChanging(true)}>
             {T.vault.changeTitle}
           </Btn>
+          {vault.biometricAvailable ? (
+            <Btn size="sm" variant="ghost" icon="unlock" disabled={busy || !!vault.upgrading} onClick={async () => {
+              setBusy(true)
+              const res = await api.vaultSetBiometric(!vault.biometricEnabled)
+              setBusy(false)
+              if (res) onToast(res.biometricEnabled ? 'Touch ID etkinleştirildi.' : 'Touch ID kapatıldı.', 'ok')
+            }}>{vault.biometricEnabled ? 'Touch ID’yi kapat' : 'Touch ID’yi etkinleştir'}</Btn>
+          ) : null}
           <Btn size="sm" icon="lock" onClick={() => api.vaultLock()}>
             {T.vault.lock}
           </Btn>

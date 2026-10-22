@@ -16,9 +16,14 @@ const { resolvePage, assistedCapture, embedCandidatesFor } = require('./resolver
 const { describeStream } = require('./mediainfo')
 const { uid, siteLabel, hostOf, num, resolvedArgs, settingNumber } = require('./util')
 
+const { failureKind, retryDelay, sleep } = require('./recovery')
+const { rankCandidates } = require('./media-preferences')
+const { parseTitle } = require('./subtitles')
+
 const MAX_JSON = 64 * 1024 * 1024 // channels can dump a lot of JSON
 
 const running = new Map() // sourceId -> child process
+const controllers = new Map()
 
 function baseArgs(settings) {
   const args = ['--no-warnings', '--ignore-config', '--socket-timeout', '20', '--retries', '3']
@@ -30,7 +35,7 @@ function baseArgs(settings) {
   return args
 }
 
-function runJson(url, extraArgs, settings, trackKey = null) {
+function runJsonOnce(url, extraArgs, settings, trackKey = null) {
   return new Promise((resolve, reject) => {
     let bin
     try {
@@ -56,8 +61,15 @@ function runJson(url, extraArgs, settings, trackKey = null) {
       err += chunk
       if (err.length > 200000) err = err.slice(-100000)
     })
-    child.on('error', reject)
+    const timer = setTimeout(() => { killed = true; child.kill('SIGKILL') }, 65000)
+    const abort = () => { killed = true; child.kill() }
+    if (settings.signal?.aborted) abort()
+    else settings.signal?.addEventListener('abort', abort, { once: true })
+    child.on('error', (error) => { clearTimeout(timer); settings.signal?.removeEventListener('abort', abort); reject(error) })
     child.on('close', (code) => {
+      clearTimeout(timer)
+      settings.signal?.removeEventListener('abort', abort)
+      if (killed) return reject(Object.assign(new Error(settings.signal?.aborted ? 'Çözümleme durduruldu.' : 'Çözümleme zaman aşımına uğradı.'), { code: settings.signal?.aborted ? 'ABORTED' : 'ETIMEDOUT' }))
       const trimmed = out.trim()
       if (trimmed) {
         try {
@@ -80,6 +92,18 @@ function runJson(url, extraArgs, settings, trackKey = null) {
   })
 }
 
+async function runJson(url, extraArgs, settings, trackKey = null) {
+  for (let attempt = 0; ; attempt += 1) {
+    try { return await runJsonOnce(url, extraArgs, settings, trackKey) }
+    catch (err) {
+      if (settings.signal?.aborted || settings.autoRecover === false || attempt >= 2 || !['network', 'busy'].includes(failureKind(err))) throw err
+      const source = trackKey && store.findSource(trackKey)
+      if (source) store.commit(() => { source.note = `Geçici sunucu hatası; yeniden deneniyor (${attempt + 1}/2)` })
+      await sleep(retryDelay(attempt, failureKind(err)), settings.signal)
+    }
+  }
+}
+
 /** yt-dlp speaks in stack-trace English; say the same thing usefully. */
 const FRIENDLY = [
   [
@@ -99,12 +123,16 @@ const FRIENDLY = [
   [
     /http error 403/i,
     () =>
-      'Erişim reddedildi (403). Çerezsiz de denendi; giriş gerekiyor olabilir veya bağlantının süresi geçmiş olabilir — kaynağı yeniden tara.',
+      'Site erişimi reddetti (403). Oturum, site doğrulaması veya süresi dolmuş bir akış adresi olabilir; Tarayıcıda yakala ile kontrol edebilirsin.',
   ],
   [/http error 429|too many requests/i, () => 'Site çok fazla istek gördü (429). Biraz bekle.'],
   [/not available (?:from )?your (?:location|country)|geo.?restricted/i, () => 'Bu içerik bölgesel olarak kısıtlı.'],
   [/is not a valid url/i, () => 'Geçersiz bağlantı.'],
-  [/unable to (?:download|resolve)|getaddrinfo|name or service not known|network is unreachable/i, () => 'Ağa ulaşılamadı. Bağlantını kontrol et.'],
+  [/getaddrinfo|name or service not known|ENOTFOUND/i, () => 'Sitenin alan adı çözülemedi. Site adresi, DNS veya vekil sunucu kaynaklı olabilir.'],
+  [/timed? ?out|timeout/i, () => 'Site veya video sunucusu zamanında yanıt vermedi.'],
+  [/network is unreachable|ENETUNREACH/i, () => 'Bu sunucuya ağ yolu bulunamadı. Vekil ve ağ ayarlarını kontrol et.'],
+  [/certificate verify failed|SSL.*certificate/i, () => 'Sitenin güvenlik sertifikası doğrulanamadı.'],
+  [/connection reset|remote.*closed|ECONNRESET/i, () => 'Site bağlantıyı yarıda kapattı.'],
 ]
 
 /** Pull the useful line out of a wall of yt-dlp stderr. */
@@ -255,6 +283,10 @@ function itemFromNode(node, source, index) {
     isLive: !!node.is_live,
     // Used later to avoid subtitling a video in the language it already speaks.
     language: node.language || null,
+    audioTracks: (node.formats || []).filter((f) => f.acodec && f.acodec !== 'none').map((f) => ({ lang: f.language || '', name: f.format_note || '' })),
+    series: node.series || (parseTitle(node.title || '').episode ? parseTitle(node.title || '').title : null),
+    season: num(node.season_number) ?? parseTitle(node.title || '').season,
+    episode: num(node.episode_number) ?? parseTitle(node.title || '').episode,
     site: siteLabel(url || source.url, node.extractor_key || node.ie_key),
     addedAt: Date.now(),
     // A flat-playlist entry with no duration needs a second look.
@@ -312,23 +344,28 @@ function createSource(url, { useProxy = false } = {}) {
 async function probeUrl(url, { sourceId = null, playlistEnd = 0 } = {}) {
   const source = sourceId ? store.findSource(sourceId) : createSource(url)
   if (!source) return null
+  cancelProbe(source.id)
+  const controller = new AbortController()
+  controllers.set(source.id, controller)
   try {
-    return await runProbe(source, playlistEnd)
+    return await runProbe(source, playlistEnd, controller.signal)
   } catch (err) {
     // A source must never be left spinning. Anything unexpected becomes visible.
-    if (source.status === 'probing' || source.status === 'queued') {
+    if (!controller.signal.aborted && (source.status === 'probing' || source.status === 'queued')) {
       store.commit(() => {
         source.status = 'error'
         source.error = (err && err.message) || 'Beklenmeyen bir hata oldu.'
       })
     }
-    running.delete(source.id)
     return source
+  } finally {
+    if (controllers.get(source.id) === controller) { controllers.delete(source.id); running.delete(source.id) }
   }
 }
 
-async function runProbe(source, playlistEnd) {
-  const settings = proxied(store.getState().settings, source)
+async function runProbe(source, playlistEnd, signal) {
+  const previousJar = store.itemsOfSource(source.id).find((item) => item.resolved?.cookieFile)?.resolved.cookieFile || null
+  const settings = { ...proxied(store.getState().settings, source), signal, browserCookieJar: previousJar }
   const ytdlpOff = settings.useYtdlp === false
 
   store.commit((s) => {
@@ -345,6 +382,22 @@ async function runProbe(source, playlistEnd) {
   if (ytdlpOff) {
     await tryResolve(source, settings, null)
     return source
+  }
+
+  // Dedicated platform extractors preserve playlists and account metadata.
+  // General movie/player pages start with the application's own discovery.
+  const dedicated = /(^|\.)(youtube\.com|youtu\.be|vimeo\.com|soundcloud\.com|tiktok\.com|instagram\.com|twitch\.tv|dailymotion\.com|facebook\.com|twitter\.com|x\.com|bilibili\.com)$/.test(hostOf(source.url))
+  let ownError = null
+  const triedOwn = settings.resolverFirst !== false && settings.useResolver !== false && !dedicated
+  if (triedOwn) {
+    await tryResolve(source, settings, null)
+    if (signal.aborted || source.status === 'ready') return source
+    ownError = source.error
+    store.commit(() => { source.status = 'probing'; source.stage = 'ytdlp'; source.note = 'Alternatif çözümleme motoru deneniyor'; source.error = null })
+  }
+  const fallbackToOwn = async (error) => {
+    if (!triedOwn) await tryResolve(source, effective, error)
+    else store.commit(() => { source.status = 'error'; source.stage = null; source.note = null; source.error = ownError || error || 'Oynatılabilir akış bulunamadı.' })
   }
 
   const extra = ['-J', '--flat-playlist']
@@ -376,6 +429,7 @@ async function runProbe(source, playlistEnd) {
       failure = message
     }
   }
+  if (signal.aborted) return source
   running.delete(source.id)
 
   /*
@@ -389,6 +443,7 @@ async function runProbe(source, playlistEnd) {
     if (derived.length && (await probeEmbeds(source, derived, effective))) return source
   }
 
+  if (missingTool && settings.useResolver !== false) { await fallbackToOwn('yt-dlp kurulu değil.'); return source }
   if (missingTool) {
     store.commit(() => {
       source.status = 'error'
@@ -400,7 +455,7 @@ async function runProbe(source, playlistEnd) {
 
   // yt-dlp couldn't read the page. Hand it to our own resolver.
   if (failure || !json || typeof json !== 'object') {
-    await tryResolve(source, effective, failure)
+    await fallbackToOwn(failure)
     return source
   }
 
@@ -425,7 +480,7 @@ async function runProbe(source, playlistEnd) {
 
   // yt-dlp answered but found nothing playable — our resolver may still see it.
   if (!items.length) {
-    await tryResolve(source, effective, null)
+    await fallbackToOwn(null)
     return source
   }
 
@@ -471,7 +526,12 @@ function itemFromCandidate(candidate, source, index, title, userAgent, total, th
     sizes: (info && info.sizes) || {},
     // Subtitle tracks the master playlist itself advertises. yt-dlp cannot find
     // these — it asks the extractor, and a scraped m3u8 has no extractor.
-    subtitles: (info && info.subtitles) || [],
+    subtitles: require('./text-tracks').mergeTextTracks(info?.subtitles || [], candidate.subtitles || []),
+    audioTracks: info?.audioTracks || [],
+    language: candidate.language || null,
+    series: parseTitle(title || '').episode ? parseTitle(title || '').title : null,
+    season: parseTitle(title || '').season,
+    episode: parseTitle(title || '').episode,
     isLive: info ? !!info.live : false,
     site: hostOf(source.url) || source.site,
     addedAt: Date.now(),
@@ -483,7 +543,7 @@ function itemFromCandidate(candidate, source, index, title, userAgent, total, th
       pageUrl: source.url,
       referer: candidate.referer || source.url,
       origin: candidate.origin || '',
-      userAgent,
+      userAgent: candidate.userAgent || userAgent,
       cookieFile: candidate.cookieFile || null,
       kind: candidate.kind,
       engine: candidate.via,
@@ -523,7 +583,7 @@ async function tryResolve(source, settings, fallbackError) {
 
   // Hand the resolver the user's browser session so pages that want them signed
   // in behave the same as in their own browser.
-  let browserCookieJar = null
+  let browserCookieJar = settings.browserCookieJar || null
   if (settings.cookiesBrowser) {
     store.commit(() => { source.note = 'tarayıcı oturumu alınıyor' })
     browserCookieJar = await exportCookieJar(settings.cookiesBrowser).catch(() => null)
@@ -537,6 +597,8 @@ async function tryResolve(source, settings, fallbackError) {
   try {
     result = await resolvePage(source.url, {
       browserCookieJar,
+      preferredAudioLanguage: settings.preferredAudioLanguage || 'en',
+      signal: settings.signal,
       proxy: settings.proxy || '',
       useUserScripts: settings.useUserScripts !== false,
       preferEngine: profile ? profile.engine : null,
@@ -578,7 +640,7 @@ async function tryResolve(source, settings, fallbackError) {
     if (viaEmbed) return
   }
 
-  applyResolution(source, result, fallbackError)
+  if (!settings.signal?.aborted && store.findSource(source.id)) applyResolution(source, result, fallbackError)
 }
 
 /**
@@ -592,6 +654,7 @@ async function probeEmbeds(source, embeds, settings) {
 
   const items = []
   for (const embed of embeds.slice(0, 4)) {
+    if (settings.signal?.aborted) return false
     try {
       const { json } = await runJson(embed, ['-J', '--flat-playlist'], settings)
       if (!json || typeof json !== 'object') continue
@@ -609,7 +672,7 @@ async function probeEmbeds(source, embeds, settings) {
     if (items.length) break
   }
 
-  if (!items.length) return false
+  if (!items.length || settings.signal?.aborted) return false
 
   store.commit((s) => {
     source.count = items.length
@@ -645,6 +708,16 @@ function applyResolution(source, result, fallbackError) {
       source.error =
         result && result.encrypted
           ? 'Bu akış DRM korumalı — indirilemez.'
+          : result?.challengeRequired
+            ? 'Site tarayıcı doğrulaması istiyor. Tarayıcıda yakala ile doğrulamayı tamamlayabilir veya mevcut tarayıcı oturumunu seçebilirsin.'
+          : result?.accessRequired
+            ? 'Site oturum açılmasını istiyor. Ayarlar → Erişim’den mevcut tarayıcı oturumunu seç veya Tarayıcıda yakala ile giriş yap.'
+          : result?.failure?.status >= 400
+            ? `Site HTTP ${result.failure.status} döndürdü. Bu, internet bağlantısının kesik olduğu anlamına gelmez. Tarayıcıda yakala ile siteyi kontrol edebilirsin.`
+          : result?.loadError || result?.failure?.message
+            ? `Site açılamadı: ${result.loadError || result.failure.message}`
+          : result?.timedOut
+            ? 'Çözümleme süresi doldu. Site yanıtı veya oynatıcının başlaması gecikmiş olabilir; bekleme süresini artırabilir ya da Tarayıcıda yakala ile deneyebilirsin.'
           : result && result.shortOnly
             ? `Yalnızca ${shortest ? `${shortest} sn'lik ` : 'kısa '}bir akış geldi — bu reklam. Video akışı süre içinde başlamadı: Ayarlar → Erişim'den beklemeyi artır, ya da gerçekten kısa bir video ise "En kısa video süresi"ni Yok yap.`
             : adsOnly
@@ -655,7 +728,7 @@ function applyResolution(source, result, fallbackError) {
   }
 
   const title = (result.title || source.title || hostOf(source.url) || '').trim()
-  const picked = candidates.slice(0, 8)
+  const picked = rankCandidates(candidates, store.getState().settings.preferredAudioLanguage || 'en').slice(0, 8)
   const items = picked.map((c, i) =>
     itemFromCandidate(c, source, i, title, result.userAgent, picked.length, result.thumbnail)
   )
@@ -809,6 +882,11 @@ async function enrich(sourceId, settingsOverride = null) {
           live.filesizeEstimated = !num(json.filesize) && !!(num(json.filesize_approx) || best)
           if (Object.keys(sizes).length) live.sizes = sizes
           live.isLive = !!json.is_live
+          live.language = json.language || live.language
+          live.audioTracks = (json.formats || []).filter((f) => f.acodec && f.acodec !== 'none').map((f) => ({ lang: f.language || '', name: f.format_note || '' }))
+          live.series = json.series || live.series
+          live.season = num(json.season_number) ?? live.season
+          live.episode = num(json.episode_number) ?? live.episode
           live.site = siteLabel(json.webpage_url || live.url, json.extractor_key)
           live.enriched = true
         })
@@ -829,6 +907,8 @@ async function enrich(sourceId, settingsOverride = null) {
 }
 
 function cancelProbe(sourceId) {
+  controllers.get(sourceId)?.abort()
+  controllers.delete(sourceId)
   const child = running.get(sourceId)
   if (child) {
     child.kill()
@@ -837,6 +917,8 @@ function cancelProbe(sourceId) {
 }
 
 function killAll() {
+  for (const controller of controllers.values()) controller.abort()
+  controllers.clear()
   for (const child of running.values()) {
     try {
       child.kill()
@@ -854,7 +936,11 @@ function killAll() {
 async function captureSource(sourceId) {
   const source = store.findSource(sourceId)
   if (!source) return null
-  const settings = proxied(store.getState().settings, source)
+  cancelProbe(sourceId)
+  const controller = new AbortController()
+  controllers.set(sourceId, controller)
+  const previousJar = store.itemsOfSource(source.id).find((item) => item.resolved?.cookieFile)?.resolved.cookieFile || null
+  const settings = { ...proxied(store.getState().settings, source), signal: controller.signal, browserCookieJar: previousJar }
 
   store.commit((s) => {
     source.status = 'probing'
@@ -864,7 +950,7 @@ async function captureSource(sourceId) {
     s.items = s.items.filter((i) => i.sourceId !== source.id)
   })
 
-  let browserCookieJar = null
+  let browserCookieJar = settings.browserCookieJar || null
   if (settings.cookiesBrowser) {
     browserCookieJar = await exportCookieJar(settings.cookiesBrowser).catch(() => null)
   }
@@ -873,6 +959,8 @@ async function captureSource(sourceId) {
   try {
     result = await assistedCapture(source.url, {
       browserCookieJar,
+      preferredAudioLanguage: settings.preferredAudioLanguage || 'en',
+      signal: controller.signal,
       proxy: settings.proxy || '',
       useUserScripts: settings.useUserScripts !== false,
       blockRules: {
@@ -890,7 +978,8 @@ async function captureSource(sourceId) {
     console.error('[assisted]', err)
   }
 
-  applyResolution(source, result, 'Pencere kapatıldı, akış yakalanmadı.')
+  if (!controller.signal.aborted && store.findSource(sourceId)) applyResolution(source, result, 'Pencere kapatıldı, akış yakalanmadı.')
+  if (controllers.get(sourceId) === controller) controllers.delete(sourceId)
   return source
 }
 
@@ -901,6 +990,7 @@ module.exports = {
   cancelProbe,
   killAll,
   readableError,
+  itemFromNode, itemFromCandidate,
   isCookieFailure,
   isRetryableWithoutCookies,
 }

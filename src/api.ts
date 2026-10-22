@@ -56,6 +56,7 @@ interface Bridge {
   clearMissing(): Promise<Result<number>>
   thumbFile(path: string, duration?: number | null): Promise<Result<string | null>>
   tidyFolder(): Promise<Result<unknown>>
+  setDownloadSeries(id: string, series: string | null): Promise<Result<boolean>>
   setDownloadCategory(ids: string[], categoryId: string | null): Promise<Result<boolean>>
   clearDownloads(which: 'done' | 'failed'): Promise<Result<boolean>>
   addCategory(name: string): Promise<Result<Category>>
@@ -77,6 +78,8 @@ interface Bridge {
   vaultStatus(): Promise<Result<VaultState>>
   vaultCreate(passphrase: string): Promise<Result<VaultState>>
   vaultUnlock(passphrase: string): Promise<Result<VaultState>>
+  vaultSetBiometric(enabled: boolean): Promise<Result<VaultState>>
+  vaultUnlockBiometric(): Promise<Result<VaultState>>
   vaultLock(): Promise<Result<VaultState>>
   vaultChangePassphrase(current: string, next: string): Promise<Result<VaultState>>
   vaultTakeDownload(id: string): Promise<Result<VaultEntry>>
@@ -177,6 +180,7 @@ export const api = {
   redownload: (id: string) => call(bridge.redownload(id)),
   clearMissing: () => call(bridge.clearMissing()),
   tidyFolder: () => call(bridge.tidyFolder()),
+  setDownloadSeries: (id: string, series: string | null) => call(bridge.setDownloadSeries(id, series)),
   setDownloadCategory: (ids: string[], categoryId: string | null) =>
     call(bridge.setDownloadCategory(ids, categoryId)),
   clearDownloads: (which: 'done' | 'failed') => call(bridge.clearDownloads(which)),
@@ -205,6 +209,8 @@ export const api = {
   vaultStatus: () => call(bridge.vaultStatus()),
   vaultCreate: (passphrase: string) => call(bridge.vaultCreate(passphrase)),
   vaultUnlock: (passphrase: string) => call(bridge.vaultUnlock(passphrase)),
+  vaultSetBiometric: (enabled: boolean) => call(bridge.vaultSetBiometric(enabled)),
+  vaultUnlockBiometric: () => call(bridge.vaultUnlockBiometric()),
   vaultLock: () => call(bridge.vaultLock()),
   vaultChangePassphrase: (current: string, next: string) => call(bridge.vaultChangePassphrase(current, next)),
   vaultTakeDownload: (id: string) => call(bridge.vaultTakeDownload(id)),

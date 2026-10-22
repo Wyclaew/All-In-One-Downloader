@@ -35,8 +35,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify tag matches package version
+        run: node -e "if(process.env.GITHUB_REF_TYPE==='tag' && process.env.GITHUB_REF_NAME!=='v'+require('./package.json').version) process.exit(1)"
+
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Test resolver, transfers, vault and updater
+        run: npm test
 
       - name: Build renderer
         run: npm run build
@@ -96,10 +102,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Verify all installers and update manifests before publishing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node build/verify-release.js
+
       - name: Attach the install notes to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release edit "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
-            --notes-file build/release-notes.md
+            --notes-file build/release-notes.md --draft=false --latest

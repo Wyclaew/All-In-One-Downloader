@@ -117,7 +117,7 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
         <Row label={T.settings.connections} hint={T.settings.connectionsHint}>
           <select
             className="select"
-            value={settings.connections ?? 4}
+            value={settings.connections ?? 8}
             onChange={(e) => patch({ connections: Number(e.target.value) })}
           >
             {[1, 2, 4, 6, 8, 12, 16].map((n) => (
@@ -127,6 +127,17 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
             ))}
           </select>
         </Row>
+
+        <Row label="Geçici hataları otomatik düzelt" hint="Bağlantıyı yeniler, gerekirse akışı tekrar çözümler. Giriş ve disk hataları tekrar denenmez.">
+          <Toggle checked={settings.autoRecover !== false} onChange={(v) => patch({ autoRecover: v })} label="Otomatik kurtarma" />
+        </Row>
+        {settings.autoRecover !== false ? (
+          <Row label="Otomatik deneme sayısı">
+            <select className="select" value={settings.recoveryAttempts ?? 3} onChange={(e) => patch({ recoveryAttempts: Number(e.target.value) })}>
+              {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </Row>
+        ) : null}
 
         <Row label={T.settings.rateLimit} hint={T.settings.rateLimitHint}>
           <input
@@ -191,6 +202,14 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
                 {v}
               </option>
             ))}
+          </select>
+        </Row>
+
+        <Row label="Tercih edilen ses dili" hint="Varsa bu dildeki ses seçilir. Bulunamazsa mevcut dil bildirilir; etiketsiz sesin dili doğrulanamaz.">
+          <select className="select" value={settings.preferredAudioLanguage || 'en'} onChange={(e) => patch({ preferredAudioLanguage: e.target.value as SettingsShape['preferredAudioLanguage'] })}>
+            <option value="en">İngilizce</option>
+            <option value="tr">Türkçe</option>
+            <option value="auto">Kaynağın varsayılan sesi</option>
           </select>
         </Row>
 
@@ -390,6 +409,11 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
               onChange={(v) => patch({ useResolver: v })}
               label={T.settings.resolverOn}
             />
+            <Toggle
+              checked={settings.resolverFirst !== false}
+              onChange={(v) => patch({ resolverFirst: v })}
+              label="Genel sitelerde önce kendi çözümleyicisini dene"
+            />
             <div className="set-inline">
               <span style={{ fontSize: 12.5, color: 'var(--dim)' }}>{T.settings.resolverWait}</span>
               <select
@@ -421,6 +445,10 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
               </select>
             </div>
           </div>
+        </Row>
+
+        <Row label="Videoları parçalarla aktar" hint="Desteklenen HLS videolarını uygulama indirir; tamamlanan parçalar duraklatma ve yeniden denemede korunur. Parçalar sonunda yerel olarak birleştirilir.">
+          <Toggle checked={settings.nativeHls !== false} onChange={(v) => patch({ nativeHls: v })} label="HLS için uygulamanın aktarım motorunu kullan" />
         </Row>
 
         <Row label={T.settings.minStream} hint={T.settings.minStreamHint}>

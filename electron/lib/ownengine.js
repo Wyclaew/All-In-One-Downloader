@@ -26,8 +26,11 @@ const { Transform } = require('stream')
 const { pipeline } = require('stream/promises')
 const { toolEnv, ffmpegPath } = require('./binaries')
 const { fetchHeaders, ffprobeHeaderArgs, parseHls } = require('./mediainfo')
-const { agentsFor, circuitFor, ffmpegEnv, parseProxy } = require('./proxy')
-const { safeName, settingNumber } = require('./util')
+const { agentsFor, ffmpegEnv, parseProxy } = require('./proxy')
+const { safeName, settingNumber, atomicWrite } = require('./util')
+const { failureKind, retryDelay, httpError, sleep } = require('./recovery')
+const { TransferStats } = require('./transfer-stats')
+const { languageCode } = require('./media-preferences')
 
 const AUDIO_CODECS = {
   mp3: ['libmp3lame', '-q:a', '2'],
@@ -90,20 +93,22 @@ async function probeVia(url, resolved, proxy) {
   res.request.destroy()
 
   const total = Number(String(headers['content-range'] || '').split('/')[1]) || null
-  if (res.status === 206 && total) return { size: total, ranges: true, url }
+  const validator = headers.etag && !headers.etag.startsWith('W/') ? headers.etag : headers['last-modified'] || null
+  if (res.status === 206 && total) return { size: total, ranges: true, url: res.finalUrl || url, validator }
   if (res.status === 200) {
     return {
       size: Number(headers['content-length']) || null,
-      ranges: /bytes/i.test(String(headers['accept-ranges'] || '')),
-      url,
+      ranges: false,
+      url: res.finalUrl || url,
+      validator,
     }
   }
   return { size: null, ranges: false, url }
 }
 
 /** A manifest's text, through the tunnel when there is one. */
-async function fetchTextVia(url, resolved, proxy, limit = 2 * 1024 * 1024) {
-  const res = await openStream(url, fetchHeaders(url, resolved), { proxy })
+async function fetchTextVia(url, resolved, proxy, limit = 2 * 1024 * 1024, signal = null) {
+  const res = await openStream(url, fetchHeaders(url, resolved), { proxy, signal, resolved })
   if (res.status !== 200) {
     res.request.destroy()
     return { text: '', finalUrl: url }
@@ -116,7 +121,7 @@ async function fetchTextVia(url, resolved, proxy, limit = 2 * 1024 * 1024) {
     if (size >= limit) break
   }
   res.request.destroy()
-  return { text: Buffer.concat(chunks).toString('utf8'), finalUrl: url }
+  return { text: Buffer.concat(chunks).toString('utf8'), finalUrl: res.finalUrl || url }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -128,7 +133,7 @@ async function fetchTextVia(url, resolved, proxy, limit = 2 * 1024 * 1024) {
  * shape it is. A download made from a resolved item already carries all of this;
  * a bare page URL is resolved here, because without yt-dlp nothing else will.
  */
-async function locateStream(download, settings, onNote) {
+async function locateStream(download, settings, onNote, signal = null) {
   if (download.resolved && download.url) {
     return { url: download.url, resolved: download.resolved, kind: download.resolved.kind || 'file' }
   }
@@ -145,6 +150,9 @@ async function locateStream(download, settings, onNote) {
 
   const result = await resolvePage(download.url, {
     browserCookieJar,
+    preferredAudioLanguage: download.preferredAudioLanguage || settings.preferredAudioLanguage || 'en',
+    signal,
+    useUserScripts: settings.useUserScripts !== false,
     // A proxied download that has to resolve its own page must resolve it through
     // the same tunnel it will fetch through.
     proxy: download.useProxy ? String(settings.proxyUrl || '').trim() : '',
@@ -157,7 +165,7 @@ async function locateStream(download, settings, onNote) {
     onProgress: (message) => onNote?.(message),
   })
 
-  const candidate = (result && result.candidates && result.candidates[0]) || null
+  const candidate = require('./media-preferences').rankCandidates(result?.candidates || [], download.preferredAudioLanguage || settings.preferredAudioLanguage || 'en').find((c) => !c.info?.drm) || null
   if (!candidate) {
     throw new Error(
       'Bu bağlantıda indirilebilir bir akış bulunamadı. yt-dlp kapalı olduğu için yalnızca kendi çözümleyicim denendi.'
@@ -185,8 +193,8 @@ async function locateStream(download, settings, onNote) {
  * Swap a master playlist for the rendition the user asked for. Falls back to the
  * playlist itself when there is nothing to choose between.
  */
-async function pickVariant(url, resolved, quality, onNote, proxy = '') {
-  const { text, finalUrl } = await fetchTextVia(url, resolved, proxy)
+async function pickVariant(url, resolved, quality, onNote, proxy = '', preferred = 'en', signal = null) {
+  const { text, finalUrl } = await fetchTextVia(url, resolved, proxy, 2 * 1024 * 1024, signal)
   if (!text || !/#EXTM3U/i.test(text)) return { url, height: null }
   const hls = parseHls(text, finalUrl)
   if (!hls.variants.length) return { url, height: null }
@@ -208,7 +216,24 @@ async function pickVariant(url, resolved, quality, onNote, proxy = '') {
   if (chosen.height && chosen.height !== ranked[0].height) {
     onNote?.(`${chosen.height}p akış seçildi`)
   }
-  return { url: chosen.url || url, height: chosen.height || null }
+  const tracks = (hls.audioTracks || []).filter((t) => !chosen.audioGroup || t.group === chosen.audioGroup)
+  const lang = languageCode(preferred)
+  const audio = tracks.find((t) => languageCode(t.lang) === lang) || tracks.find((t) => t.default) || tracks[0]
+  if (lang !== 'auto' && audio?.lang && languageCode(audio.lang) !== lang) onNote?.(`İstenen ses dili yok; ${audio.lang} ses mevcut`)
+  return { url: chosen.url || url, height: chosen.height || null, audioUrl: audio?.url || null, audioLanguage: audio?.lang || null }
+}
+
+function rateLimiter(value, signal = null) {
+  const match = String(value || '').trim().match(/^(\d+(?:\.\d+)?)\s*([kmg])?(?:i?b)?$/i)
+  const rate = match ? Number(match[1]) * 1024 ** ({ k: 1, m: 2, g: 3 }[(match[2] || '').toLowerCase()] || 0) : 0
+  if (!(rate > 0)) return null
+  let next = Date.now()
+  return async (bytes) => {
+    const now = Date.now()
+    const delay = Math.max(0, next - now)
+    next = Math.max(now, next) + bytes / rate * 1000
+    if (delay > 0) await sleep(delay, signal)
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -236,7 +261,7 @@ const AGENTS = {
 }
 
 /** Open one request, following redirects, and hand back the live response. */
-function openStream(rawUrl, headers, { redirects = 5, proxy = '' } = {}) {
+function openStream(rawUrl, headers, { redirects = 5, proxy = '', signal = null, resolved = null } = {}) {
   return new Promise((resolve, reject) => {
     let target
     try {
@@ -244,22 +269,32 @@ function openStream(rawUrl, headers, { redirects = 5, proxy = '' } = {}) {
     } catch (err) {
       return reject(err)
     }
+    if (!['http:', 'https:'].includes(target.protocol)) return reject(new Error('Geçersiz akış protokolü.'))
     const mod = target.protocol === 'http:' ? http : https
     const tunnel = proxy ? agentsFor(proxy) : null
     if (proxy && !tunnel) return reject(new Error(`Vekil adresi anlaşılamadı: ${proxy}`))
     const agent = tunnel ? tunnel[target.protocol] : AGENTS[target.protocol]
 
-    const req = mod.request(target, { headers, agent }, (res) => {
+    const req = mod.request(target, { headers, agent, signal, autoSelectFamily: !proxy }, (res) => {
+      // An abort may arrive between response delivery and the caller attaching
+      // its iterator. Keep that interval from emitting an unhandled error.
+      res.on('error', () => {})
       const location = res.headers.location
       if (location && res.statusCode >= 300 && res.statusCode < 400 && redirects > 0) {
         res.resume() // drain, or the socket is never reusable
-        const next = new URL(location, target).href
-        return resolve(openStream(next, headers, { redirects: redirects - 1, proxy }))
+        let next
+        try { next = new URL(location, target).href } catch (err) { req.destroy(); reject(err); return }
+        const nextHeaders = { ...headers }
+        if (new URL(next).origin !== target.origin) {
+          for (const key of Object.keys(nextHeaders)) if (/^(cookie|authorization|origin)$/i.test(key)) delete nextHeaders[key]
+          if (resolved) Object.assign(nextHeaders, fetchHeaders(next, resolved))
+        }
+        return resolve(openStream(next, nextHeaders, { redirects: redirects - 1, proxy, signal, resolved }))
       }
-      resolve({ status: res.statusCode, headers: res.headers, stream: res, request: req })
+      resolve({ status: res.statusCode, headers: res.headers, stream: res, request: req, finalUrl: target.href })
     })
     req.on('error', reject)
-    req.setTimeout(30000, () => req.destroy(new Error('Sunucu yanıt vermedi.')))
+    req.setTimeout(15000, () => req.destroy(Object.assign(new Error('Sunucu yanıt vermedi.'), { code: 'ETIMEDOUT' })))
     req.end()
   })
 }
@@ -282,37 +317,34 @@ function planPathFor(partPath) {
   return `${partPath}.parts`
 }
 
-function makePlan(size, connections) {
-  const count = Math.max(1, Math.min(connections, 16))
-  const chunk = Math.ceil(size / count)
+function makePlan(size, connections, validator = null) {
+  // Small tasks shared by all workers: a fast connection immediately takes the
+  // next task, instead of waiting for a slow lane's quarter of a whole film.
+  const chunk = Math.max(1024 * 1024, Math.min(4 * 1024 * 1024, Math.ceil(size / (connections * 8))))
   const parts = []
   for (let start = 0; start < size; start += chunk) {
     parts.push({ start, end: Math.min(start + chunk, size) - 1, done: 0 })
   }
-  return { size, parts }
+  return { version: 2, size, validator, parts }
 }
 
-function readPlan(planPath, size) {
+function readPlan(planPath, size, validator = null) {
   try {
     const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'))
-    if (!plan || plan.size !== size || !Array.isArray(plan.parts) || !plan.parts.length) return null
-    // A journal that disagrees with itself is worse than no journal.
+    if (!plan || plan.size !== size || plan.validator !== validator || !Array.isArray(plan.parts) || !plan.parts.length) return null
+    let next = 0
     for (const p of plan.parts) {
-      if (!Number.isFinite(p.start) || !Number.isFinite(p.end) || !Number.isFinite(p.done)) return null
-      if (p.done < 0 || p.start + p.done > p.end + 1) return null
+      if (![p.start, p.end, p.done].every(Number.isSafeInteger)) return null
+      if (p.start !== next || p.end < p.start || p.end >= size || p.done < 0 || p.done > p.end - p.start + 1) return null
+      next = p.end + 1
     }
-    return plan
-  } catch {
-    return null
-  }
+    return next === size ? plan : null
+  } catch { return null }
 }
 
 function savePlan(planPath, plan) {
-  try {
-    fs.writeFileSync(planPath, JSON.stringify(plan))
-  } catch {
-    /* the journal is an optimisation; losing it only costs a restart */
-  }
+  // Runtime state is deliberately excluded from the resume journal.
+  atomicWrite(planPath, JSON.stringify({ ...plan, parts: plan.parts.map(({ start, end, done }) => ({ start, end, done })) }))
 }
 
 async function fetchFileParallel({
@@ -321,6 +353,8 @@ async function fetchFileParallel({
   destPath,
   size,
   connections,
+  validator = null,
+  limit = null,
   proxy = '',
   onProgress,
   onHandle,
@@ -329,12 +363,12 @@ async function fetchFileParallel({
   const partPath = `${destPath}.part`
   const planPath = planPathFor(partPath)
 
-  let plan = readPlan(planPath, size)
+  let plan = readPlan(planPath, size, validator)
   let resumed = false
   if (plan && fs.existsSync(partPath) && fs.statSync(partPath).size === size) {
     resumed = plan.parts.some((p) => p.done > 0)
   } else {
-    plan = makePlan(size, connections)
+    plan = makePlan(size, connections, validator)
     // Preallocate so every connection can write at its own offset from the start.
     const fd = fs.openSync(partPath, 'w')
     try {
@@ -349,133 +383,98 @@ async function fetchFileParallel({
   )
 
   let stopped = false
-  const live = new Set()
-  onHandle({
-    kill() {
-      stopped = true
-      for (const req of live) {
-        try {
-          req.destroy()
-        } catch {
-          /* already gone */
-        }
-      }
-      live.clear()
-    },
-  })
-
+  const controller = new AbortController()
+  onHandle({ kill() { stopped = true; controller.abort() } })
   const doneBytes = () => plan.parts.reduce((sum, p) => sum + p.done, 0)
-  let lastAt = Date.now()
-  let lastBytes = doneBytes()
+  const stats = new TransferStats(doneBytes())
+  let lastAt = 0
   let lastSaved = Date.now()
-
+  const lanes = Array.from({ length: Math.min(connections, plan.parts.length) }, () => ({ done: 0, size: 0 }))
   const tick = () => {
     const now = Date.now()
     if (now - lastAt < 400) return
-    const downloaded = doneBytes()
-    const speed = ((downloaded - lastBytes) * 1000) / (now - lastAt)
     lastAt = now
-    lastBytes = downloaded
-    if (now - lastSaved > 1000) {
-      savePlan(planPath, plan)
-      lastSaved = now
-    }
-    onProgress({
-      downloaded,
-      total: size,
-      totalExact: true,
-      speed,
-      eta: speed > 0 ? Math.round((size - downloaded) / speed) : null,
-      percent: downloaded / size,
-      // Per-connection progress, so the meter can show what each one is doing
-      // instead of averaging four connections into one number.
-      parts: plan.parts.map((p) => ({ done: p.done, size: p.end - p.start + 1 })),
-    })
+    const downloaded = doneBytes()
+    if (now - lastSaved > 1000) { savePlan(planPath, plan); lastSaved = now }
+    onProgress({ downloaded, total: size, totalExact: true, ...stats.update(downloaded, size),
+      percent: downloaded / size, parts: lanes.map((p) => ({ ...p })) })
   }
-
-  const MAX_STALLS = 4
+  const ticker = setInterval(tick, 500)
 
   const runPart = async (part, lane) => {
-    let stalls = 0
     const capacity = part.end - part.start + 1
-    // Over Tor this puts each part on its own circuit, so the parts add up instead
-    // of sharing one route. Anywhere else it is the same address it was given.
-    const laneProxy = circuitFor(proxy, lane)
-
+    lanes[lane] = { done: part.done, size: capacity }
+    let attempts = 0
     while (part.done < capacity) {
-      if (stopped) throw abortError()
+      if (controller.signal.aborted) throw abortError()
       const from = part.start + part.done
-      const res = await openStream(
-        url,
-        { ...fetchHeaders(url, resolved), Range: `bytes=${from}-${part.end}` },
-        { proxy: laneProxy }
-      )
-      live.add(res.request)
-
-      if (res.status !== 206) {
-        res.request.destroy()
-        live.delete(res.request)
-        const err = new Error('Sunucu parçalı indirmeyi reddetti.')
-        err.code = 'NO_RANGE'
-        throw err
-      }
-
-      const before = part.done
-
-      // Written by hand rather than through a pipeline. A part has to stop at its
-      // own boundary — asking for bytes 0-999 does not guarantee getting only
-      // those, and some servers answer 206 and then send the rest of the file,
-      // which would scribble over the next part's territory. Awaiting each
-      // positioned write makes "stop here" and "everything is on disk" the same
-      // moment, which a pipeline torn down mid-flight cannot promise.
-      const handle = await fsp.open(partPath, 'r+')
+      let res = null
       try {
-        let offset = from
-        for await (const chunk of res.stream) {
-          if (stopped) throw abortError()
-          const room = capacity - part.done
-          if (room <= 0) break
-          const slice = chunk.length > room ? chunk.subarray(0, room) : chunk
-          await handle.write(slice, 0, slice.length, offset)
-          offset += slice.length
-          part.done += slice.length
-          tick()
-          if (part.done >= capacity) break
+        res = await openStream(url, {
+          ...fetchHeaders(url, resolved), 'Accept-Encoding': 'identity',
+          Range: `bytes=${from}-${part.end}`, ...(validator ? { 'If-Range': validator } : {}),
+        }, { proxy, signal: controller.signal, resolved })
+        if (res.status !== 206) {
+          if (res.status === 200 || res.status === 416) {
+            throw Object.assign(new Error('Sunucu parçalı indirmeyi reddetti.'), { code: 'NO_RANGE' })
+          }
+          throw httpError(res.status, res.headers)
         }
-      } finally {
-        await handle.close()
-        // Hang up rather than pull down bytes that would only be discarded.
-        res.request.destroy()
-        live.delete(res.request)
-      }
-
-      // A connection dropped early leaves this part short; the loop reopens it
-      // from exactly where it stopped rather than starting the file again. But a
-      // server that answers 206 and then sends nothing would spin that loop
-      // forever, so a run of empty answers has to end the attempt.
-      if (part.done === before) {
-        stalls += 1
-        if (stalls >= MAX_STALLS) {
-          throw new Error(`Sunucu ${from}. bayttan sonrasını vermedi.`)
+        const range = String(res.headers['content-range'] || '').match(/^bytes (\d+)-(\d+)\/(\d+)$/i)
+        if (!range || Number(range[1]) !== from || Number(range[2]) !== part.end || Number(range[3]) !== size) {
+          throw Object.assign(new Error('Sunucu yanlış bayt aralığı döndürdü.'), { code: 'NO_RANGE' })
         }
-        await new Promise((r) => setTimeout(r, 300 * stalls))
-      } else {
-        stalls = 0
-      }
-
-      if (part.start + part.done > part.end) return
-      if (stopped) throw abortError()
+        const handle = await fsp.open(partPath, 'r+')
+        try {
+          for await (const chunk of res.stream) {
+            if (controller.signal.aborted) throw abortError()
+            const room = capacity - part.done
+            if (room <= 0) break
+            const slice = chunk.subarray(0, room)
+            if (limit) await limit(slice.length)
+            let written = 0
+            while (written < slice.length) {
+              const out = await handle.write(slice, written, slice.length - written, part.start + part.done)
+              if (!out.bytesWritten) throw new Error('Dosyaya yazılamadı.')
+              written += out.bytesWritten
+              part.done += out.bytesWritten
+              lanes[lane].done = part.done
+            }
+            tick()
+          }
+        } finally { await handle.close() }
+        if (part.done < capacity) throw Object.assign(new Error('Parça eksik indi.'), { code: 'ECONNRESET' })
+      } catch (err) {
+        if (controller.signal.aborted) throw abortError()
+        res?.request.destroy()
+        const kind = failureKind(err)
+        if (!['network', 'busy'].includes(kind) || attempts >= 4) throw err
+        onNote?.(`bağlantı yenileniyor; alınan parçalar korunuyor (${attempts + 1}/4)`)
+        await sleep(retryDelay(attempts++, kind, err.retryAfter), controller.signal)
+      } finally { res?.request.destroy() }
     }
   }
 
-  try {
-    await Promise.all(plan.parts.map((part, lane) => runPart(part, lane)))
-  } catch (err) {
-    savePlan(planPath, plan)
-    if (stopped) throw abortError()
-    throw err
+  let cursor = 0
+  const worker = async (lane) => {
+    while (cursor < plan.parts.length && !controller.signal.aborted) {
+      const part = plan.parts[cursor++]
+      if (part.done < part.end - part.start + 1) await runPart(part, lane)
+    }
   }
-
+  let firstError = null
+  try {
+    await Promise.allSettled(lanes.map((_, lane) => worker(lane).catch((err) => {
+      if (!firstError) firstError = err
+      controller.abort()
+    })))
+  } finally {
+    clearInterval(ticker)
+    savePlan(planPath, plan)
+  }
+  // Wait for every writer to close BEFORE falling back, deleting or renaming.
+  if (stopped) throw abortError()
+  if (firstError) throw firstError
   const total = doneBytes()
   if (total !== size) {
     throw new Error(`Parçalar eksik indi (${total}/${size}).`)
@@ -491,7 +490,7 @@ async function fetchFileParallel({
 /* plain file over HTTP, one connection                                        */
 /* -------------------------------------------------------------------------- */
 
-async function fetchFile({ url, resolved, destPath, proxy = '', onProgress, onHandle }) {
+async function fetchFile({ url, resolved, destPath, validator = null, limit = null, proxy = '', onProgress, onHandle }) {
   const partPath = `${destPath}.part`
   let already = 0
   try {
@@ -500,11 +499,19 @@ async function fetchFile({ url, resolved, destPath, proxy = '', onProgress, onHa
     /* nothing to resume */
   }
 
+  const journal = `${partPath}.single`
+  let previous = null
+  try { previous = JSON.parse(fs.readFileSync(journal, 'utf8')) } catch {}
+  if (already && (!previous || previous.validator !== validator || (!validator && previous.url !== url))) already = 0
+  atomicWrite(journal, JSON.stringify({ url, validator }))
+
   let stopped = false
   let request = null
+  const controller = new AbortController()
   onHandle({
     kill() {
       stopped = true
+      controller.abort()
       if (request) {
         try {
           request.destroy()
@@ -516,18 +523,18 @@ async function fetchFile({ url, resolved, destPath, proxy = '', onProgress, onHa
   })
 
   const headers = { ...fetchHeaders(url, resolved) }
-  if (already > 0) headers.Range = `bytes=${already}-`
+  if (already > 0) { headers.Range = `bytes=${already}-`; if (validator) headers['If-Range'] = validator }
 
   // Same client as the parallel path: one place that knows about redirects,
   // timeouts and proxies, rather than fetch here and http over there.
-  const res = await openStream(url, headers, { proxy }).catch((err) => {
+  const res = await openStream(url, headers, { proxy, signal: controller.signal, resolved }).catch((err) => {
     if (stopped) throw abortError()
     throw err
   })
   request = res.request
   if (res.status !== 200 && res.status !== 206) {
     request.destroy()
-    throw new Error(`Sunucu ${res.status} döndü.`)
+    throw httpError(res.status, res.headers)
   }
 
   // A redirect to a login wall or an error page answers 200 with HTML. Copying
@@ -542,6 +549,11 @@ async function fetchFile({ url, resolved, destPath, proxy = '', onProgress, onHa
   // A server that ignores Range restarts the file; keeping the old bytes would
   // corrupt it, so start over rather than append.
   let resuming = already > 0 && res.status === 206
+  if (res.status === 206 && Number((String(res.headers['content-range'] || '').match(/^bytes (\d+)-/i) || [])[1]) !== already) {
+    request.destroy()
+    fs.rmSync(partPath, { force: true })
+    throw Object.assign(new Error('Sürdürme aralığı geçersiz.'), { code: 'ECONNRESET' })
+  }
   if (already > 0 && !resuming) already = 0
 
   // No Content-Length means no total. Adding what we already have to a zero would
@@ -552,34 +564,32 @@ async function fetchFile({ url, resolved, destPath, proxy = '', onProgress, onHa
   const out = fs.createWriteStream(partPath, { flags: resuming ? 'a' : 'w' })
   let downloaded = already
   let lastAt = Date.now()
-  let lastBytes = downloaded
+  const stats = new TransferStats(downloaded)
 
   // Count inside the pipeline rather than on a 'data' listener: subscribing to
   // 'data' starts the stream flowing before pipeline has hooked up the sink, and
   // the first chunks go on the floor.
   const report = () => {
     const now = Date.now()
-    const span = now - lastAt
-    const speed = span > 0 ? ((downloaded - lastBytes) * 1000) / span : null
     lastAt = now
-    lastBytes = downloaded
     onProgress({
       downloaded,
       total,
       // Content-Length is a real length, not a guess — say so, so the caller
       // doesn't second-guess it with an estimate.
       totalExact: !!total,
-      speed,
-      eta: total && speed > 0 ? Math.round((total - downloaded) / speed) : null,
+      ...stats.update(downloaded, total),
       percent: total ? downloaded / total : null,
     })
   }
 
   const meter = new Transform({
     transform(chunk, _enc, done) {
-      downloaded += chunk.length
-      if (Date.now() - lastAt >= 400) report()
-      done(null, chunk)
+      Promise.resolve(limit?.(chunk.length)).then(() => {
+        downloaded += chunk.length
+        if (Date.now() - lastAt >= 400) report()
+        done(null, chunk)
+      }, done)
     },
     // A small file can finish inside one reporting window, which would leave the
     // meter showing nothing at all. Report once more on the way out.
@@ -596,7 +606,10 @@ async function fetchFile({ url, resolved, destPath, proxy = '', onProgress, onHa
     throw err
   }
 
+  if (stopped) throw abortError()
+  if (total && downloaded !== total) throw Object.assign(new Error('Dosya eksik indi.'), { code: 'ECONNRESET' })
   fs.renameSync(partPath, destPath)
+  fs.rmSync(journal, { force: true })
   return destPath
 }
 
@@ -623,7 +636,7 @@ const MUXERS = {
   wav: 'wav',
 }
 
-function ffmpegArgs({ url, resolved, destPath, workPath, download, settings }) {
+function ffmpegArgs({ url, resolved, audioUrl = null, selectedAudioIndex = null, destPath, workPath, download, settings }) {
   const args = [
     '-hide_banner',
     '-loglevel',
@@ -634,10 +647,17 @@ function ffmpegArgs({ url, resolved, destPath, workPath, download, settings }) {
     'pipe:1',
     '-rw_timeout',
     '20000000',
+    '-reconnect', '1', '-reconnect_streamed', '1',
+    '-reconnect_on_network_error', '1', '-reconnect_on_http_error', '429,500,502,503,504',
+    '-reconnect_delay_max', '8',
     ...ffprobeHeaderArgs(url, resolved),
     '-i',
     url,
   ]
+
+  if (audioUrl) args.push(...ffprobeHeaderArgs(audioUrl, resolved), '-i', audioUrl)
+  if (audioUrl) args.push('-map', '0:v:0?', '-map', '1:a:0')
+  else if (selectedAudioIndex !== null) args.push('-map', '0:v:0?', '-map', `0:${selectedAudioIndex}`)
 
   if (download.audioOnly) {
     const codec = AUDIO_CODECS[settings.audioFormat] || AUDIO_CODECS.mp3
@@ -657,6 +677,8 @@ function ffmpegArgs({ url, resolved, destPath, workPath, download, settings }) {
 function runFfmpeg({
   url,
   resolved,
+  audioUrl = null,
+  selectedAudioIndex = null,
   destPath,
   workPath,
   download,
@@ -688,7 +710,7 @@ function runFfmpeg({
 
     const child = spawn(
       bin,
-      ffmpegArgs({ url, resolved, destPath, workPath, download, settings }),
+      ffmpegArgs({ url, resolved, audioUrl, selectedAudioIndex, destPath, workPath, download, settings }),
       { env, windowsHide: true }
     )
     onHandle(child)
@@ -696,30 +718,22 @@ function runFfmpeg({
     const duration = Number(download.duration) || 0
     let buffer = ''
     let stderr = ''
-    let lastBytes = 0
-    let lastAt = Date.now()
+    let fields = {}
+    const stats = new TransferStats()
 
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk) => {
       buffer += chunk
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
-      const fields = {}
       for (const line of lines) {
         const [rawKey, rawValue] = line.split('=')
         if (rawKey && rawValue !== undefined) fields[rawKey.trim()] = rawValue.trim()
       }
-      if (!Object.keys(fields).length) return
+      if (!fields.progress) return
 
       const outSeconds = Number(fields.out_time_us || fields.out_time_ms || 0) / 1e6
       const bytes = Number(fields.total_size) || 0
-      const now = Date.now()
-      const elapsed = now - lastAt
-      const speed = elapsed > 0 && bytes > lastBytes ? ((bytes - lastBytes) * 1000) / elapsed : null
-      if (bytes > lastBytes) {
-        lastBytes = bytes
-        lastAt = now
-      }
 
       const percent = duration && outSeconds ? Math.min(0.999, outSeconds / duration) : null
       // ffmpeg says "1.7x", meaning it is writing 1.7 seconds of video per second.
@@ -737,10 +751,11 @@ function runFfmpeg({
         // figure from the manifest and should prefer it.
         total: percent > 0.05 && bytes ? Math.round(bytes / percent) : null,
         totalExact: false,
-        speed,
+        ...stats.update(bytes, null),
         eta,
         percent,
       })
+      fields = {}
     })
 
     child.stderr.setEncoding('utf8')
@@ -794,6 +809,7 @@ async function transfer({
   onNote,
   onDest,
   isStopped,
+  signal = null,
 }) {
   // Resolving a gated page can take most of a minute, and during that stretch
   // there is no process to kill — so pause and cancel are checked at each phase
@@ -804,21 +820,30 @@ async function transfer({
 
   const proxy = download.useProxy ? String(settings.proxyUrl || '').trim() : ''
 
-  const located = await locateStream(download, settings, onNote)
+  const located = await locateStream(download, settings, onNote, signal)
   halt()
   let { url } = located
   const { resolved, kind } = located
+  download.resolved = resolved
+  download.url = located.url
+  let audioUrl = null
+  let audioLanguage = null
 
-  if (kind === 'hls' && !download.audioOnly) {
-    const picked = await pickVariant(url, resolved, download.quality, onNote, proxy)
-    url = picked.url
+  if (kind === 'hls') {
+    const picked = await pickVariant(url, resolved, download.quality, onNote, proxy, download.preferredAudioLanguage || settings.preferredAudioLanguage || 'en', signal)
+    audioUrl = picked.audioUrl || null
+    audioLanguage = picked.audioLanguage || null
+    url = download.audioOnly && audioUrl ? audioUrl : picked.url
+    if (download.audioOnly) audioUrl = null
     halt()
   }
 
   const dir = settings.downloadDir
   fs.mkdirSync(dir, { recursive: true })
   const base = safeName(download.title || 'video')
-  const destPath = freePath(dir, base, extensionFor(download, settings, url, kind))
+  const destPath = download.ownDestPath && path.dirname(download.ownDestPath) === dir && !fs.existsSync(download.ownDestPath)
+    ? download.ownDestPath : freePath(dir, base, extensionFor(download, settings, url, kind))
+  download.ownDestPath = destPath
   // Tell the caller where we are writing, so a cancelled transfer can clean up
   // after itself the same way the yt-dlp path does.
   onDest?.(destPath)
@@ -828,6 +853,7 @@ async function transfer({
   // A plain file is a byte copy, and a byte copy can be resumed. Anything
   // segmented has to be assembled, and only ffmpeg does that properly.
   const plain = kind === 'file' && !download.audioOnly
+  const limit = rateLimiter(settings.rateLimit, signal)
   if (plain) {
     // Ask what this file is before fetching it: the length gives the meter a
     // target from the first byte, and whether the server serves ranges decides
@@ -846,7 +872,7 @@ async function transfer({
       })
     }
 
-    const connections = Math.max(1, Math.min(16, settingNumber(settings.connections, 4)))
+    const connections = Math.max(1, Math.floor(Math.min(16, settingNumber(settings.connections, 8))))
     if (probed.size && probed.ranges && connections > 1 && probed.size >= MIN_MULTIPART) {
       try {
         const out = await fetchFileParallel({
@@ -855,6 +881,8 @@ async function transfer({
           destPath,
           size: probed.size,
           connections,
+          validator: probed.validator || null,
+          limit,
           proxy,
           onProgress,
           onHandle,
@@ -871,12 +899,36 @@ async function transfer({
       }
     }
 
-    return { filePath: await fetchFile({ url, resolved, destPath, proxy, onProgress, onHandle }) }
+    if (fs.existsSync(planPathFor(`${destPath}.part`))) {
+      fs.rmSync(planPathFor(`${destPath}.part`), { force: true })
+      fs.rmSync(`${destPath}.part`, { force: true })
+    }
+    return { filePath: await fetchFile({ url, resolved, destPath, validator: probed.validator || null, limit, proxy, onProgress, onHandle }) }
   }
 
+  if (kind === 'hls' && settings.nativeHls !== false) {
+    try {
+      return await require('./hls-native').transferHls({ url, audioUrl, audioLanguage, resolved, destPath, download,
+        settings: { ...settings, connections: download.recoveryConnections || settings.connections },
+        proxy, signal, onProgress, onHandle, onNote, onStage, limit })
+    } catch (err) {
+      halt()
+      if (err.code !== 'HLS_UNSUPPORTED') throw err
+      onNote?.('Bu HLS türü için alternatif aktarım motoru deneniyor')
+    }
+  }
+  let selectedAudioIndex = null
+  const preferred = languageCode(download.preferredAudioLanguage || settings.preferredAudioLanguage || 'en')
+  if (!audioUrl && preferred !== 'auto') {
+    const info = await require('./mediainfo').ffprobeMedia(url, { ...resolved, proxy })
+    halt()
+    selectedAudioIndex = info?.audioTracks?.find((t) => languageCode(t.lang) === preferred)?.index ?? null
+  }
   const filePath = await runFfmpeg({
     url,
     resolved,
+    audioUrl,
+    selectedAudioIndex,
     destPath,
     workPath: `${destPath}.part`,
     download,
@@ -885,7 +937,8 @@ async function transfer({
     onProgress,
     onHandle,
   })
+  if (kind === 'hls') require('./hls-native').cleanCache(destPath)
   return { filePath }
 }
 
-module.exports = { transfer, pickVariant }
+module.exports = { transfer, pickVariant, makePlan, readPlan, fetchFileParallel, fetchFile, probeVia, ffmpegArgs, openStream }

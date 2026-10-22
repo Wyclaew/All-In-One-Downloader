@@ -14,6 +14,9 @@ const { resolveCookieArg } = require('./browsers')
 const { uid, num, clamp, fileSizeOf, resolvedArgs, safeName, settingNumber } = require('./util')
 const { readableError, isRetryableWithoutCookies } = require('./probe')
 const ownengine = require('./ownengine')
+const { failureKind, retryDelay } = require('./recovery')
+const { formatSelector, rankCandidates, languageCode } = require('./media-preferences')
+const { TransferStats } = require('./transfer-stats')
 const { locateDownload } = require('./locate')
 
 const TAG = '@P@'
@@ -25,6 +28,7 @@ const PROGRESS_TEMPLATE =
 /** id -> { child, paused, canceled, destinations:Set, printFile } */
 const jobs = new Map()
 const progressLastSent = new Map()
+const retryTimers = new Map()
 
 function activeCount() {
   return store.getState().downloads.filter((d) => d.status === 'running').length
@@ -41,12 +45,6 @@ function proxyFor(download, settings) {
   return String(settings.proxyUrl || '').trim()
 }
 
-function formatSelector(download) {
-  if (download.audioOnly) return 'ba/b'
-  const h = Number(download.quality) || 0
-  if (!h) return 'bv*+ba/b'
-  return `bv*[height<=${h}]+ba/b[height<=${h}]/bv*[height<=${h}]/b[height<=${h}]/bv*+ba/b`
-}
 
 function buildArgs(download, settings, printFile) {
   const args = [
@@ -66,6 +64,10 @@ function buildArgs(download, settings, printFile) {
     '--continue',
     '--retries',
     '5',
+    '--retry-sleep', 'http:exp=1:12',
+    '--retry-sleep', 'fragment:exp=1:8',
+    '--extractor-retries', '3',
+    '--abort-on-unavailable-fragments',
     '--fragment-retries',
     '15',
     '--socket-timeout',
@@ -88,7 +90,7 @@ function buildArgs(download, settings, printFile) {
   // thousands of small fragments, and yt-dlp fetches them one at a time by
   // default — so the transfer runs at one round-trip per fragment no matter how
   // wide the line is. Asking for several at once is what fills it.
-  const connections = clamp(settingNumber(settings.connections, 4), 1, 16)
+  const connections = Math.floor(clamp(settingNumber(download.recoveryConnections ?? settings.connections, 8), 1, 16))
   if (connections > 1) args.push('--concurrent-fragments', String(connections))
 
   // Per download, because the link decided this, not the app.
@@ -105,7 +107,7 @@ function buildArgs(download, settings, printFile) {
   }
   if (settings.rateLimit) args.push('--limit-rate', String(settings.rateLimit))
 
-  args.push('-f', formatSelector(download))
+  args.push('-f', formatSelector(download, settings))
 
   if (download.audioOnly) {
     args.push('-x', '--audio-format', settings.audioFormat || 'mp3', '--audio-quality', '0')
@@ -125,7 +127,7 @@ function buildArgs(download, settings, printFile) {
       '--write-subs',
       '--write-auto-subs',
       '--sub-langs',
-      settings.subLangs || 'tr,en',
+      settings.subLangs || 'tr',
       '--embed-subs',
       '--compat-options',
       'no-keep-subs'
@@ -172,17 +174,14 @@ function sendProgress(download, force = false) {
  */
 function estimateEta(job, download, fragIndex, fragCount) {
   const target = download.total || download.expectedSize || null
-  if (target && download.speed > 0) {
-    const remaining = target - download.downloaded
-    if (remaining > 0) return Math.round(remaining / download.speed)
+  if (target && download.speed > 0 && download.downloaded < target) {
+    return Math.ceil((target - download.downloaded) / download.speed)
   }
-
-  if (fragCount && fragIndex > 0 && job.fragmentsAt) {
-    const elapsed = (Date.now() - job.fragmentsAt) / 1000
-    const perFragment = elapsed / fragIndex
-    // Later phases (the audio track of a merge) fetch their own fragments too.
-    const remaining = fragCount - fragIndex + (job.phases - job.phase) * fragCount
-    if (perFragment > 0 && remaining > 0) return Math.round(perFragment * remaining)
+  if (fragCount > fragIndex && fragIndex > 0) {
+    if (!job.fragmentBaseline) job.fragmentBaseline = { at: Date.now(), index: fragIndex }
+    const elapsed = (Date.now() - job.fragmentBaseline.at) / 1000
+    const moved = fragIndex - job.fragmentBaseline.index
+    if (elapsed >= 2 && moved >= 3) return Math.ceil(elapsed / moved * (fragCount - fragIndex))
   }
   return null
 }
@@ -206,7 +205,7 @@ function estimateEta(job, download, fragIndex, fragCount) {
 function outlook() {
   const state = store.getState()
   const slots = Math.max(1, Number(state.settings.concurrency) || 1)
-  const running = state.downloads.filter((d) => d.status === 'running')
+  const running = state.downloads.filter((d) => d.status === 'running' && d.stage === 'downloading')
   const queued = state.downloads.filter((d) => d.status === 'queued')
   if (!running.length) return null
 
@@ -219,6 +218,7 @@ function outlook() {
   // A download of unknown size still takes a slot and still takes time, so it is
   // treated as an average one rather than as free.
   const typical = known.reduce((a, b) => a + b, 0) / known.length
+  const allKnown = [...running, ...queued].every((d) => sizeOf(d) > 0)
 
   const active = running.map((d) => ({
     id: d.id,
@@ -229,7 +229,8 @@ function outlook() {
   const etas = {}
   let clock = 0
   // One step per completion, so the bound is the number of transfers plus slack.
-  for (let step = 0; active.length && step < active.length + waiting.length + 4; step += 1) {
+  const maxSteps = active.length + waiting.length
+  for (let step = 0; active.length && step < maxSteps; step += 1) {
     const share = lineSpeed / active.length
     const dt = Math.min(...active.map((job) => job.left / share))
     clock += dt
@@ -243,7 +244,9 @@ function outlook() {
     while (active.length < slots && waiting.length) active.push(waiting.shift())
   }
 
-  return { etas, total: Math.round(clock), lineSpeed }
+  const delayed = queued.some((d) => d.retryAt > Date.now())
+  const processing = state.downloads.some((d) => d.status === 'running' && d.stage !== 'downloading')
+  return { etas, total: allKnown && !delayed && !processing ? Math.round(clock) : null, lineSpeed }
 }
 
 let outlookTimer = null
@@ -286,9 +289,13 @@ function parseProgressLine(line, job, download) {
   if (fc && fi && !job.fragmentsAt) job.fragmentsAt = Date.now()
 
   if (status === 'finished') {
-    job.prevBytes += knownTotal || downloaded
+    download.downloaded = job.prevBytes + downloaded
+    job.prevBytes += downloaded
+    job.fragmentBaseline = null
+    job.stats = new TransferStats(job.prevBytes)
+    const lastPhase = job.phase >= job.phases
     job.phase = Math.min(job.phase + 1, job.phases)
-    download.stage = job.phase >= job.phases ? 'processing' : 'downloading'
+    download.stage = lastPhase ? 'processing' : 'downloading'
     download.speed = null
     download.eta = null
     sendProgress(download, true)
@@ -296,8 +303,10 @@ function parseProgressLine(line, job, download) {
   }
 
   download.stage = 'downloading'
-  download.speed = num(speed)
   download.downloaded = job.prevBytes + downloaded
+  if (!job.stats) job.stats = new TransferStats(download.downloaded)
+  const measured = job.stats.update(download.downloaded, null)
+  download.speed = measured.speed ?? num(speed)
   download.phase = job.phase
   download.phases = job.phases
 
@@ -317,7 +326,8 @@ function parseProgressLine(line, job, download) {
     percent = download.downloaded / download.expectedSize
   }
 
-  download.eta = num(eta) ?? estimateEta(job, download, fi, fc)
+  download.eta = estimateEta(job, download, fi, fc) ?? num(eta)
+  if (job.phase < job.phases && !download.expectedSize) download.eta = null
 
   if (percent === null) {
     download.percent = null
@@ -347,6 +357,7 @@ function isThumbnailFailure(text) {
 
 function handleLine(line, job, download) {
   if (!line) return
+  job.lastActivity = Date.now()
   if (line.includes(TAG)) {
     parseProgressLine(line, job, download)
     return
@@ -441,7 +452,8 @@ function cleanupTemp(job) {
 function deletePartials(job, settings) {
   for (const c of job.destinations) {
     const abs = path.isAbsolute(c) ? c : path.resolve(settings.downloadDir, c)
-    for (const p of [`${abs}.part`, `${abs}.ytdl`, `${abs}.part.parts`, abs]) {
+    require('./hls-native').cleanCache(abs)
+    for (const p of [`${abs}.part`, `${abs}.ytdl`, `${abs}.part.parts`, `${abs}.part.single`, abs]) {
       try {
         fs.unlinkSync(p)
       } catch {
@@ -454,7 +466,7 @@ function deletePartials(job, settings) {
     try {
       for (const name of fs.readdirSync(dir)) {
         if (!name.startsWith(base)) continue
-        if (!/\.(part(-Frag\d+)?|ytdl|parts)$/i.test(name)) continue
+        if (!/\.(part(-Frag\d+)?|ytdl|parts|single)$/i.test(name)) continue
         try {
           fs.unlinkSync(path.join(dir, name))
         } catch {
@@ -483,6 +495,8 @@ function beginJob(download) {
     fragmentsAt: null,
     alreadyPath: null,
     stderrTail: '',
+    abort: new AbortController(),
+    lastActivity: Date.now(),
   }
   jobs.set(download.id, job)
 
@@ -491,6 +505,11 @@ function beginJob(download) {
     download.stage = 'starting'
     download.error = null
     download.note = null
+    download.speed = null
+    download.eta = null
+    download.total = null
+    download.parts = null
+    download.retryAt = null
     download.startedAt = download.startedAt || Date.now()
     download.attempts = (download.attempts || 0) + 1
     download.percent = download.percent && download.percent < 1 ? download.percent : 0
@@ -512,6 +531,7 @@ function settle(job, download, settings, outcome) {
   // ("spawn ENOENT") with the generic one derived from an empty stderr.
   if (job.settled) return
   job.settled = true
+  clearInterval(job.watchdog)
   jobs.delete(download.id)
 
   if (outcome.canceled) {
@@ -579,45 +599,12 @@ function settle(job, download, settings, outcome) {
       download.fileSize = fileSizeOf(finalPath)
       download.finishedAt = Date.now()
       download.missing = false
+      download.pendingFilePath = null
       download.error = null
     })
     sendProgress(download, true)
     store.send('finished', { id: download.id, title: download.title })
 
-    // Silence was the actual bug here: with subtitles switched on and none found,
-    // nothing was said, so "none available" and "we never looked" looked the same.
-    //
-    // The two steps run one after the other, never together: each rewrites the
-    // video to mux its track in, and two rewrites racing on one file is how a
-    // finished download gets clobbered.
-    if (finalPath && !download.audioOnly && (settings.writeSubs || settings.autoFetchSubtitles)) {
-      ;(async () => {
-        if (settings.writeSubs) {
-          const { found, saved } = await fetchStreamSubtitles(download, finalPath, settings)
-          if (saved.length) {
-            store.commit(() => {
-              download.subtitlePath = null
-              download.subtitleLanguage = saved.map((x) => x.lang).join(', ')
-            })
-            store.toast(
-              `Altyazı videoya eklendi (${saved.map((x) => x.lang).join(', ')}): ${download.title}`,
-              'ok'
-            )
-          } else if (found) {
-            store.toast(
-              `${download.title}: akışta ${found} altyazı var ama istediğin dillerde değil (Ayarlar → Biçim → Altyazı dilleri).`,
-              'warn'
-            )
-          } else if (download.resolved && !settings.autoFetchSubtitles) {
-            store.toast(
-              `${download.title}: bu akışta altyazı yok. Ayarlar → Altyazı'dan OpenSubtitles anahtarı girersen aranabilir.`,
-              'info'
-            )
-          }
-        }
-        if (settings.autoFetchSubtitles) await autoSubtitles(download, finalPath, settings)
-      })().catch((err) => console.error('[subs]', err))
-    }
     if (settings.notifyOnFinish && Notification.isSupported()) {
       new Notification({ title: 'İndirme tamamlandı', body: download.title || '' }).show()
     }
@@ -625,16 +612,121 @@ function settle(job, download, settings, outcome) {
     return
   }
 
+  if (scheduleRecovery(download, settings, outcome.raw || outcome.error)) { pump_queue(); return }
   store.commit(() => {
     download.status = 'error'
     download.stage = null
     download.note = null
     download.speed = null
     download.eta = null
+    download.parts = null
     download.error = outcome.error || 'Aktarım başarısız.'
   })
   sendProgress(download, true)
   pump_queue()
+}
+
+async function completeJob(job, download, settings, filePath) {
+  if (job.canceled) return settle(job, download, settings, { canceled: true })
+  if (filePath && fs.existsSync(filePath)) download.pendingFilePath = filePath
+  if (job.paused) return settle(job, download, settings, { paused: true })
+  if (!filePath || !fs.existsSync(filePath)) return settle(job, download, settings, { ok: true, filePath })
+  try {
+    if (!download.audioOnly) {
+      store.commit(() => { download.stage = 'processing'; download.speed = null; download.eta = null; download.note = 'Ses ve altyazılar hazırlanıyor…' })
+      const selected = await require('./audio-selection').selectAudio(filePath, download.preferredAudioLanguage || settings.preferredAudioLanguage || 'en', {
+        onHandle: (child) => { job.child = child }, isStopped: () => job.paused || job.canceled,
+      })
+      if (selected.language) download.audioLanguage = selected.language
+      if (selected.warning) store.toast(`${download.title}: ${selected.warning}`, 'warn')
+      if (!job.paused && !job.canceled && settings.writeSubs) {
+        const { found, saved, embedded } = await fetchStreamSubtitles(download, filePath, settings, job).catch((err) => {
+          store.toast(`Altyazı eklenemedi: ${err.message}`, 'warn')
+          return { found: 0, saved: [], embedded: false }
+        })
+        if (saved.length) {
+          download.subtitlePath = embedded ? null : saved[0].path
+          download.subtitleLanguage = saved.map((s) => s.lang).join(', ')
+          if (!embedded) store.toast('Altyazı dosyası kaydedildi; videoya gömülemedi.', 'warn')
+        } else if (download.resolved) {
+          store.toast(`${download.title}: ${found ? 'istenen dilde altyazı yok' : 'akışta altyazı bulunamadı'}.`, 'info')
+        }
+      }
+      if (!job.paused && !job.canceled && settings.autoFetchSubtitles) await autoSubtitles(download, filePath, settings).catch((err) => store.toast(`Altyazı eklenemedi: ${err.message}`, 'warn'))
+    }
+    return settle(job, download, settings, { paused: job.paused, canceled: job.canceled, ok: true, filePath })
+  } catch (err) {
+    return settle(job, download, settings, { paused: job.paused, canceled: job.canceled, error: err.message, raw: err })
+  }
+}
+
+function clearRecovery(id) {
+  clearTimeout(retryTimers.get(id))
+  retryTimers.delete(id)
+}
+
+function scheduleRecovery(download, settings, error) {
+  if (settings.autoRecover === false) return false
+  let kind = failureKind(error)
+  if (download.resolved?.pageUrl && /(?:HTTP[^\n]*404|requested format is not available|no video formats found)/i.test(String(error?.message || error))) kind = 'expired'
+  const count = download.recoveryCount || 0
+  const limit = Math.floor(settingNumber(settings.recoveryAttempts, 3, { min: 0, max: 6 }))
+  if (!['network', 'busy', 'expired'].includes(kind) || count >= limit) return false
+  if (kind === 'expired' && !download.resolved?.pageUrl) return false
+  const delay = retryDelay(count, kind)
+  store.commit(() => {
+    download.recoveryCount = count + 1
+    download.refreshPending = !!download.resolved?.pageUrl && (kind === 'expired' || count > 0)
+    if (kind === 'busy') download.recoveryConnections = Math.max(1, Math.floor((download.recoveryConnections || settings.connections || 8) / 2))
+    download.status = 'queued'
+    download.stage = null
+    download.note = `${Math.ceil(delay / 1000)} sn sonra otomatik denenecek (${count + 1}/${limit})`
+    download.retryAt = Date.now() + delay
+    download.error = null
+    download.speed = null
+    download.eta = null
+    download.parts = null
+  })
+  clearRecovery(download.id)
+  retryTimers.set(download.id, setTimeout(() => {
+    retryTimers.delete(download.id)
+    if (store.findDownload(download.id)?.status === 'queued') pump_queue()
+  }, delay))
+  return true
+}
+
+async function prepareRecovery(download, settings, job) {
+  if (download.refreshPending && download.resolved?.pageUrl) {
+    store.commit(() => { download.note = 'Akış adresi yenileniyor…' })
+    const { resolvePage } = require('./resolver')
+    const { exportCookieJar } = require('./browsers')
+    let jar = settings.cookiesBrowser ? await exportCookieJar(settings.cookiesBrowser).catch(() => null) : null
+    if (!jar && download.resolved.cookieFile && fs.existsSync(download.resolved.cookieFile)) jar = download.resolved.cookieFile
+    const result = await resolvePage(download.resolved.pageUrl, {
+      browserCookieJar: jar, proxy: proxyFor(download, settings), signal: job.abort.signal,
+      timeoutMs: settingNumber(settings.resolverTimeout, 45000),
+      preferredAudioLanguage: download.preferredAudioLanguage || settings.preferredAudioLanguage || 'en',
+      minStreamSeconds: settingNumber(settings.minStreamSeconds, 120),
+      useUserScripts: settings.useUserScripts !== false,
+      blockRules: settings,
+      onProgress: (message) => { if (!job.paused && !job.canceled) store.commit(() => { download.note = message }) },
+    })
+    const candidates = rankCandidates((result.candidates || []).filter((c) => !c.info?.drm), download.preferredAudioLanguage)
+    const candidate = candidates.find((c) => !download.duration || !c.info?.duration || Math.abs(c.info.duration - download.duration) < Math.max(30, download.duration * 0.15))
+    if (!candidate && !job.abort.signal.aborted) throw new Error('Akış adresi yenilenemedi. Kaynağı yeniden tara veya Tarayıcıda yakala ile oturumunu aç.')
+    if (candidate && !job.abort.signal.aborted) store.commit(() => {
+      download.url = candidate.url
+      download.resolved = { ...download.resolved, referer: candidate.referer || download.resolved.pageUrl,
+        origin: candidate.origin || '', userAgent: candidate.userAgent || result.userAgent,
+        cookieFile: candidate.cookieFile || null, kind: candidate.kind }
+      download.streamSubtitles = require('./text-tracks').mergeTextTracks(candidate.info?.subtitles || [], candidate.subtitles || [])
+      download.streamAudioTracks = candidate.info?.audioTracks || []
+      download.refreshPending = false
+      download.percent = 0
+      download.downloaded = 0
+    })
+  }
+  if (job.paused || job.canceled) throw Object.assign(new Error('Aktarım durduruldu.'), { code: 'ABORTED' })
 }
 
 function start(downloadId) {
@@ -652,7 +744,13 @@ function start(downloadId) {
     return
   }
 
-  if (settings.useYtdlp === false) return startOwn(download, settings)
+  if (download.pendingFilePath && fs.existsSync(download.pendingFilePath)) {
+    const job = beginJob(download)
+    job.destinations.add(download.pendingFilePath)
+    completeJob(job, download, settings, download.pendingFilePath)
+    return
+  }
+  if (settings.useYtdlp === false || (download.resolved?.kind === 'hls' && settings.nativeHls !== false) || (download.resolved?.kind === 'file' && !download.audioOnly && !settings.rateLimit)) return startOwn(download, settings)
   return startYtdlp(download, settings)
 }
 
@@ -660,14 +758,18 @@ function start(downloadId) {
  * The in-house engine: our resolver finds the stream, ffmpeg or a ranged GET
  * fetches it. No yt-dlp anywhere in the path.
  */
-function startOwn(download, settings) {
+async function startOwn(download, settings) {
   const job = beginJob(download)
+  try { await prepareRecovery(download, settings, job) } catch (err) {
+    return settle(job, download, settings, { paused: job.paused, canceled: job.canceled, error: err.message, raw: err })
+  }
 
   ownengine
     .transfer({
       download,
       settings,
       isStopped: () => job.paused || job.canceled,
+      signal: job.abort.signal,
       onHandle: (handle) => {
         job.child = handle
       },
@@ -683,11 +785,12 @@ function startOwn(download, settings) {
         })
       },
       onProgress: ({ downloaded, total, totalExact, speed, eta, percent, parts }) => {
+        job.lastActivity = Date.now()
         download.downloaded = downloaded || 0
         download.parts = parts || null
-        // A measured length wins. Otherwise the manifest's figure beats an
-        // extrapolation from how much of the timeline has been written.
-        download.total = totalExact ? total : download.expectedSize || total || null
+        // Once enough fragments have arrived, their measured bytes per second
+        // are more useful than a manifest's nominal maximum bandwidth.
+        download.total = total || download.expectedSize || null
         download.speed = speed ?? null
         download.stage = 'downloading'
         if (percent !== null && percent !== undefined) {
@@ -702,33 +805,41 @@ function startOwn(download, settings) {
       // Cancelled on the last byte: the user asked for it gone, so honour that
       // rather than presenting a file they said they did not want.
       if (job.canceled) return settle(job, download, settings, { canceled: true })
-      settle(job, download, settings, { ok: true, filePath })
+      return completeJob(job, download, settings, filePath)
     })
     .catch((err) => {
       if (job.canceled || (err && err.code === 'ABORTED' && !job.paused)) {
         return settle(job, download, settings, { canceled: true })
       }
       if (job.paused) return settle(job, download, settings, { paused: true })
-      settle(job, download, settings, { error: (err && err.message) || String(err) })
+      settle(job, download, settings, { error: (err && err.message) || String(err), raw: err })
     })
 }
 
-function startYtdlp(download, settings) {
+async function startYtdlp(download, settings) {
   let bin
   try {
     bin = ytdlpPathOrThrow()
   } catch {
-    store.commit(() => {
-      download.status = 'error'
-      download.error = 'yt-dlp bulunamadı. Ayarlar → Araçlar bölümünden kontrol et.'
-    })
-    return
+    return startOwn(download, settings)
   }
 
   const job = beginJob(download)
+  try { await prepareRecovery(download, settings, job) } catch (err) {
+    return settle(job, download, settings, { paused: job.paused, canceled: job.canceled, error: err.message, raw: err })
+  }
   const args = buildArgs(download, settings, job.printFile)
   const child = spawn(bin, args, { env: toolEnv(), windowsHide: true })
   job.child = child
+  job.watchdog = setInterval(() => {
+    if (job.settled || job.paused || job.canceled || !['starting', 'downloading'].includes(download.stage)) return
+    if (Date.now() - job.lastActivity < 90000) return
+    job.stderrTail += '\nERROR: network transfer timed out'
+    child.kill('SIGTERM')
+    const insist = setTimeout(() => { if (jobs.get(download.id) === job) child.kill('SIGKILL') }, 1500)
+    insist.unref?.()
+  }, 10000)
+  job.watchdog.unref?.()
 
   const pump = (stream) => {
     let buffer = ''
@@ -750,14 +861,14 @@ function startYtdlp(download, settings) {
     job.stderrTail = (job.stderrTail + chunk).slice(-8000)
   })
 
-  child.on('error', (err) => settle(job, download, settings, { error: err.message }))
+  child.on('error', (err) => settle(job, download, settings, { error: err.message, raw: err }))
 
   child.on('close', (code) => {
     if (job.canceled) return settle(job, download, settings, { canceled: true })
     if (job.paused) return settle(job, download, settings, { paused: true })
 
     if (code === 0) {
-      settle(job, download, settings, { ok: true, filePath: resolveFinalPath(job, settings) })
+      completeJob(job, download, settings, resolveFinalPath(job, settings)).catch((err) => settle(job, download, settings, { error: err.message, raw: err }))
     } else {
       const message = job.errorLines.length
         ? readableError(job.errorLines.join('\n'), code)
@@ -768,6 +879,7 @@ function startYtdlp(download, settings) {
       const requeue = (reason) => {
         if (job.settled) return
         job.settled = true
+        clearInterval(job.watchdog)
         jobs.delete(download.id)
         cleanupTemp(job)
         store.commit(() => {
@@ -791,13 +903,14 @@ function startYtdlp(download, settings) {
       if (
         !download.noCookies &&
         settings.cookiesBrowser &&
+        !download.resolved &&
         isRetryableWithoutCookies(job.stderrTail || message)
       ) {
         download.noCookies = true
         return requeue(`${message} Çerezsiz yeniden deneniyor.`)
       }
 
-      settle(job, download, settings, { error: message })
+      settle(job, download, settings, { error: message, raw: job.stderrTail || message })
     }
   })
 }
@@ -816,7 +929,7 @@ function startYtdlp(download, settings) {
  * segments, and ffmpeg concatenates and converts them to SRT in one pass, which
  * beats reimplementing either half.
  */
-async function fetchStreamSubtitles(download, filePath, settings) {
+async function fetchStreamSubtitles(download, filePath, settings, job = null) {
   const tracks = Array.isArray(download.streamSubtitles) ? download.streamSubtitles : []
   if (!tracks.length) return { found: 0, saved: [] }
 
@@ -834,6 +947,7 @@ async function fetchStreamSubtitles(download, filePath, settings) {
   const saved = []
 
   for (const code of wanted) {
+    if (job?.paused || job?.canceled) break
     const track = tracks.find((t) => normaliseLanguage(t.lang) === code && !t.forced)
     if (!track || !track.url) continue
 
@@ -848,15 +962,17 @@ async function fetchStreamSubtitles(download, filePath, settings) {
       const child = spawn(
         bin,
         [
-          '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
-          ...ffprobeHeaderArgs(track.url, download.resolved),
+          '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-rw_timeout', '15000000',
+          ...ffprobeHeaderArgs(track.url, { ...download.resolved, referer: track.referer || download.resolved?.referer }),
           '-i', track.url,
           out,
         ],
         { env, windowsHide: true }
       )
-      child.on('error', () => resolve(false))
-      child.on('close', (code2) => resolve(code2 === 0))
+      if (job) job.child = child
+      const timeout = setTimeout(() => child.kill('SIGKILL'), 90000)
+      child.on('error', () => { clearTimeout(timeout); resolve(false) })
+      child.on('close', (code2) => { clearTimeout(timeout); resolve(code2 === 0) })
     })
 
     if (ok && fileSizeOf(out)) saved.push({ lang: code, path: out })
@@ -869,13 +985,15 @@ async function fetchStreamSubtitles(download, filePath, settings) {
     }
   }
 
-  if (saved.length) {
+  let embedded = false
+  if (saved.length && !job?.paused && !job?.canceled) {
     const result = await subtitles.embedMany(filePath, saved)
+    embedded = result.ok
     // Inside the video now; the loose copies would only show up twice in our
     // player. If the mux failed they stay in our folder, where the player finds them.
     if (result.ok) for (const sub of saved) fs.rmSync(sub.path, { force: true })
   }
-  return { found: tracks.length, saved }
+  return { found: tracks.length, saved, embedded }
 }
 
 /**
@@ -897,6 +1015,7 @@ async function autoSubtitles(download, filePath, settings) {
   // extractor told us. An untagged file means "unknown", so nothing is dropped.
   if (settings.skipSameLanguageSubtitles !== false) {
     const spoken = new Set(await audioLanguages(filePath))
+    if (download.audioLanguage) spoken.add(normaliseLanguage(download.audioLanguage))
     const declared = normaliseLanguage(download.language)
     if (declared) spoken.add(declared)
     if (spoken.size) {
@@ -922,7 +1041,7 @@ async function autoSubtitles(download, filePath, settings) {
     found = await subtitles.search({
       filePath,
       title: download.title,
-      languages: settings.subtitleLangs,
+      languages: wanted.join(','),
       apiKey: settings.subtitleApiKey,
     })
   } catch (err) {
@@ -985,7 +1104,7 @@ function pump_queue() {
   if (free <= 0) return
   for (const d of state.downloads) {
     if (free <= 0) break
-    if (d.status === 'queued' && !jobs.has(d.id)) {
+    if (d.status === 'queued' && !jobs.has(d.id) && (!d.retryAt || d.retryAt <= Date.now())) {
       start(d.id)
       free -= 1
     }
@@ -1028,6 +1147,13 @@ function enqueue({ item, url, title, site, sourceId, quality, audioOnly, categor
     duration: item ? item.duration : null,
     resolved: item && item.resolved ? item.resolved : null,
     language: item && item.language ? item.language : null,
+    preferredAudioLanguage: settings.preferredAudioLanguage || 'en',
+    series: item?.series || null,
+    season: item?.season ?? null,
+    episode: item?.episode ?? null,
+    recoveryCount: 0,
+    retryAt: null,
+    streamAudioTracks: item?.audioTracks || [],
     streamSubtitles: (item && item.subtitles) || [],
     // Inherited from the link the user added, and copied here because a download
     // outlives the source row it came from.
@@ -1077,6 +1203,7 @@ function enqueue({ item, url, title, site, sourceId, quality, audioOnly, categor
 }
 
 function pause(id) {
+  clearRecovery(id)
   const job = jobs.get(id)
   const download = store.findDownload(id)
   if (!download) return
@@ -1089,6 +1216,7 @@ function pause(id) {
     return
   }
   job.paused = true
+  job.abort.abort()
   try {
     job.child.kill(process.platform === 'win32' ? undefined : 'SIGTERM')
   } catch {
@@ -1101,6 +1229,7 @@ function resume(id) {
   if (!download || jobs.has(id)) return
   store.commit(() => {
     download.status = 'queued'
+    download.retryAt = null
     download.error = null
   })
   pump_queue()
@@ -1119,6 +1248,7 @@ function resume(id) {
  * So: mark it stopped, show it stopped, ask politely, and insist shortly after.
  */
 function cancel(id) {
+  clearRecovery(id)
   const download = store.findDownload(id)
   if (!download) return
   const job = jobs.get(id)
@@ -1129,6 +1259,7 @@ function cancel(id) {
   }
 
   job.canceled = true
+  job.abort.abort()
   // The interface should not wait on a process to notice. The engine's own
   // settle still runs when it exits and finds the record already gone.
   store.commit(() => {
@@ -1179,6 +1310,7 @@ function settleRemoved(download) {
 }
 
 function retry(id) {
+  clearRecovery(id)
   const download = store.findDownload(id)
   if (!download || jobs.has(id)) return
   store.commit(() => {
@@ -1187,16 +1319,21 @@ function retry(id) {
     download.percent = 0
     download.downloaded = 0
     download.total = null
+    download.retryAt = null
+    download.recoveryCount = 0
+    download.refreshPending = !!download.resolved?.pageUrl
   })
   pump_queue()
 }
 
 function remove(id, { deleteFile = false } = {}) {
+  clearRecovery(id)
   const download = store.findDownload(id)
   if (!download) return
   const job = jobs.get(id)
   if (job) {
     job.canceled = true
+    job.abort.abort()
     try {
       job.child.kill(process.platform === 'win32' ? undefined : 'SIGTERM')
     } catch {
@@ -1300,14 +1437,18 @@ function clearMissing() {
  */
 function forgetMissing() {
   const alive = new Set(store.getState().downloads.map((d) => d.id))
+  for (const id of retryTimers.keys()) if (!alive.has(id)) clearRecovery(id)
   for (const id of progressLastSent.keys()) {
     if (!alive.has(id)) progressLastSent.delete(id)
   }
 }
 
 function killAll() {
+  for (const id of retryTimers.keys()) clearRecovery(id)
   for (const [, job] of jobs) {
     job.paused = true
+    job.abort.abort()
+    clearInterval(job.watchdog)
     try {
       job.child.kill()
     } catch {
@@ -1318,6 +1459,7 @@ function killAll() {
 }
 
 module.exports = {
+  buildArgs, parseProgressLine, estimateEta, scheduleRecovery,
   enqueue,
   start,
   pause,

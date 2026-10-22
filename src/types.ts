@@ -57,6 +57,10 @@ export interface MediaItem {
   enriched: boolean
   downloadId?: string | null
   language?: string | null
+  audioTracks?: { lang: string; name?: string }[]
+  series?: string | null
+  season?: number | null
+  episode?: number | null
   resolved?: Resolved | null
   /** Heights offered by a resolved HLS master playlist. */
   variants?: number[]
@@ -106,6 +110,12 @@ export interface Download {
   phase: number
   phases: number
   attempts: number
+  recoveryCount?: number
+  retryAt?: number | null
+  preferredAudioLanguage?: string
+  series?: string | null
+  season?: number | null
+  episode?: number | null
   filePath: string | null
   fileSize: number | null
   /** Finished, but the file is no longer on disk. */
@@ -130,6 +140,10 @@ export interface Settings {
   defaultQuality: number
   container: string
   audioFormat: string
+  preferredAudioLanguage: 'en' | 'tr' | 'auto'
+  autoRecover: boolean
+  recoveryAttempts: number
+  groupEpisodes: boolean
   filenameTemplate: string
   cookiesBrowser: string
   writeSubs: boolean
@@ -148,6 +162,8 @@ export interface Settings {
 
   useYtdlp: boolean
   useResolver: boolean
+  resolverFirst: boolean
+  nativeHls: boolean
   useUserScripts: boolean
   resolverTimeout: number
   minStreamSeconds: number
@@ -262,6 +278,9 @@ export interface VaultState {
   /** Seconds before another unlock attempt is accepted. */
   retryAfter?: number
   strong?: boolean
+  biometricAvailable?: boolean
+  biometricEnabled?: boolean
+  biometricReady?: boolean
   entries: VaultEntry[]
 }
 

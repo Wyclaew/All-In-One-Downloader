@@ -248,6 +248,7 @@ function exportCookieJar(browserId) {
       () => {
         try {
           if (fs.existsSync(file) && fs.statSync(file).size > 0) {
+            try { fs.chmodSync(file, 0o600) } catch {}
             jarCache = { arg, file, at: Date.now() }
             return resolve(file)
           }

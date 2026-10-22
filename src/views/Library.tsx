@@ -395,7 +395,7 @@ function Row({
   // the line, and that the ones behind it are waiting for a slot. The engine's
   // own number is the fallback for the first seconds, before anything is measured.
   const queueEta = outlook.etas[d.id]
-  const eta = queueEta ?? d.eta
+  const eta = d.eta ?? (d.status === 'queued' && !d.retryAt ? queueEta : null)
 
   // A segmented stream reports no total of its own, but the item measured one
   // before the transfer started — so the meter still has a figure to show.
@@ -448,7 +448,7 @@ function Row({
           {queued ? <span className="sep" /> : null}
           {queued ? (
             <span style={{ color: 'var(--signal)' }}>
-              {T.topbar.queued}
+              {d.retryAt ? d.note || 'Otomatik yeniden denenecek' : T.topbar.queued}
               {/* A queued item's start time is perfectly predictable; saying
                   nothing about it was the part that felt like a black box. */}
               {eta ? ` — ${T.library.finishesIn} ${fmt.eta(eta)}` : ''}

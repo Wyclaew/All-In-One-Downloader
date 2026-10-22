@@ -30,20 +30,22 @@ const { createBlocker } = require('./blocklist')
 const { describeStream } = require('./mediainfo')
 const { electronRules: proxyRules, fetchVia } = require('./proxy')
 const userscripts = require('./userscripts')
+const { discoverSources } = require('./source-discovery')
+const { DISCOVERY_SCRIPT, FRAME_SCRIPT, alternativeScript } = require('./browser-discovery')
+const { normaliseTrack, collectTextTracks, mergeTextTracks, PAGE_TEXT_TRACKS } = require('./text-tracks')
 const { uid, hostOf } = require('./util')
 
-/**
- * The active request blocker. Swapped at the start of each resolve so the user's
- * own extra rules apply; resolves are serialised by the caller, so a single
- * module-level matcher is enough and keeps the per-request path cheap.
- */
-let blocker = createBlocker({})
+// Each simultaneous resolve has its own rules; callbacks retain their context.
+const { AsyncLocalStorage } = require('async_hooks')
+const resolverContext = new AsyncLocalStorage()
+const defaultBlocker = createBlocker({})
+const activeBlocker = () => resolverContext.getStore() || defaultBlocker
 
-function configureBlocker(settings = {}) {
-  blocker = createBlocker({
-    extraBlocked: settings.extraBlockedHosts || '',
-    allowTrackers: settings.blockTrackers === false,
-  })
+function withRules(options, fn) {
+  const rules = options?.blockRules || {}
+  return resolverContext.run(createBlocker({
+    extraBlocked: rules.extraBlockedHosts || '', allowTrackers: rules.blockTrackers === false,
+  }), fn)
 }
 
 const UA =
@@ -202,7 +204,7 @@ function decodeBase64Blobs(text) {
 async function fetchText(
   url,
   referer,
-  { timeoutMs = 12000, userAgent = UA, json = false, proxy = '' } = {}
+  { timeoutMs = 12000, userAgent = UA, json = false, proxy = '', cookieFile = null, signal = null, maxBytes = 3 * 1024 * 1024, retries = 1 } = {}
 ) {
   const headers = {
     'User-Agent': userAgent,
@@ -220,10 +222,10 @@ async function fetchText(
   // entirely — otherwise the page is read from the real address while only the
   // download is tunnelled.
   try {
-    const res = await fetchVia(url, { headers, proxy, timeoutMs })
-    return { text: String(res.text || '').slice(0, 3 * 1024 * 1024), finalUrl: res.finalUrl || url }
-  } catch {
-    return { text: '', finalUrl: url }
+    const res = await fetchVia(url, { headers, proxy, timeoutMs, signal, maxBytes, retries, allowBinaryText: true, headersFor: (target) => ({ Cookie: require('./mediainfo').cookieHeaderFor(cookieFile, target) }) })
+    return { text: String(res.text || '').slice(0, 3 * 1024 * 1024), finalUrl: res.finalUrl || url, status: res.status, contentType: res.headers?.['content-type'] || '' }
+  } catch (err) {
+    return { text: '', finalUrl: url, error: err.message, errorCode: err.code }
   }
 }
 
@@ -346,7 +348,7 @@ function decodePercentEscapes(text) {
  * so they come back as `unknown` and get validated before use.
  */
 const CONFIG_VALUE_RE =
-  /\b(?:file|src|source|url|videoUrl|video_url|playUrl|play_url|stream|streamUrl|hls|hlsUrl|manifest|contentUrl|mp4|m3u8)\b\s*[:=]\s*["'`](https?:\/\/[^"'`\s]{12,})["'`]/gi
+  /\b(?:file|src|source|videoUrl|video_url|playUrl|play_url|stream|streamUrl|hls|hlsUrl|manifest|contentUrl|mp4|m3u8)\b\s*[:=]\s*["'`]((?:https?:\/\/|\/\/|\/|\.\.?\/)[^"'`\s]+)["'`]/gi
 
 const TAG_SRC_RE = /<(?:video|source|audio)\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']/gi
 
@@ -392,25 +394,28 @@ function declaredMediaOf(html, baseUrl) {
 }
 
 function collectFromText(text, baseUrl) {
-  const raw = String(text)
+  const structured = discoverSources(text, baseUrl)
+  const raw = String(text).replace(/data:text\/html(?:;charset=[^;,]+)?;base64,([A-Za-z0-9+/=]+)/gi, (_, value) => Buffer.from(value, 'base64').toString('utf8'))
   const expanded = [
-    normaliseText(raw),
+    normaliseText(decodeEntities(raw)).replace(/\\"/g, '"'),
     normaliseText(unpackPacked(raw)),
     normaliseText(decodeBase64Blobs(raw)),
     normaliseText(decodeHexEscapes(raw)),
     normaliseText(decodePercentEscapes(raw)),
     normaliseText(decodeReversed(raw)),
     normaliseText(decodeCharCodes(raw)),
+    ...structured.documents,
   ]
     .filter(Boolean)
     .join('\n')
 
-  const found = []
+  const found = structured.sources.filter((c) => !activeBlocker().shouldBlock(c.url) && !activeBlocker().isAdMedia(c.url)).map((c) => ({ ...c, referer: baseUrl, origin: originOf(baseUrl), via: 'structured' }))
   const push = (url, confident) => {
-    const clean = String(url).replace(/[",';)\]}]+$/, '').trim()
-    if (!isHttp(clean) || blocker.shouldBlock(clean)) return
+    let clean = decodeEntities(String(url)).replace(/[",';)\]}]+$/, '').trim()
+    try { clean = new URL(clean, baseUrl).href } catch { return }
+    if (!isHttp(clean) || activeBlocker().shouldBlock(clean)) return
     if (NON_MEDIA_EXT.test(clean)) return
-    if (blocker.isAdMedia(clean)) return
+    if (activeBlocker().isAdMedia(clean)) return
     const kind = kindOf(clean)
     if (kind === 'segment') return
     if (kind === 'unknown' && !confident) return
@@ -431,7 +436,9 @@ function collectFromText(text, baseUrl) {
   while ((match = MEDIA_URL_RE.exec(expanded)) !== null) push(match[0], false)
 
   CONFIG_VALUE_RE.lastIndex = 0
-  while ((match = CONFIG_VALUE_RE.exec(expanded)) !== null) push(match[1], true)
+  // Attribute src on images/iframes/scripts is not a player config value.
+  const configText = expanded.replace(/<[^>]+>/g, ' ')
+  while ((match = CONFIG_VALUE_RE.exec(configText)) !== null) push(match[1], true)
 
   TAG_SRC_RE.lastIndex = 0
   while ((match = TAG_SRC_RE.exec(expanded)) !== null) {
@@ -447,7 +454,7 @@ function collectFromText(text, baseUrl) {
 
   for (const declared of declaredMediaOf(expanded, baseUrl)) push(declared, true)
 
-  return { candidates: found, expanded }
+  return { candidates: dedupe(found), expanded }
 }
 
 /**
@@ -489,7 +496,7 @@ function collectSourceApis(text, baseUrl) {
     }
     if (!/^https?:$/.test(abs.protocol)) continue
     if (abs.hostname !== host && !abs.hostname.endsWith(`.${host}`)) continue
-    if (blocker.shouldBlock(abs.href)) continue
+    if (activeBlocker().shouldBlock(abs.href)) continue
     out.add(abs.href)
   }
   return [...out]
@@ -522,7 +529,7 @@ function collectScriptRefs(text, baseUrl) {
     }
     if (!/^https?:$/.test(abs.protocol)) continue
     if (abs.hostname !== host && !abs.hostname.endsWith(`.${host}`)) continue
-    if (blocker.shouldBlock(abs.href)) continue
+    if (activeBlocker().shouldBlock(abs.href)) continue
     if (/jquery|bootstrap|analytics|gtag|gtm|recaptcha|polyfill|react|vue\.|lodash/i.test(abs.pathname)) {
       continue
     }
@@ -567,7 +574,7 @@ function collectScripts(html, baseUrl) {
     } catch {
       continue
     }
-    if (!/^https?:$/.test(abs.protocol) || blocker.shouldBlock(abs.href)) continue
+    if (!/^https?:$/.test(abs.protocol) || activeBlocker().shouldBlock(abs.href)) continue
     const sameSite = host && (abs.hostname === host || abs.hostname.endsWith(`.${host}`))
     const looksLikePlayer = /player|embed|stream|video|hls|jwplayer|clappr|plyr|source/i.test(abs.pathname)
     // Skip the usual framework bulk; it never holds a stream URL.
@@ -684,13 +691,14 @@ function decodeMaybeBase64(value) {
 }
 
 function collectIframes(html, baseUrl) {
-  const urls = []
+  const structured = discoverSources(html, baseUrl)
+  const urls = structured.frames.filter((url) => !activeBlocker().shouldBlock(url))
   // Iframe markup inside a JS or JSON string arrives with escaped quotes.
-  const text = normaliseText(html).replace(/\\"/g, '"').replace(/\\'/g, "'")
+  const text = normaliseText(decodeEntities([html, ...structured.documents].join('\n'))).replace(/\\"/g, '"').replace(/\\'/g, "'")
   const push = (raw) => {
     try {
       const abs = new URL(decodeEntities(raw), baseUrl).href
-      if (isHttp(abs) && !blocker.shouldBlock(abs) && !urls.includes(abs)) urls.push(abs)
+      if (isHttp(abs) && !activeBlocker().shouldBlock(abs) && !urls.includes(abs)) urls.push(abs)
     } catch {
       /* malformed src */
     }
@@ -750,10 +758,14 @@ function decodeEntities(text) {
  */
 async function staticScan(
   pageUrl,
-  { maxDepth = 3, maxFetches = 16, onProgress = null, proxy = '' } = {}
+  { maxDepth = 4, maxFetches = 24, onProgress = null, proxy = '', browserCookieJar = null, signal = null } = {}
 ) {
   const candidates = []
+  const subtitles = []
   let title = ''
+  let failure = null
+  let accessRequired = false
+  let challengeRequired = false
   let thumbnail = ''
   let expectedDuration = null
   const embeds = new Set()
@@ -762,7 +774,7 @@ async function staticScan(
   const visited = new Set()
   let queue = [{ url: pageUrl, referer: '', depth: 0, kind: 'page' }]
 
-  while (queue.length && fetches < maxFetches) {
+  while (queue.length && fetches < maxFetches && !signal?.aborted) {
     // Fetch a whole level at once. These are independent documents and the time
     // is all network latency, so doing them one after another was leaving most
     // of the wait on the table.
@@ -778,13 +790,22 @@ async function staticScan(
     const fetched = await Promise.all(
       batch.map(async (job) => ({
         job,
-        ...(await fetchText(job.url, job.referer, { json: job.kind === 'api', proxy })),
+        ...(await fetchText(job.url, job.referer, { json: job.kind === 'api', proxy, cookieFile: browserCookieJar, signal })),
       }))
     )
 
     const next = []
-    for (const { job, text, finalUrl } of fetched) {
-      if (!text) continue
+    for (const { job, text, finalUrl, status, error, errorCode, contentType } of fetched) {
+      if (job.url === pageUrl) {
+        failure = error ? { message: error, code: errorCode } : status >= 400 ? { status } : null
+        accessRequired = status === 401 || (/<input[^>]+type=["']password["']/i.test(text || '') && /giriş yap|üye girişi|sign in|log ?in/i.test(pageTitleOf(text || '')))
+        challengeRequired = /(?:_cf_chl_opt|cf-chl-widget|challenges\.cloudflare\.com|g-recaptcha)/i.test(text || '') && status === 403
+      }
+      if (status < 400 && (/^\s*#EXTM3U/.test(text || '') || /<(?:[\w.-]+:)?MPD(?:\s|>)/i.test((text || '').slice(0, 1000)) || /^(?:video|audio)\//i.test(contentType || ''))) {
+        candidates.push({ url: finalUrl, kind: /^\s*#EXTM3U/.test(text || '') ? 'hls' : /MPD/.test((text || '').slice(0, 1000)) ? 'dash' : 'file', referer: job.referer || pageUrl, cookieFile: browserCookieJar, via: 'content' })
+        continue
+      }
+      if (!text || status >= 400) continue
 
       if (job.kind === 'page') {
         if (!title) title = pageTitleOf(text)
@@ -801,11 +822,12 @@ async function staticScan(
         if (EMBED_HOST.test(url)) embeds.add(url)
       }
 
+      subtitles.push(...collectTextTracks(text, finalUrl))
       const { candidates: found } = collectFromText(text, finalUrl)
       if (found.length && onProgress) {
         onProgress(`${found.length} olası akış bulundu, doğrulanıyor`)
       }
-      candidates.push(...found)
+      candidates.push(...found.map((c) => ({ ...c, cookieFile: browserCookieJar })))
 
       /*
        * Order matters here, because the fetch budget is shared.
@@ -870,16 +892,16 @@ async function staticScan(
   // and a runtime and would pay for a second document they never read.
   if (!candidates.length && maxFetches > 1) {
     if (onProgress) onProgress('mobil sürüm deneniyor')
-    const { text, finalUrl } = await fetchText(pageUrl, '', { userAgent: MOBILE_UA, proxy })
+    const { text, finalUrl } = await fetchText(pageUrl, '', { userAgent: MOBILE_UA, proxy, cookieFile: browserCookieJar, signal })
     if (text) {
       const { candidates: mobile } = collectFromText(text, finalUrl)
-      for (const candidate of mobile) candidates.push({ ...candidate, via: 'static-mobile' })
+      for (const candidate of mobile) candidates.push({ ...candidate, via: 'static-mobile', userAgent: MOBILE_UA, cookieFile: browserCookieJar })
       if (!expectedDuration) expectedDuration = pageDurationOf(text)
       for (const api of collectSourceApis(text, finalUrl).slice(0, 2)) {
-        const answer = await fetchText(api, finalUrl, { json: true, proxy })
+        const answer = await fetchText(api, finalUrl, { json: true, proxy, cookieFile: browserCookieJar, signal })
         if (!answer.text) continue
         const { candidates: fromApi } = collectFromText(answer.text, answer.finalUrl)
-        for (const candidate of fromApi) candidates.push({ ...candidate, via: 'static-mobile' })
+        for (const candidate of fromApi) candidates.push({ ...candidate, via: 'static-mobile', userAgent: MOBILE_UA, cookieFile: browserCookieJar })
       }
     }
   }
@@ -888,9 +910,13 @@ async function staticScan(
     title,
     thumbnail,
     expectedDuration,
+    failure,
+    accessRequired,
+    challengeRequired,
     embeds: [...embeds],
     frames,
-    candidates: dedupe(candidates),
+    subtitles: mergeTextTracks(subtitles),
+    candidates: dedupe(candidates).map((c) => ({ ...c, subtitles: mergeTextTracks(subtitles) })),
     engine: 'static',
   }
 }
@@ -965,6 +991,7 @@ const AD_SKIP = `(() => {
       var d = v.duration;
       // Only ever a short clip — never the feature.
       if (!isFinite(d) || d <= 0 || d > 180) continue;
+      if (!v.closest('.video-ads,.jw-flag-ads,.vjs-ad-playing,.ad-showing') && !document.querySelector('.jw-flag-ads,.vjs-ad-playing,.ad-showing')) continue;
       try { v.muted = true; if (v.paused) { var p = v.play(); if (p && p.catch) p.catch(function(){}); } } catch (e) {}
       if (v.currentTime < d - 0.4) {
         try { v.currentTime = Math.max(0, d - 0.15); done.push('runout'); } catch (e) {}
@@ -1035,16 +1062,7 @@ const HOOK_SCRIPT = `(() => {
         var url = '';
         try { url = typeof input === 'string' ? input : input && input.url; note(url); } catch (e) {}
         var result = originalFetch.apply(this, arguments);
-        try {
-          result.then(function (res) {
-            try {
-              var type = (res.headers.get('content-type') || '').toLowerCase();
-              var size = Number(res.headers.get('content-length') || 0);
-              if (/video\/|audio\/|image\/|font\//.test(type) || size > 2000000) return;
-              res.clone().text().then(function (t) { sniff(res.url || url, t); }).catch(function () {});
-            } catch (e) {}
-          }).catch(function () {});
-        } catch (e) {}
+        // Response bodies are inspected by the bounded discovery hook.
         return result;
       };
     }
@@ -1117,9 +1135,16 @@ function acquirePartition() {
 
 async function releasePartition(name, ses) {
   try {
+    ses.webRequest.onBeforeRequest(null)
+    ses.webRequest.onBeforeSendHeaders(null)
+    ses.webRequest.onHeadersReceived(null)
+    await ses.closeAllConnections()
+    await ses.clearAuthCache()
+    await ses.clearCache()
     await ses.clearStorageData()
   } catch {
-    /* best effort — the slot is still reusable */
+    // A failed cleanup must not hand an authenticated session to another run.
+    return
   }
   if (partitionPool.length < 8) partitionPool.push(name)
 }
@@ -1203,7 +1228,7 @@ function writeCookieJar(cookies, file) {
       ].join('\t')
     )
   }
-  fs.writeFileSync(file, `${lines.join('\n')}\n`, 'utf8')
+  fs.writeFileSync(file, `${lines.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 })
   return file
 }
 
@@ -1246,8 +1271,11 @@ function browserScan(
     referer = null,
     proxy = '',
     useUserScripts = true,
+    signal = null,
+    preferredAudioLanguage = 'en',
   } = {}
 ) {
+  const browserBlocker = activeBlocker()
   // A page-declared runtime raises the bar for "long enough to be the feature".
   const featureFloor =
     expectedDuration && expectedDuration > 0
@@ -1263,21 +1291,28 @@ function browserScan(
     // proxy possible: this page goes through the tunnel while the one resolving
     // beside it does not. Chromium understands SOCKS here, so no tunnelling of
     // our own is needed on this path.
-    if (proxy) {
-      const rules = proxyRules(proxy)
-      if (rules) ses.setProxy({ proxyRules: rules, proxyBypassRules: '<local>' }).catch(() => {})
-    }
+    const configureProxy = ses.setProxy(proxy ? { proxyRules: proxyRules(proxy), proxyBypassRules: '<local>' } : { mode: 'direct' })
+    const captureController = new AbortController()
+    const captureSignal = signal ? AbortSignal.any([signal, captureController.signal]) : captureController.signal
     const hits = new Map()
+    const textTracks = []
+    const discoveredFrames = new Map()
+    const requestContexts = new Map()
+    let alternateAt = Date.now()
     const skipped = new Set()
     const jsonScanned = new Set()
     const segments = new Set()
     const measuring = new Set()
+    const measurementWaiters = []
+    let measurementSlots = 0
     const timers = []
     let adSkipTimer = null
     let adSkips = 0
     let adCount = 0
     let encrypted = false
     let title = ''
+    let loadError = null
+    const captureCookieFile = path.join(os.tmpdir(), `edl-cookies-${uid('c')}.txt`)
     // A runtime announced by a user script, used the same way the page's own
     // declared duration is: to tell a short pre-roll from the feature.
     let scriptDuration = null
@@ -1316,12 +1351,13 @@ function browserScan(
         scriptDuration = item.duration
       }
       if (typeof item.note === 'string' && item.note) note(item.note)
-      if (typeof item.url === 'string') record(item.url, referer, 'content-type')
+      if (item.drm === true) encrypted = true
+      if (typeof item.url === 'string') record(item.url, referer, 'content-type', item.kind)
     }
 
-    const record = (url, referer, why) => {
-      if (!isHttp(url) || blocker.shouldBlock(url)) return
-      const kind = kindOf(url)
+    const record = (url, referer, why, declaredKind = null) => {
+      if (done || !isHttp(url) || browserBlocker.shouldBlock(url)) return
+      const kind = ['hls', 'dash', 'file'].includes(declaredKind) ? declaredKind : kindOf(url)
       if (kind === 'unknown' && why !== 'content-type') return
       if (kind === 'segment') {
         // Not downloadable on their own, but they say where the playlist lives.
@@ -1329,23 +1365,32 @@ function browserScan(
         return
       }
       const key = url.split('#')[0]
-      if (hits.has(key) || skipped.has(key)) return
+      if (skipped.has(key)) return
+      if (hits.has(key)) {
+        const hit = hits.get(key)
+        if (hit.invalid && why === 'content-type') { hit.invalid = false; measure(hit) }
+        return
+      }
+      if (hits.size >= 80) return
 
       // A pre-roll loads before the feature does. Naming it here and refusing to
       // settle on it is the whole point: stopping at the first stream we saw was
       // how an advert ended up being downloaded instead of the video.
-      if (blocker.isAdMedia(url)) {
+      if (browserBlocker.isAdMedia(url)) {
         skipped.add(key)
         adCount += 1
         note(`reklam akışı atlandı (${hostOf(url) || 'reklam ağı'}) — video bekleniyor`)
         return
       }
 
+      const captured = requestContexts.get(key) || {}
       const hit = {
         url,
-        kind: kind === 'unknown' ? 'hls' : kind,
-        referer: referer || pageUrl,
-        origin: originOf(referer || pageUrl),
+        kind,
+        needsCheck: kind === 'unknown',
+        referer: captured.referer || referer || pageUrl,
+        origin: captured.origin || '',
+        userAgent: captured.userAgent || UA,
         via: 'browser',
         info: null,
         short: false,
@@ -1366,18 +1411,36 @@ function browserScan(
       const resolved = {
         referer: hit.referer,
         origin: hit.origin,
-        userAgent: UA,
+        userAgent: hit.userAgent || UA,
         kind: hit.kind,
+        signal: captureSignal,
         // The window's session is proxied by Chromium, but measuring a stream
         // happens outside it — so it needs telling.
         proxy,
       }
-      const pending = describeStream(hit.url, resolved)
+      const pending = (async () => {
+        if (measurementSlots >= 4) await new Promise((resume) => measurementWaiters.push(resume))
+        else measurementSlots += 1
+        try {
+          if (done || captureSignal.aborted) return { playable: false }
+          const cookies = await ses.cookies.get({})
+          if (cookies.length) { writeCookieJar(cookies, captureCookieFile); resolved.cookieFile = captureCookieFile }
+          return await describeStream(hit.url, resolved)
+        } finally {
+          const resume = measurementWaiters.shift()
+          if (resume) resume()
+          else measurementSlots -= 1
+        }
+      })()
       measuring.add(pending)
       pending.finally(() => measuring.delete(pending)).catch(() => {})
       pending
         .then((info) => {
           hit.info = info
+          if (info.kind) hit.kind = info.kind
+          if (info.drm) encrypted = true
+          if (!info.playable && !info.drm) { hit.invalid = true; return }
+          if (done) return
           // Declared runtime matched: this is the feature, stop listening now
           // instead of waiting out the settle window.
           if (
@@ -1401,7 +1464,7 @@ function browserScan(
             settleTimer = setTimeout(finish, 1500)
             return
           }
-          if (floor > 0 && info && info.duration && info.duration < floor) {
+          if (floor > 0 && info && info.duration && info.duration < floor && expectedDuration) {
             hit.short = true
             adCount += 1
             note(
@@ -1411,6 +1474,7 @@ function browserScan(
             )
             return
           }
+          if (info?.duration && info.duration < minStreamSeconds && !expectedDuration) { hit.tentativeShort = true; return }
           settle()
         })
         .catch(() => settle())
@@ -1424,14 +1488,13 @@ function browserScan(
      * and scan the body the same way we scan a page.
      */
     async function scanJsonBody(url) {
-      if (jsonScanned.has(url) || jsonScanned.size >= 12) return
+      if (done || jsonScanned.has(url) || jsonScanned.size >= 12) return
       jsonScanned.add(url)
       try {
-        const res = ses.fetch
-          ? await ses.fetch(url, { headers: { Referer: pageUrl, 'User-Agent': UA } })
-          : await fetch(url, { headers: { Referer: pageUrl, 'User-Agent': UA } })
-        if (!res.ok) return
-        const text = (await res.text()).slice(0, 2 * 1024 * 1024)
+        const cookies = await ses.cookies.get({})
+        if (cookies.length) writeCookieJar(cookies, captureCookieFile)
+        const { text, status } = await fetchText(url, pageUrl, { proxy, cookieFile: captureCookieFile, signal: captureSignal, maxBytes: 2 * 1024 * 1024, retries: 0 })
+        if (done || status >= 400 || !text) return
         const { candidates } = collectFromText(text, url)
         if (candidates.length) note(`oynatıcı belgesinde ${candidates.length} akış bulundu`)
         for (const candidate of candidates) record(candidate.url, pageUrl, 'content-type')
@@ -1446,6 +1509,7 @@ function browserScan(
      * playlist, so walk up from one and try the conventional names.
      */
     async function deriveManifestFromSegments() {
+      const deriveSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(2500)]) : AbortSignal.timeout(2500)
       const names = ['master.m3u8', 'index.m3u8', 'playlist.m3u8', 'manifest.mpd', 'index.mpd']
       const first = [...segments][0]
       if (!first) return null
@@ -1464,11 +1528,9 @@ function browserScan(
         for (const name of names) {
           const candidate = dir + name
           try {
-            const res = ses.fetch
-              ? await ses.fetch(candidate, { headers: { Referer: pageUrl, 'User-Agent': UA } })
-              : await fetch(candidate, { headers: { Referer: pageUrl, 'User-Agent': UA } })
-            if (!res.ok) continue
-            const text = (await res.text()).slice(0, 65536)
+            if (signal?.aborted || deriveSignal.aborted) return null
+            const { text, status } = await fetchText(candidate, pageUrl, { proxy, cookieFile: captureCookieFile, signal: deriveSignal, timeoutMs: 1200, maxBytes: 65536, retries: 0 })
+            if (status >= 400) continue
             if (/#EXTM3U/i.test(text) || /<MPD/i.test(text)) {
               note('parçalardan manifest türetildi')
               return candidate
@@ -1488,19 +1550,29 @@ function browserScan(
       settleTimer = setTimeout(finish, SETTLE_MS)
     }
 
-    async function finish() {
+    async function finish(force = false) {
       if (done) return
       done = true
+      if (force || signal?.aborted) captureController.abort()
       clearTimeout(settleTimer)
       clearTimeout(hardStop)
+      signal?.removeEventListener('abort', finish)
       clearInterval(adSkipTimer)
       for (const t of timers) clearTimeout(t)
 
+      try {
+        const main = win && !win.isDestroyed() ? win.webContents.mainFrame : null
+        const frames = main && !signal?.aborted ? [main, ...(main.framesInSubtree || [])] : []
+        await Promise.race([Promise.allSettled(frames.map(async (frame) => {
+          const tracks = await frame.executeJavaScript(PAGE_TEXT_TRACKS, true)
+          for (const track of tracks || []) textTracks.push(normaliseTrack(track, frame.url || pageUrl))
+        })), new Promise((r) => setTimeout(r, 2000))])
+      } catch { /* detached player */ }
       let cookieFile = null
       try {
         const cookies = await ses.cookies.get({})
         if (cookies.length) {
-          cookieFile = path.join(os.tmpdir(), `edl-cookies-${uid('c')}.txt`)
+          cookieFile = captureCookieFile
           writeCookieJar(cookies, cookieFile)
         }
       } catch {
@@ -1517,7 +1589,6 @@ function browserScan(
       } catch {
         /* already gone */
       }
-      await releasePartition(partition, ses)
 
       // A stream is only judged once it has been measured. Ending the scan while
       // a measurement was still in flight let an unmeasured pre-roll through as
@@ -1528,11 +1599,13 @@ function browserScan(
           new Promise((r) => setTimeout(r, 5000)),
         ])
       }
+      captureController.abort()
 
       const all = [...hits.values()]
-      let keepers = all.filter((h) => !h.short)
+      let keepers = all.filter((h) => !h.short && !h.invalid && (h.info?.playable || h.info?.drm))
+      if (keepers.some((h) => !h.tentativeShort)) keepers = keepers.filter((h) => !h.tentativeShort)
 
-      if (!keepers.length && segments.size) {
+      if (!keepers.length && segments.size && !signal?.aborted) {
         const derived = await deriveManifestFromSegments()
         if (derived) {
           keepers = [
@@ -1549,41 +1622,63 @@ function browserScan(
         }
       }
 
+      await releasePartition(partition, ses)
+
       resolve({
         title: /^(video player|player|loading|untitled)?$/i.test(title.trim()) ? '' : title,
-        candidates: dedupe(keepers).map((c) => ({ ...c, cookieFile })),
+        candidates: dedupe(keepers).map((c) => ({ ...c, cookieFile, subtitles: mergeTextTracks(textTracks) })),
         engine: 'browser',
+        frames: [...discoveredFrames.values()],
+        loadError,
         encrypted,
         adsSkipped: adCount,
         // Reported so the caller can explain an empty result rather than just
         // saying nothing was found.
-        shortOnly: keepers.length === 0 && all.length > 0,
+        shortOnly: keepers.length === 0 && all.some((h) => h.short),
         shortest: all.length
           ? Math.min(...all.filter((h) => h.info && h.info.duration).map((h) => h.info.duration), Infinity)
           : Infinity,
       })
     }
 
-    const hardStop = setTimeout(finish, timeoutMs)
+    const hardStop = setTimeout(() => finish(true), timeoutMs)
+    if (signal?.aborted) { finish(); return }
+    signal?.addEventListener('abort', finish, { once: true })
 
     try {
       ses.setUserAgent(UA)
 
       ses.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, callback) => {
-        if (blocker.shouldBlock(details.url)) return callback({ cancel: true })
+        if (browserBlocker.shouldBlock(details.url)) return callback({ cancel: true })
         // Popunders arrive as top-level navigations in fresh windows; the window
         // open handler denies those, but block the obvious ones early too.
-        record(details.url, details.referrer, 'request')
+        if (kindOf(details.url) === 'segment' && segments.size < 8) segments.add(details.url)
         callback({ cancel: false })
       })
 
+      ses.webRequest.onBeforeSendHeaders({ urls: ['<all_urls>'] }, (details, callback) => {
+        const headers = details.requestHeaders || {}
+        const get = (name) => String(headers[Object.keys(headers).find((key) => key.toLowerCase() === name)] || '')
+        if (requestContexts.size < 1600) requestContexts.set(details.url.split('#')[0], {
+          referer: get('referer'), origin: get('origin'), userAgent: get('user-agent'),
+        })
+        record(details.url, details.referrer, 'request')
+        callback({ requestHeaders: headers })
+      })
+
       ses.webRequest.onHeadersReceived({ urls: ['<all_urls>'] }, (details, callback) => {
+        if (details.statusCode >= 400) {
+          const hit = hits.get(details.url.split('#')[0])
+          if (hit) hit.invalid = true
+          callback({ cancel: false }); return
+        }
         const headers = details.responseHeaders || {}
         const key = Object.keys(headers).find((k) => k.toLowerCase() === 'content-type')
         const type = key ? String(headers[key]) : ''
+        if (/text\/vtt|application\/x-subrip/i.test(type)) textTracks.push(normaliseTrack({ url: details.url, kind: 'subtitles' }, details.referrer || pageUrl))
         if (CONTENT_TYPE_MEDIA.test(type)) {
-          record(details.url, details.referrer, 'content-type')
-        } else if (/application\/json/i.test(type) && JSON_PLAYER_HINT.test(details.url)) {
+          record(details.url, details.referrer, 'content-type', /dash/i.test(type) ? 'dash' : /mpegurl/i.test(type) ? 'hls' : 'file')
+        } else if (details.method === 'GET' && /application\/json/i.test(type) && JSON_PLAYER_HINT.test(details.url)) {
           scanJsonBody(details.url)
         }
         callback({ cancel: false })
@@ -1621,7 +1716,7 @@ function browserScan(
       // The signature of this event differs across Electron majors; read loosely.
       win.webContents.on('console-message', (...parts) => {
         const text = parts.map((p) => (p && p.message ? p.message : p)).join(' ')
-        if (/encrypted|widevine|playready|\bdrm\b/i.test(String(text))) encrypted = true
+        if (/widevine|playready|fairplay|key.?system|\bdrm\b/i.test(String(text))) encrypted = true
       })
 
       /**
@@ -1637,10 +1732,21 @@ function browserScan(
             const main = win.webContents.mainFrame
             const frames = main ? [main, ...(main.framesInSubtree || [])] : []
             for (const frame of frames) {
+              try {
+                if (/^https?:/.test(frame.url) && frame.url !== pageUrl && !browserBlocker.shouldBlock(frame.url)) discoveredFrames.set(frame.url, { url: frame.url, referer: frame.parent?.url || pageUrl, depth: 2 })
+                frame.executeJavaScript(FRAME_SCRIPT, true).then((urls) => {
+                  for (const url of urls || []) if (!browserBlocker.shouldBlock(url) && url !== pageUrl) discoveredFrames.set(url, { url, referer: frame.url || pageUrl, depth: 2 })
+                }).catch(() => {})
+                const healthy = [...hits.values()].some((h) => h.info?.playable && !h.short && !h.invalid)
+                if (!assisted && !healthy && Date.now() - alternateAt > 6500 && !measuring.size) {
+                  alternateAt = Date.now()
+                  frame.executeJavaScript(alternativeScript(preferredAudioLanguage), true).then((label) => { if (label) note(`alternatif oynatıcı deneniyor: ${label}`) }).catch(() => {})
+                }
+              } catch {}
               // Hook the player's own calls, then read what they carried. Runs on
               // the same pass as ad-skipping: no extra timer, every frame covered.
               try {
-                frame.executeJavaScript(HOOK_SCRIPT, true).catch(() => {})
+                frame.executeJavaScript(HOOK_SCRIPT + ';' + DISCOVERY_SCRIPT, true).catch(() => {})
                 const drained = frame.executeJavaScript(HOOK_DRAIN, true)
                 if (drained && drained.then) {
                   drained
@@ -1755,12 +1861,20 @@ function browserScan(
         try {
           const main = win.webContents.mainFrame
           for (const frame of main ? [main, ...(main.framesInSubtree || [])] : []) {
-            frame.executeJavaScript(HOOK_SCRIPT, true).catch(() => {})
+            frame.executeJavaScript(HOOK_SCRIPT + ';' + DISCOVERY_SCRIPT, true).catch(() => {})
             runUserScripts(frame, 'end')
           }
         } catch {
           /* frame not ready */
         }
+      })
+
+      win.webContents.on('frame-created', (_event, { frame }) => {
+        frame.on('dom-ready', () => {
+          if (done) return
+          frame.executeJavaScript(HOOK_SCRIPT + ';' + DISCOVERY_SCRIPT, true).catch(() => {})
+          runUserScripts(frame, 'end')
+        })
       })
 
       let scheduled = false
@@ -1830,6 +1944,7 @@ function browserScan(
 
       // Carry the user's own session in before the first request goes out.
       const boot = async () => {
+        await configureProxy
         if (browserCookieJar) {
           const count = await injectCookieJar(ses, browserCookieJar)
           if (count) note(`tarayıcı oturumun yüklendi (${count} çerez)`)
@@ -1838,9 +1953,9 @@ function browserScan(
         note('sayfa açılıyor')
         win
           .loadURL(pageUrl, { userAgent: UA, httpReferrer: referer || originOf(pageUrl) })
-          .catch(() => {})
+          .catch((err) => { loadError = err.message; if (!hits.size) finish() })
       }
-      boot().catch(() => finish())
+      boot().catch((err) => { loadError = err.message; finish() })
     } catch (err) {
       note(`tarayıcı motoru başlatılamadı: ${err.message}`)
       finish()
@@ -1861,46 +1976,43 @@ function browserScan(
  * we're there. Unverified guesses from player configs live or die here, which is
  * what lets the scan be aggressive without inventing entries.
  */
-async function verifyCandidates(candidates, { limit = 12, concurrency = 3, proxy = '' } = {}) {
+async function verifyCandidates(candidates, { limit = 16, concurrency = 3, proxy = '', signal = null } = {}) {
   const shortlist = candidates.slice(0, limit)
   const keep = []
   let cursor = 0
 
   async function worker() {
-    while (cursor < shortlist.length) {
+    while (cursor < shortlist.length && !signal?.aborted) {
       const candidate = shortlist[cursor++]
       // Already measured during capture; don't pay for it twice.
-      if (candidate.info && (candidate.info.duration || candidate.info.variants.length)) {
+      if (candidate.info && (candidate.info.playable || candidate.info.drm)) {
         keep.push(candidate)
         continue
       }
       const resolved = {
         referer: candidate.referer,
         origin: candidate.origin,
-        userAgent: UA,
+        userAgent: candidate.userAgent || UA,
         cookieFile: candidate.cookieFile || null,
-        kind: candidate.kind === 'unknown' ? 'hls' : candidate.kind,
+        kind: candidate.kind,
         proxy,
+        signal,
       }
       try {
         const info = await describeStream(candidate.url, resolved)
         // Duration is the honest test of "this is a video": a poster image
         // reports a resolution but never a running time.
-        const real = !!(info.duration || info.variants.length)
+        const real = !!info.playable
         if (real) {
           keep.push({
             ...candidate,
-            kind: info.variants.length ? 'hls' : candidate.kind === 'unknown' ? 'file' : candidate.kind,
+            kind: info.kind || candidate.kind,
             info,
           })
-        } else if (!candidate.needsCheck) {
-          // Extension said media but nothing could read it; keep it and let
-          // yt-dlp have the final say rather than dropping a real find.
-          keep.push({ ...candidate, info: null })
+        } else if (info.drm) {
+          keep.push({ ...candidate, info })
         }
-      } catch {
-        if (!candidate.needsCheck) keep.push({ ...candidate, info: null })
-      }
+      } catch { /* An extension alone is not proof of a playable source. */ }
     }
   }
 
@@ -1947,7 +2059,7 @@ function dropShortStreams(candidates, minSeconds, expected = null) {
     floor = Math.max(minSeconds / 2, longest * 0.25)
   }
 
-  const kept = candidates.filter((c) => c.info && c.info.duration && c.info.duration >= floor)
+  const kept = candidates.filter((c) => c.info?.drm || (c.info?.live && c.info?.playable) || (c.info?.duration && c.info.duration >= floor))
 
   // Without a declared runtime, an empty result more likely means our guess was
   // wrong than that everything was an advert — so keep what we had.
@@ -1965,7 +2077,7 @@ function dropShortStreams(candidates, minSeconds, expected = null) {
  * Resolve a page to playable media.
  * Returns { title, thumbnail, candidates: [{url, kind, referer, origin, cookieFile, info}], engine }
  */
-async function resolvePage(
+async function resolvePageImpl(
   pageUrl,
   {
     onProgress = null,
@@ -1977,10 +2089,15 @@ async function resolvePage(
     preferEngine = null,
     proxy = '',
     useUserScripts = true,
+    signal = null,
+    preferredAudioLanguage = 'en',
   } = {}
 ) {
-  if (!isHttp(pageUrl)) return { title: '', candidates: [], engine: 'none' }
-  if (blockRules) configureBlocker(blockRules)
+  if (!isHttp(pageUrl) || signal?.aborted) return { title: '', candidates: [], engine: 'none' }
+  if (['hls', 'dash', 'file'].includes(kindOf(pageUrl))) {
+    const candidates = await verifyCandidates([{ url: pageUrl, kind: kindOf(pageUrl), referer: pageUrl, cookieFile: browserCookieJar }], { proxy, signal })
+    return { title: '', candidates, engine: 'static', userAgent: UA }
+  }
 
   // A host we've resolved before tells us which engine actually works. Going
   // straight there skips a full crawl and its verification round — the single
@@ -1992,9 +2109,10 @@ async function resolvePage(
     onProgress(skipStatic ? 'bu site için oynatıcı taraması' : 'sayfa ve oynatıcı kodları taranıyor')
   }
   const fast = skipStatic
-    ? await staticScan(pageUrl, { maxFetches: 1, maxDepth: 0, proxy })
-    : await staticScan(pageUrl, { onProgress, proxy })
+    ? await staticScan(pageUrl, { maxFetches: 8, maxDepth: 2, proxy, browserCookieJar, signal })
+    : await staticScan(pageUrl, { onProgress, proxy, browserCookieJar, signal })
 
+  if (signal?.aborted) return { ...fast, candidates: [], userAgent: UA }
   if (fast.expectedDuration && onProgress) {
     onProgress(`sayfa videoyu ${Math.round(fast.expectedDuration / 60)} dk diye bildiriyor`)
   }
@@ -2003,8 +2121,8 @@ async function resolvePage(
   // re-probes it and gets the full format list, subtitles and metadata.
   const embeds = fast.embeds || []
 
-  if (fast.candidates.length && !skipStatic) {
-    const verified = dropVariantDuplicates(await verifyCandidates(fast.candidates, { proxy }))
+  if (fast.candidates.length) {
+    const verified = dropVariantDuplicates(await verifyCandidates(fast.candidates, { proxy, signal }))
     const { kept, dropped } = dropShortStreams(verified, minStreamSeconds, fast.expectedDuration)
     if (kept.length) {
       if (dropped && onProgress) onProgress(`${dropped} kısa akış (reklam) atlandı`)
@@ -2031,47 +2149,30 @@ async function resolvePage(
   if (onProgress) onProgress('oynatıcı görünmez tarayıcıda çalıştırılıyor')
   // With a nested player to fall back on there is no reason to sit out the full
   // window waiting for a wrapper page that may never yield.
-  const nestedFrames = [...(fast.frames || [])].sort((a, b) => b.depth - a.depth).slice(0, 3)
-  let deep = await browserScan(pageUrl, {
-    timeoutMs: nestedFrames.length ? Math.min(timeoutMs, 22000) : timeoutMs,
-    onProgress,
-    browserCookieJar,
-    minStreamSeconds,
-    expectedDuration: fast.expectedDuration,
-    proxy,
-    useUserScripts,
+  const frameMap = new Map((fast.frames || []).map((f) => [f.url, f]))
+  const nestedFrames = [...frameMap.values()].sort((a, b) => b.depth - a.depth).slice(0, 4)
+  const first = nestedFrames.find((f) => f.depth >= 2 && !EMBED_HOST.test(f.url))
+  const options = { onProgress, browserCookieJar, minStreamSeconds, expectedDuration: fast.expectedDuration, proxy, useUserScripts, signal, preferredAudioLanguage }
+  let deep = await browserScan(first?.url || pageUrl, {
+    ...options, referer: first?.referer, timeoutMs: nestedFrames.length ? Math.min(timeoutMs, 24000) : timeoutMs,
   })
-
-  /*
-   * A wrapper page's gate is not the player's gate.
-   *
-   * When a site nests its player two frames deep, the pre-roll, the consent
-   * screen, the bot check and the anti-inspection script all live on the outer
-   * page — the player frame has none of them. Asking that frame directly, with
-   * its parent as Referer, is the same request the outer page makes, and it
-   * routinely succeeds in seconds where the wrapper never yields at all.
-   */
-  if (!deep.candidates.length && nestedFrames.length) {
-    for (const frame of nestedFrames) {
-      if (onProgress) onProgress(`gömülü oynatıcı doğrudan açılıyor: ${hostOf(frame.url)}`)
-      const inner = await browserScan(frame.url, {
-        timeoutMs: Math.min(timeoutMs, 30000),
-        onProgress,
-        browserCookieJar,
-        minStreamSeconds,
-        expectedDuration: fast.expectedDuration,
-        referer: frame.referer,
-        proxy,
-        useUserScripts,
-      })
-      if (inner.candidates.length) {
-        deep = { ...inner, title: deep.title || inner.title }
-        break
-      }
-    }
+  const attempted = new Set([first?.url || pageUrl])
+  for (const frame of deep.frames || []) if (!frameMap.has(frame.url)) frameMap.set(frame.url, frame)
+  const remaining = [...frameMap.values()].sort((a, b) => b.depth - a.depth)
+  if (first) remaining.push({ url: pageUrl, referer: null, depth: 0 })
+  let alternatives = 0
+  for (let index = 0; !deep.candidates.length && index < remaining.length && alternatives < 5 && !signal?.aborted; index += 1) {
+    const frame = remaining[index]
+    if (attempted.has(frame.url)) continue
+    attempted.add(frame.url)
+    alternatives += 1
+    onProgress?.(`alternatif oynatıcı açılıyor: ${hostOf(frame.url)}`)
+    const inner = await browserScan(frame.url, { ...options, referer: frame.referer, timeoutMs: Math.min(timeoutMs, 24000) })
+    if (inner.candidates.length) deep = { ...inner, title: deep.title || inner.title }
+    for (const next of inner.frames || []) if (!attempted.has(next.url) && !remaining.some((f) => f.url === next.url)) remaining.push(next)
   }
 
-  const verified = deep.candidates.length ? await verifyCandidates(deep.candidates, { proxy }) : []
+  const verified = deep.candidates.length ? await verifyCandidates(deep.candidates, { proxy, signal }) : []
   // Keep browser finds even if verification couldn't read them: the session that
   // captured them is gone, so a fresh fetch may legitimately fail.
   const pool = dropVariantDuplicates(verified.length ? verified : deep.candidates)
@@ -2080,7 +2181,10 @@ async function resolvePage(
 
   return {
     ...deep,
-    candidates: kept,
+    failure: fast.failure,
+    accessRequired: fast.accessRequired,
+    challengeRequired: fast.challengeRequired,
+    candidates: kept.map((c) => ({ ...c, subtitles: mergeTextTracks(c.subtitles || [], fast.subtitles || [], fast.candidates.flatMap((v) => v.subtitles || [])) })),
     adsSkipped: (deep.adsSkipped || 0) + dropped,
     title: cleanTitle(deep.title || fast.title, hostOf(pageUrl)),
     thumbnail: fast.thumbnail || '',
@@ -2094,7 +2198,7 @@ async function resolvePage(
  * The escape hatch for ad walls, consent gates and bot checks: a person clears
  * them, the app only listens.
  */
-async function assistedCapture(
+async function assistedCaptureImpl(
   pageUrl,
   {
     onProgress = null,
@@ -2104,14 +2208,15 @@ async function assistedCapture(
     blockRules = null,
     proxy = '',
     useUserScripts = true,
+    signal = null,
+    preferredAudioLanguage = 'en',
   } = {}
 ) {
   if (!isHttp(pageUrl)) return { title: '', candidates: [], engine: 'assisted' }
-  if (blockRules) configureBlocker(blockRules)
 
   // One cheap fetch for the page's own title, poster and declared runtime — the
   // runtime is what lets us tell the feature from a pre-roll here too.
-  const meta = await staticScan(pageUrl, { maxFetches: 1, maxDepth: 0, proxy })
+  const meta = await staticScan(pageUrl, { maxFetches: 1, maxDepth: 0, proxy, browserCookieJar, signal })
 
   const result = await browserScan(pageUrl, {
     assisted: true,
@@ -2122,9 +2227,11 @@ async function assistedCapture(
     expectedDuration: meta.expectedDuration,
     proxy,
     useUserScripts,
+    preferredAudioLanguage,
+    signal,
   })
 
-  const verified = result.candidates.length ? await verifyCandidates(result.candidates, { proxy }) : []
+  const verified = result.candidates.length ? await verifyCandidates(result.candidates, { proxy, signal }) : []
   const pool = dropVariantDuplicates(verified.length ? verified : result.candidates)
   const { kept, dropped } = dropShortStreams(pool, minStreamSeconds, meta.expectedDuration)
 
@@ -2139,6 +2246,24 @@ async function assistedCapture(
   }
 }
 
+async function resolvePage(pageUrl, options = {}) {
+  const controller = new AbortController()
+  const abort = () => controller.abort(options.signal?.reason)
+  if (options.signal?.aborted) abort()
+  else options.signal?.addEventListener('abort', abort, { once: true })
+  const budget = Math.max(8000, Math.min(180000, (Number(options.timeoutMs) || 45000) * 2))
+  let timedOut = false
+  const timer = setTimeout(() => { timedOut = true; controller.abort() }, budget)
+  try {
+    const result = await withRules(options, () => resolvePageImpl(pageUrl, { ...options, signal: controller.signal }))
+    return { ...result, timedOut }
+  } finally { clearTimeout(timer); options.signal?.removeEventListener('abort', abort) }
+}
+
+function assistedCapture(pageUrl, options = {}) {
+  return withRules(options, () => assistedCaptureImpl(pageUrl, options))
+}
+
 module.exports = {
   resolvePage,
   assistedCapture,
@@ -2146,7 +2271,12 @@ module.exports = {
   unpackPacked,
   // Exported so the static techniques can be exercised without a browser.
   staticScan,
+  collectFromText,
+  collectIframes,
+  dropShortStreams,
   collectSourceApis,
+  verifyCandidates,
+  injectedScripts: { PLAY_NUDGE, AD_SKIP, HOOK_SCRIPT, HOOK_DRAIN, ASSIST_BANNER, DISCOVERY_SCRIPT, FRAME_SCRIPT },
   metaRefreshOf,
   UA,
   MOBILE_UA,

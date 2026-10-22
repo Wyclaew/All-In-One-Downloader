@@ -381,66 +381,94 @@ function checkProxy(raw, timeoutMs = 12000) {
  * both leaks and fails: a geo-blocked site answers the scan with a block page and
  * the resolve dies before the proxy is ever used.
  */
-function fetchVia(url, { headers = {}, proxy = '', timeoutMs = 12000, maxBytes = 3 * 1024 * 1024, redirects = 5 } = {}) {
-  const agents = proxy ? agentsFor(proxy) : null
-  if (proxy && !agents) return Promise.reject(new Error(`Vekil adresi anlaşılamadı: ${proxy}`))
+const zlib = require('zlib')
+const { failureKind, retryDelay, sleep } = require('./recovery')
+const TEXT_AGENTS = {
+  'http:': new http.Agent({ keepAlive: true, maxSockets: 24 }),
+  'https:': new https.Agent({ keepAlive: true, maxSockets: 24 }),
+}
 
+async function fetchVia(url, options = {}) {
+  const { retries = 2 } = options
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const result = await fetchTextOnce(url, options)
+      if ([408, 425, 429, 500, 502, 503, 504].includes(result.status) && attempt < retries) {
+        await sleep(retryDelay(attempt, result.status === 429 ? 'busy' : 'network', result.headers['retry-after']), options.signal)
+        continue
+      }
+      return result
+    } catch (err) {
+      if (attempt >= retries || failureKind(err) !== 'network') throw err
+      await sleep(retryDelay(attempt), options.signal)
+    }
+  }
+}
+
+function fetchTextOnce(url, {
+  headers = {}, proxy = '', timeoutMs = 12000, maxBytes = 3 * 1024 * 1024,
+  redirects = 5, headersFor = null, signal = null, allowBinaryText = false,
+} = {}) {
+  const agents = proxy ? agentsFor(proxy) : null
+  if (proxy && !agents) return Promise.reject(new Error('Vekil adresi anlaşılamadı.'))
   return new Promise((resolve, reject) => {
     let target
-    try {
-      target = new URL(url)
-    } catch (err) {
-      return reject(err)
-    }
+    try { target = new URL(url) } catch (err) { return reject(err) }
+    if (!['http:', 'https:'].includes(target.protocol)) return reject(new Error('Yalnızca HTTP/HTTPS adresleri destekleniyor.'))
+    const requestHeaders = { 'Accept-Encoding': 'gzip, deflate, br', ...headers, ...(headersFor?.(url) || {}) }
     const mod = target.protocol === 'http:' ? http : https
-    const req = mod.request(
-      target,
-      { headers, agent: agents ? agents[target.protocol] : undefined },
-      (res) => {
-        const location = res.headers.location
-        if (location && res.statusCode >= 300 && res.statusCode < 400 && redirects > 0) {
-          res.resume()
-          let next
-          try {
-            next = new URL(location, target).href
-          } catch {
-            return resolve({ status: res.statusCode, headers: res.headers, text: '', finalUrl: url })
-          }
-          return resolve(fetchVia(next, { headers, proxy, timeoutMs, maxBytes, redirects: redirects - 1 }))
+    const req = mod.request(target, {
+      headers: requestHeaders, agent: agents ? agents[target.protocol] : TEXT_AGENTS[target.protocol],
+      autoSelectFamily: !proxy, signal,
+    }, (res) => {
+      const location = res.headers.location
+      if (location && res.statusCode >= 300 && res.statusCode < 400 && redirects > 0) {
+        res.resume()
+        let next
+        try { next = new URL(location, target) } catch (err) { return reject(err) }
+        const redirected = { ...headers }
+        // Recompute scoped cookies on each hop. Never forward credentials to a
+        // different origin just because a page returned a redirect.
+        if (next.origin !== target.origin) {
+          for (const key of Object.keys(redirected)) if (/^(cookie|authorization|origin)$/i.test(key)) delete redirected[key]
         }
-
-        const type = String(res.headers['content-type'] || '')
-        if (!/text|html|json|javascript|xml|mpegurl|dash|octet-stream/i.test(type)) {
-          res.resume()
-          return resolve({ status: res.statusCode, headers: res.headers, text: '', finalUrl: target.href })
-        }
-
-        const chunks = []
-        let size = 0
-        res.on('data', (chunk) => {
-          chunks.push(chunk)
-          size += chunk.length
-          if (size >= maxBytes) res.destroy()
-        })
-        res.on('end', () =>
-          resolve({
-            status: res.statusCode,
-            headers: res.headers,
-            text: Buffer.concat(chunks).toString('utf8'),
-            finalUrl: target.href,
-          })
-        )
-        res.on('error', () =>
-          resolve({
-            status: res.statusCode,
-            headers: res.headers,
-            text: Buffer.concat(chunks).toString('utf8'),
-            finalUrl: target.href,
-          })
-        )
+        return resolve(fetchTextOnce(next.href, { headers: redirected, proxy, timeoutMs, maxBytes, redirects: redirects - 1, headersFor, signal, allowBinaryText }))
       }
-    )
-    req.setTimeout(timeoutMs, () => req.destroy(new Error('Sunucu yanıt vermedi.')))
+      const type = String(res.headers['content-type'] || '')
+      if (type && !/text|html|json|javascript|xml|mpegurl|dash|octet-stream/i.test(type) && (!allowBinaryText || /^(?:video|audio)\//i.test(type))) {
+        res.destroy()
+        return resolve({ status: res.statusCode, headers: res.headers, text: '', finalUrl: target.href })
+      }
+      const encoding = String(res.headers['content-encoding'] || '').toLowerCase()
+      const decoder = encoding === 'br' ? zlib.createBrotliDecompress()
+        : encoding === 'gzip' ? zlib.createGunzip() : encoding === 'deflate' ? zlib.createInflate() : null
+      const body = decoder ? res.pipe(decoder) : res
+      const chunks = []
+      let size = 0
+      let finished = false
+      const timer = setTimeout(() => req.destroy(Object.assign(new Error('Sunucu zaman aşımına uğradı.'), { code: 'ETIMEDOUT' })), timeoutMs)
+      const finish = (error) => {
+        if (finished) return
+        finished = true
+        clearTimeout(timer)
+        if (error) { req.destroy(); reject(error); return }
+        resolve({ status: res.statusCode, headers: res.headers, text: Buffer.concat(chunks).toString('utf8'), finalUrl: target.href })
+      }
+      body.on('data', (chunk) => {
+        size += chunk.length
+        if (size > maxBytes) {
+          finish(Object.assign(new Error('Yanıt boyut sınırını aştı.'), { code: 'RESPONSE_TOO_LARGE' }))
+          body.destroy()
+          return
+        }
+        chunks.push(chunk)
+      })
+      body.once('end', () => finish())
+      body.once('error', finish)
+      res.once('aborted', () => finish(Object.assign(new Error('Sunucu yanıtı yarıda kesildi.'), { code: 'ECONNRESET' })))
+      res.once('error', finish)
+    })
+    req.setTimeout(timeoutMs, () => req.destroy(Object.assign(new Error('Sunucu yanıt vermedi.'), { code: 'ETIMEDOUT' })))
     req.once('error', reject)
     req.end()
   })

@@ -8,6 +8,65 @@ macOS için yazıldı; Windows altyapısı baştan hazır (aşağıya bak).
 
 ---
 
+## 0.13.0 — çözümleyici denetimi ve doğrulanan yayın
+
+- Kapak görselinin video sanılması, göreli kaynakların atlanması, ana sayfadaki
+  altyazının iç oynatıcı sonucunda kaybolması ve zorunlu altyazının tam altyazı
+  sanılması düzeltildi.
+- Kaynak türetme ve JSON okuma sınırlı süre/boyutla çalışır. Tarayıcı oturumu
+  kullanım bitince temizlenir; önceki istekler sonraki taramaya karışmaz.
+- Güncellemede eşzamanlı kontroller birleştirilir; dosya yazım/özet hataları
+  güvenle sonuçlandırılır. Manifest sürümü ve paket boyutu karşılaştırılır.
+- GitHub Actions iki platformda testleri çalıştırır. Mac arm64/x64 ve Windows
+  paketleri ile iki güncelleme manifesti doğrulanınca taslak sürüm yayımlanır.
+  Güncelleme denetimi açılıştan yaklaşık 15 sn sonra, ardından 6 saatte birdir.
+
+## 0.12.0 — kendi çözümleyicisi ve sürdürülebilen HLS
+
+- Genel sitelerde önce uygulamanın kendi çözümleyicisi denenir. İç içe
+  oynatıcılar, Next/Nuxt JSON verileri, uzantısız kaynaklar, çalışma sırasında
+  gelen POST/JSON yanıtları ve alternatif oynatıcı düğmeleri okunur. İndirme
+  listesine eklenmeden önce akış doğrulanır; HTML/404 yanıtı video sayılmaz.
+- Yeni HLS motoru VOD parçalarını ortak iş kuyruğundan indirir. TS, fMP4 init
+  parçaları, AES-128 ve bayt aralıkları desteklenir. Parçalar doğrulanarak
+  saklanır; duraklatma ve tekrar denemede tamamlanan parçalar yeniden indirilmez.
+  FFmpeg sonunda yalnızca yerel parçaları birleştirir. Canlı/desteklenmeyen
+  türlerde alternatif aktarım kullanılır.
+- Hız/ETA yeterli parça örneği geldikten sonra ölçülen boyuta dayanır. Geçici
+  parça hataları sınırlı olarak yeniden denenir; süresi dolmuş kaynak sayfadan
+  yenilenir. Ayarlar → Erişim’de motor sırası ve HLS motoru değiştirilebilir.
+- Verilen Dizibox ve Hdfilmcehennemi bağlantılarında, oturum girmeden kendi
+  motoruyla kısa video örnekleri indirildi ve okunabilir çıktılar doğrulandı.
+  Tam bölüm testi yapılmadı; tüm siteleri, gerçek üyelik/DRM/doğrulama engellerini
+  koşulsuz çözme garantisi yok. Ayrıntılar devir notunda.
+
+## 0.11.0 — güvenilir indirme, dil tercihleri ve Touch ID
+
+- **Otomatik kurtarma:** geçici ağ/sunucu hataları beklemeli ve sınırlı yeniden
+  denemeyle ele alınır. Süresi dolan çözümlenmiş akış, kendi sayfasından tekrar
+  bulunur. 429 yanıtında bağlantı sayısı azaltılır. Giriş/DRM/disk hataları sonsuz
+  döngüye sokulmaz. Ayarlar → Aktarım’dan açılıp kapatılabilir.
+- **Parçalı dosya aktarımı:** hızlı bağlantılar ortak kuyruktan yeni küçük parçalar
+  alır. Content-Range ve dosya kimliği doğrulanır; yanlış yanıt geldiğinde diğer
+  yazıcılar kapanmadan tek bağlantıya geçilmez. Hız ve ETA son ölçümlerden alınır;
+  sürdürmeden önceki baytlar hız hesabına katılmaz. Yeni kurulumda 8 bağlantı.
+- **Ses/altyazı:** varsayılan İngilizce ses, Türkçe altyazı. Tercih edilen ses
+  formatlarda aranır; HLS’in ayrı ses grupları korunur. Çok sesli dosyada uygun
+  kanal yeniden kodlama yapmadan seçilir. Kaynakta dil etiketi yoksa İngilizce
+  olduğu iddia edilmez. Ayarlar → Biçim’den Türkçe veya kaynak sesi seçilebilir.
+  Manifestin yanı sıra oynatıcının harici altyazı beyanları da okunur.
+- **Touch ID:** kasayı önce şifreyle aç, **Touch ID’yi etkinleştir** düğmesini kullan.
+  Sonraki açılışlarda **Touch ID ile aç** kullanılabilir. Anahtar macOS Keychain’de
+  mevcut parmak izi kaydıyla korunur; kasa şifresi saklanmaz. Parmak izi kaydı
+  değişirse veya anahtara erişilemezse şifreyle açıp yeniden etkinleştir.
+  Şifre değişikliği Touch ID kaydını kapatır. Gerçek cihazda biyometrik etkileşim
+  için ayrıca manuel doğrulama gerekir.
+- **Diziler:** ana sayfa aynı dizinin bölümlerini tek açılır grupta, sezon/bölüm
+  sırasında gösterir. `⋯ → Dizi / koleksiyon…` ile elle isim verilebilir.
+
+Geliştirici devir notu, canlı site sonuçları, araştırma kaynakları ve kalan sınırlar:
+[CLAUDE_HANDOFF.md](CLAUDE_HANDOFF.md).
+
 ## macOS'ta ilk açılış
 
 Hazır `.dmg`'yi indirip açtığında macOS şunu der:
@@ -136,7 +195,8 @@ Windows işine aynı şekilde bağlanır.
   yapıştırabilirsin — metindeki tüm URL'ler ayrı kaynak olarak eklenir.
 - Çözümleme arka planda ve **paralel** yürür (varsayılan 3 bağlantı birlikte); alan
   hemen boşalır, sıradaki bağlantıyı yazabilirsin.
-- yt-dlp bir sayfayı tanımazsa **kendi çözümleyicim** devreye girer. Reklam duvarı
+- Genel sitelerde önce **kendi çözümleyicim**, sonuç yoksa yt-dlp denenir.
+  YouTube gibi platformların özel çıkarıcıları korunur. Reklam duvarı
   veya doğrulama isteyen sayfalarda grup başlığındaki nişangâh düğmesi görünür bir
   pencere açar: kapıyı sen geçersin, akışı uygulama yakalar.
 - Her satırda süre, çözünürlük, boyut ve **hangi siteden geldiği** görünür.
@@ -162,16 +222,17 @@ Hattın 8 MB/s iken indirmenin 300 KB/s'de takılmasının sebebi genelde hat de
 akışının penceresini daraltır, ve aradaki bir kutu o tek akışa "yeter" der. Bu
 sınırların hiçbiri dosya başına değil, **bağlantı başına** işler.
 
-**Ayarlar → Aktarım → Dosya başına bağlantı** (varsayılan 4) iki yerde iş görür:
+**Ayarlar → Aktarım → Dosya başına bağlantı** (yeni kurulumda varsayılan 8) iki yerde iş görür:
 
 | Akış türü | Ne oluyor |
 |---|---|
-| HLS / DASH (dizi-film siteleri) | yt-dlp'ye `--concurrent-fragments` verilir; parçalar tek tek değil aynı anda iner. Varsayılan yt-dlp davranışı **1**'dir, yani bu ayar olmadan bir film binlerce parçanın her biri için ayrı bir gidiş-dönüş bekler. |
+| Çözümlenen HLS VOD | Uygulamanın kendi motoru küçük parçaları ortak kuyruktan alır. Hızlı bağlantı yeni işi alır; tamamlanan parçalar korunur, kalan süre ölçülen boyuttan hesaplanır. |
+| Diğer HLS / DASH | yt-dlp yolunda `--concurrent-fragments` kullanılır. Yerel motor desteklenmeyen HLS türünde FFmpeg'e döner. |
 | Düz dosya (kendi motorum) | Dosya gerçekten parçalara bölünür, her parça kendi bağlantısıyla ve kendi konumuna yazılır. Duraklatırsan her parçanın nerede kaldığı yanına günlüklenir, sürdürünce yalnızca eksikler istenir. |
 
 Sunucu `Range` desteklemiyorsa ya da 206 yerine başka bir şey dönerse kendiliğinden
 tek bağlantıya düşer. Çok yükseltmek bazı sitelerde 429 (çok fazla istek) yiyebilir;
-4–8 arası iyi bir aralık.
+4–8 arası başlangıç aralığıdır; sunucu çok istek hatası verirse otomatik kurtarma bağlantıları azaltır.
 
 ## Şifreli kasa
 
@@ -209,7 +270,7 @@ Eski sürümlerde kurulmuş kasalar ilk açılışta otomatik olarak bu biçime 
 
 Sınırlar açıkça söylenmeli: kasa açıkken bilgisayarının başındaki birine karşı
 koruma yoktur; "Sistem oynatıcısında aç" ve "Şifresiz kopya çıkar" bilerek düz
-dosya yazar; ve şifreyi unutursan kurtarma yolu yoktur — bırakılmış bir kurtarma
+dosya yazar; ve şifreyi unutup etkin Touch ID erişimini de kaybedersen kurtarma yolu yoktur — bırakılmış bir kurtarma
 yolu şifreyi baştan anlamsız kılardı.
 
 ## yt-dlp'yi kapatmak
@@ -220,12 +281,13 @@ yolu şifreyi baştan anlamsız kılardı.
 | Akış | Nasıl iner |
 |---|---|
 | Düz dosya | Parçalı HTTP (`Range`) — duraklat/sürdür gerçekten kaldığı yerden devam eder |
-| HLS / DASH | ffmpeg manifesti okur, tek kaba yazar; ilerleme videonun kendi zaman çizgisinden gelir |
+| Desteklenen HLS VOD | Kendi HTTP motoru parçaları indirir, FFmpeg yerel olarak birleştirir; tamamlanan parçalar korunur |
+| Diğer HLS / DASH | FFmpeg manifesti okur ve çıktıyı yazar; bu yolun duraklatılması baştan başlatabilir |
 
 Kalite, master playlist'teki varyantlardan seçilir — istediğin yüksekliğe eşit ya
-da ondan küçük en iyi varyant doğrudan indirilir. Bu yolda ffmpeg zorunludur ve
-parçalı akışlarda duraklatma baştan başlamak demektir (ffmpeg çıktısı
-sürdürülemez). yt-dlp'nin kendi çıkarıcısı olan siteler (YouTube gibi) için
+da ondan küçük en iyi varyant doğrudan indirilir. Birleştirme için FFmpeg gerekir.
+Yerel HLS motoru HTTP/SOCKS vekillerini ve ortak hız sınırını destekler;
+FFmpeg'in doğrudan ağdan aktardığı türlerde SOCKS sınırlıdır. yt-dlp'nin kendi çıkarıcısı olan siteler (YouTube gibi) için
 kapalıyken elde kalan tek yol kendi çözümleyicim olur, yani bazı sayfalarda sonuç
 değişir.
 
@@ -302,11 +364,14 @@ electron/
     probe.js           bağlantı → kaynak + medya listesi (iki aşamalı)
     downloader.js      aktarım sırası, ilerleme ayrıştırma, duraklat/sürdür
     browsers.js        tarayıcı çerez depolarını bulma (Opera GX dahil)
-    resolver.js        yt-dlp'nin tanımadığı sayfalar için iki motorlu çözümleyici
+    resolver.js        statik + tarayıcı çözümleme, oynatıcı zincirleri ve doğrulama
+    source-discovery.js JSON/config ve sınırlı veri çözme
+    browser-discovery.js çalışma sırasında kaynak ve alternatif oynatıcı keşfi
     mediainfo.js       manifest ayrıştırma + ffprobe ile süre/çözünürlük
     blocklist.js       istek engelleme; reklam SDK'larına bilerek izin verir
     subtitles.js       OpenSubtitles arama, sese hizalama, gömme
-    ownengine.js       yt-dlp kapalıyken indirme: parçalı HTTP + ffmpeg
+    ownengine.js       kaynak/kalite/ses seçimi, parçalı HTTP + alternatif FFmpeg
+    hls-native.js      sürdürülebilen HLS VOD parça motoru ve yerel birleştirme
     vault.js           şifreli kasa: parçalı AES-256-GCM, sarılmış anahtar, scrypt
 src/                   React arayüzü (görünümler, bileşenler, biçimleyiciler)
 ```
@@ -394,3 +459,29 @@ biriktirilir ve metre asla geri gitmez.
   **Tarayıcıda yakala** var: doğrulamayı sen geçersin, akışı uygulama yakalar.
 - Duraklatma yt-dlp sürecini durdurup `.part` dosyasını bırakır; sürdürme oradan
   devam eder. Sunucu byte-range desteklemiyorsa baştan başlar.
+
+## Doğrulama
+
+```bash
+npm test
+npm run typecheck
+npm run build
+```
+
+Testler geçici klasörler ve yerel HTTP sunucusu kullanır. Gerçek kitaplığa/kasaya
+bağlanmaz. ffmpeg/yt-dlp mevcutsa gerçek çok sesli video ve HLS kurtarma testleri
+çalışır. Canlı site denemesi (ayrı profil, tam video indirmez):
+
+```bash
+npx electron tests/manual/resolve-sites.js --own-sample --captions 'https://site.example/bolum/'
+```
+
+`--own-sample` kendi HLS motoruyla en fazla iki parça ve varsa ayrı sesi alıp
+yerel birleştirmeyi doğrular; geçici çıktıyı siler. `--captions` varsa Türkçe
+altyazı adresinin yanıtını da kontrol eder. `--sample` karşılaştırma için yt-dlp
+test yoludur; tam bölümü indirmez. Gerçek Chromium ile yerel oynatıcı testleri:
+`npx electron tests/manual/resolver-fixtures.js`. Arayüz kontrolü:
+`npx electron tests/manual/ui-smoke.js`. macOS geliştirme başlangıcında Swift
+Keychain yardımcısı hazırlanır; macOS paketinde mimariye uygun yardımcının
+hazırlanması `after-pack` adımına bağlıdır. Bu adım için Apple Command Line Tools
+kurulu olmalı; son kullanıcıda Swift derleyicisi gerekmez.

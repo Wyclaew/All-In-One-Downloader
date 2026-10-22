@@ -28,9 +28,10 @@ const MAX_MANIFEST = 2 * 1024 * 1024
 /** Cookie header for `url`, read out of a Netscape jar. */
 function cookieHeaderFor(jarFile, url) {
   if (!jarFile) return ''
-  let host
+  let host, target
   try {
-    host = new URL(url).hostname
+    target = new URL(url)
+    host = target.hostname
   } catch {
     return ''
   }
@@ -52,8 +53,13 @@ function cookieHeaderFor(jarFile, url) {
     if (parts.length < 7) continue
     const domain = parts[0]
     const bare = domain.replace(/^\./, '')
-    const matches = host === bare || host.endsWith(`.${bare}`)
-    if (!matches) continue
+    const matches = host === bare || (parts[1] === 'TRUE' && host.endsWith(`.${bare}`))
+    const cookiePath = parts[2] || '/'
+    const pathname = target.pathname || '/'
+    const pathMatches = pathname === cookiePath || (pathname.startsWith(cookiePath) && (cookiePath.endsWith('/') || pathname[cookiePath.length] === '/'))
+    if (!matches || !pathMatches) continue
+    if (parts[3] === 'TRUE' && target.protocol !== 'https:') continue
+    if (Number(parts[4]) > 0 && Number(parts[4]) * 1000 <= Date.now()) continue
     pairs.push(`${parts[5]}=${parts.slice(6).join('\t')}`)
   }
   return pairs.join('; ')
@@ -124,7 +130,7 @@ function ffprobeMedia(url, resolved) {
     execFile(
       bin,
       args,
-      { env, timeout: FFPROBE_TIMEOUT, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+      { env, signal: resolved?.signal, timeout: FFPROBE_TIMEOUT, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
       (err, stdout) => {
         if (!stdout) return resolve(null)
         let data
@@ -174,6 +180,7 @@ function ffprobeMedia(url, resolved) {
           container: format.format_name || null,
           hasVideo: video.length > 0,
           hasAudio: audio.length > 0,
+          audioTracks: audio.map((a) => ({ lang: a.tags?.language || '', name: a.tags?.title || '', index: a.index })),
           failed: !!err && !duration && !height,
         })
       }
@@ -196,12 +203,15 @@ async function fetchManifest(url, resolved) {
       proxy: (resolved && resolved.proxy) || '',
       timeoutMs: FETCH_TIMEOUT,
       maxBytes: MAX_MANIFEST,
+      signal: resolved?.signal,
+      allowBinaryText: true,
     })
-    if (res.status && res.status >= 400) return { text: '', finalUrl: url, size: null }
+    if (res.status && res.status >= 400) return { text: '', finalUrl: url, size: null, status: res.status }
     return {
       text: String(res.text || ''),
       finalUrl: res.finalUrl || url,
       size: num(res.headers && res.headers['content-length']),
+      status: res.status,
     }
   } catch {
     return { text: '', finalUrl: url, size: null }
@@ -227,6 +237,7 @@ async function probeFile(url, resolved) {
         proxy: resolved.proxy,
         timeoutMs: FETCH_TIMEOUT,
         maxBytes: 1,
+        signal: resolved?.signal,
       })
       const total = num(String((res.headers || {})['content-range'] || '').split('/')[1])
       if (res.status === 206 && total) return { size: total, ranges: true, url }
@@ -244,10 +255,11 @@ async function probeFile(url, resolved) {
   }
 
   const attempt = async (init) => {
+    if (resolved?.signal?.aborted) return null
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT)
     try {
-      return await fetch(url, { redirect: 'follow', signal: controller.signal, ...init })
+      return await fetch(url, { redirect: 'follow', signal: resolved?.signal ? AbortSignal.any([controller.signal, resolved.signal]) : controller.signal, ...init })
     } catch {
       return null
     } finally {
@@ -306,6 +318,7 @@ function parseHls(text, baseUrl) {
   const lines = text.split(/\r?\n/)
   const variants = []
   const subtitles = []
+  const audioTracks = []
   let duration = 0
   let extinfCount = 0
   let encrypted = false
@@ -332,6 +345,7 @@ function parseHls(text, baseUrl) {
         width: res ? Number(res[1]) : null,
         height: res ? Number(res[2]) : null,
         bandwidth: bw ? Number(bw[1]) : null,
+        audioGroup: (attrs.match(/(?:^|,)AUDIO="([^"]+)"/i) || [])[1] || null,
       }
       continue
     }
@@ -345,6 +359,16 @@ function parseHls(text, baseUrl) {
      * itself lists its subtitle tracks right here, which is where those sites keep
      * them. Nobody was reading them.
      */
+    if (line.startsWith('#EXT-X-MEDIA:') && /TYPE=AUDIO(?:,|$)/i.test(line)) {
+      const attr = (name) => (line.match(new RegExp('(?:[:,])' + name + '="([^\"]*)"', 'i')) || [])[1] || ''
+      const uri = attr('URI')
+      audioTracks.push({
+        url: uri ? absolute(uri) : null, lang: attr('LANGUAGE').toLowerCase(),
+        name: attr('NAME'), group: attr('GROUP-ID'), default: /DEFAULT=YES/i.test(line),
+      })
+      continue
+    }
+
     if (line.startsWith('#EXT-X-MEDIA:') && /TYPE=SUBTITLES/i.test(line)) {
       const uri = (line.match(/URI="([^"]+)"/i) || [])[1]
       if (uri) {
@@ -392,6 +416,7 @@ function parseHls(text, baseUrl) {
   return {
     variants,
     subtitles,
+    audioTracks,
     duration: extinfCount ? Math.round(duration) : null,
     encrypted,
     drm,
@@ -472,9 +497,12 @@ function sizeFromBitrate(bitsPerSecond, seconds) {
  * Returns { duration, height, width, filesize, sizes, variants, drm, encrypted, live }.
  */
 async function describeStream(url, resolved) {
-  const kind = resolved && resolved.kind ? resolved.kind : ''
+  let kind = resolved?.kind || ''
   const info = {
     duration: null,
+    kind: kind === 'unknown' ? null : kind,
+    playable: false,
+    rejected: false,
     width: null,
     height: null,
     filesize: null,
@@ -482,6 +510,7 @@ async function describeStream(url, resolved) {
     sizes: {},
     /** Subtitle tracks the manifest itself advertises. */
     subtitles: [],
+    audioTracks: [],
     /** True when the figure came from bitrate × duration, not from a real length. */
     filesizeEstimated: false,
     variants: [],
@@ -490,36 +519,39 @@ async function describeStream(url, resolved) {
     live: false,
   }
 
-  // Manifest first: cheap, and the only source for variant URLs and key systems.
-  if (kind === 'hls' || /\.m3u8(\?|#|$)/i.test(url)) {
-    const { text, finalUrl } = await fetchManifest(url, resolved)
-    if (text && /#EXTM3U/i.test(text)) {
+  // Content determines the protocol: a playlist can be /api/play?id=... or
+  // even image.png, and a misleading extension must not hide DASH's DRM tags.
+  const inspectManifest = kind !== 'file' || /\.(m3u8|mpd)(?:[?#]|$)/i.test(url)
+  if (inspectManifest && !resolved?.signal?.aborted) {
+    const manifest = await fetchManifest(url, resolved)
+    const { text, finalUrl } = manifest
+    if (manifest.status >= 400) { info.rejected = true; info.status = manifest.status; return info }
+    if (/^\s*#EXTM3U/i.test(text)) {
+      kind = info.kind = 'hls'
       const hls = parseHls(text, finalUrl)
       info.variants = hls.variants
       info.subtitles = hls.subtitles || []
+      info.audioTracks = hls.audioTracks || []
       info.duration = hls.duration
       info.encrypted = hls.encrypted
       info.drm = hls.drm
-      info.live = /#EXT-X-PLAYLIST-TYPE:EVENT/i.test(text) || !/#EXT-X-ENDLIST/i.test(text)
+      info.playable = hls.variants.length > 0 || /#EXTINF:|#EXT-X-PART:/i.test(text)
+      info.live = !hls.isMaster && !/#EXT-X-ENDLIST/i.test(text)
       if (hls.variants.length) {
         info.height = hls.variants[0].height
         info.width = hls.variants[0].width
-      }
-      // A master playlist carries no EXTINF; read the top variant for duration.
-      if (!info.duration && hls.variants.length) {
         const inner = await fetchManifest(hls.variants[0].url, resolved)
-        if (inner.text) {
+        if (/^\s*#EXTM3U/i.test(inner.text)) {
           const media = parseHls(inner.text, inner.finalUrl)
           info.duration = media.duration
           info.live = !/#EXT-X-ENDLIST/i.test(inner.text)
-          if (media.drm) info.drm = true
-          if (media.encrypted) info.encrypted = true
-        }
+          info.drm ||= media.drm
+          info.encrypted ||= media.encrypted
+          info.playable = /#EXTINF:|#EXT-X-PART:/i.test(inner.text)
+        } else info.playable = false
       }
-    }
-  } else if (kind === 'dash' || /\.mpd(\?|#|$)/i.test(url)) {
-    const { text } = await fetchManifest(url, resolved)
-    if (text) {
+    } else if (/<(?:[\w.-]+:)?MPD(?:\s|>)/i.test(text.slice(0, 2000))) {
+      kind = info.kind = 'dash'
       const dash = parseDash(text)
       info.duration = dash.duration
       info.height = dash.height
@@ -527,17 +559,27 @@ async function describeStream(url, resolved) {
       info.audioBandwidth = dash.audioBandwidth
       info.drm = dash.drm
       info.encrypted = dash.encrypted
+      info.live = /\btype\s*=\s*["']dynamic["']/i.test(text)
+      info.playable = /<(?:[\w.-]+:)?(?:Representation|AdaptationSet)\b/i.test(text)
+    } else if (/^\s*(?:<!doctype\s+html|<html\b)/i.test(text)) {
+      info.rejected = true; return info
     }
   }
 
   // ffprobe fills whatever is still missing, and handles progressive files.
-  if (!info.duration || !info.height) {
+  if ((!info.duration || !info.height) && !info.drm && !resolved?.signal?.aborted) {
     const probed = await ffprobeMedia(url, resolved)
     if (probed) {
       info.duration = info.duration || probed.duration
       info.height = info.height || probed.height
       info.width = info.width || probed.width
       info.filesize = info.filesize || probed.size
+      // ffprobe reports a still PNG/JPEG as a video stream too. A poster is
+      // not a playable movie just because it has a width and height.
+      const stillImage = /_pipe|(?:^|,)image2(?:pipe)?(?:,|$)/i.test(probed.container || '')
+      info.playable ||= !!(probed.hasAudio || probed.hasVideo && !stillImage) && !probed.failed
+      if (info.playable && !info.kind) info.kind = 'file'
+      if (!info.audioTracks.length) info.audioTracks = probed.audioTracks || []
     }
   }
 
@@ -568,6 +610,7 @@ async function describeStream(url, resolved) {
   if (info.filesize && info.height && !info.sizes[info.height]) {
     info.sizes[info.height] = info.filesize
   }
+  info.rejected ||= !info.playable && !info.drm
   return info
 }
 

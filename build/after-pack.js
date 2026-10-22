@@ -47,10 +47,13 @@ exports.default = async function afterPack(context) {
   if (process.platform !== 'darwin') return
 
   const mac = context.packager.platformSpecificBuildOptions || {}
-  if (mac.identity || process.env.CSC_LINK || process.env.CSC_NAME) return
-
   const appPath = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`)
   if (!fs.existsSync(appPath)) return
+  require('./biometric-helper').buildHelper(
+    path.join(appPath, 'Contents', 'Resources', 'bin', 'vault-keychain'),
+    context.arch === 1 ? 'x64' : 'arm64'
+  )
+  if (mac.identity || process.env.CSC_LINK || process.env.CSC_NAME) return
 
   // Extended attributes picked up from the checkout make codesign fail with
   // "resource fork, Finder information, or similar detritus not allowed".

@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('api', {
   clearMissing: () => ipcRenderer.invoke('dl:clearMissing'),
   thumbFile: (path, duration) => ipcRenderer.invoke('thumb:file', { path, duration }),
   tidyFolder: () => ipcRenderer.invoke('folder:tidy'),
+  setDownloadSeries: (id, series) => ipcRenderer.invoke('dl:series', { id, series }),
   setDownloadCategory: (ids, categoryId) =>
     ipcRenderer.invoke('dl:category', { ids, categoryId }),
   clearDownloads: (which) => ipcRenderer.invoke('dl:clear', which),
@@ -70,6 +71,8 @@ contextBridge.exposeInMainWorld('api', {
   vaultStatus: () => ipcRenderer.invoke('vault:status'),
   vaultCreate: (passphrase) => ipcRenderer.invoke('vault:create', passphrase),
   vaultUnlock: (passphrase) => ipcRenderer.invoke('vault:unlock', passphrase),
+  vaultSetBiometric: (enabled) => ipcRenderer.invoke('vault:biometric:set', enabled),
+  vaultUnlockBiometric: () => ipcRenderer.invoke('vault:biometric:unlock'),
   vaultLock: () => ipcRenderer.invoke('vault:lock'),
   vaultChangePassphrase: (current, next) => ipcRenderer.invoke('vault:changePassphrase', { current, next }),
   vaultTakeDownload: (id) => ipcRenderer.invoke('vault:takeDownload', id),

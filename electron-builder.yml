@@ -14,8 +14,9 @@ publish:
   provider: github
   owner: Wyclaew
   repo: All-In-One-Downloader
-  # Publish outright rather than leaving a draft nobody can download.
-  releaseType: release
+  # Keep incomplete uploads out of /releases/latest. CI publishes only once
+  # both platform builds and their update manifests have completed.
+  releaseType: draft
 
 files:
   - dist/**

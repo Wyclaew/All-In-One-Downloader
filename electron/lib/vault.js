@@ -52,6 +52,7 @@ const { Readable } = require('stream')
 const { execFile } = require('child_process')
 const { app, shell } = require('electron')
 const { ffmpegPath, toolEnv } = require('./binaries')
+const biometrics = require('./biometrics')
 
 /* ---- formats ---- */
 
@@ -86,6 +87,8 @@ let onChangedListener = null
 let busy = 0
 let migrating = null
 let thumbCache = new Map()
+let lockEpoch = 0
+let biometricBusy = false
 
 /* ---- unlock throttling ---- */
 
@@ -550,6 +553,7 @@ function sweepStaleTemps() {
 }
 
 function lock({ reason = 'user' } = {}) {
+  lockEpoch += 1
   if (lockTimer) {
     clearTimeout(lockTimer)
     lockTimer = null
@@ -581,6 +585,9 @@ function status() {
     upgrading: isUnlocked() ? entries.filter((e) => e.k !== 2).length : 0,
     retryAfter: Math.max(0, Math.ceil((blockedUntil - Date.now()) / 1000)),
     strong: !!(meta && meta.version === 2),
+    biometricAvailable: biometrics.available(),
+    biometricEnabled: !!meta?.biometricEnabled,
+    biometricReady: !!meta?.biometricEnabled && !legacy,
   }
 }
 
@@ -728,6 +735,59 @@ async function unlock(passphrase) {
   return status()
 }
 
+function keyIdentity(meta) {
+  return crypto.createHash('sha256').update(String(meta?.wrapped || '')).digest('hex')
+}
+
+async function setBiometric(enabled) {
+  requireUnlocked()
+  if (biometricBusy) throw new Error('Bir Touch ID işlemi zaten sürüyor.')
+  if (enabled && legacy) throw new Error('Kasa yükseltmesi tamamlanınca Touch ID etkinleştirilebilir.')
+  biometricBusy = true
+  const epoch = lockEpoch
+  const meta = readMeta()
+  let secret = null
+  try {
+    if (enabled) {
+      secret = Buffer.from(JSON.stringify({ version: 1, identity: keyIdentity(meta), key: master.toString('base64') }))
+      await biometrics.keychain('set', secret)
+      if (!master || lockEpoch !== epoch || keyIdentity(readMeta()) !== keyIdentity(meta)) {
+        await biometrics.keychain('delete')
+        throw new Error('Kasa kilitlendi; Touch ID yeniden etkinleştirilmeli.')
+      }
+    } else await biometrics.keychain('delete')
+    await writeJsonAtomic(metaFile(), { ...readMeta(), biometricEnabled: !!enabled })
+    touch()
+    return status()
+  } finally { secret?.fill(0); biometricBusy = false }
+}
+
+async function unlockBiometric() {
+  if (master) return status()
+  if (biometricBusy) throw new Error('Bir Touch ID işlemi zaten sürüyor.')
+  const meta = readMeta()
+  if (!meta?.biometricEnabled || meta.version !== 2) throw new Error('Önce şifrenle açıp Touch ID’yi etkinleştir.')
+  biometricBusy = true
+  const epoch = lockEpoch
+  let secret = null
+  let key = null
+  try {
+    secret = await biometrics.keychain('get')
+    const data = JSON.parse(secret.toString('utf8'))
+    if (data.identity !== keyIdentity(readMeta())) throw new Error('Kasa anahtarı değişmiş; şifrenle açıp Touch ID’yi yeniden etkinleştir.')
+    key = Buffer.from(data.key, 'base64')
+    if (key.length !== KEY_LEN) throw new Error('Touch ID anahtarı geçersiz.')
+    const list = await loadIndexWith(key, indexFile())
+    if (lockEpoch !== epoch) throw new Error('Kasa güvenlik nedeniyle kilitlendi. Yeniden açmayı dene.')
+    master = key; key = null
+    legacy = null
+    entries = list
+    failures = 0; blockedUntil = 0
+    armAutoLock()
+    return status()
+  } finally { secret?.fill(0); key?.fill(0); biometricBusy = false }
+}
+
 /** Rewrap the master key under a new passphrase. The files themselves do not move. */
 async function changePassphrase(current, next) {
   requireUnlocked()
@@ -750,6 +810,7 @@ async function changePassphrase(current, next) {
   }
   const pass = String(next || '')
   checkStrength(pass)
+  if (meta.biometricEnabled) await biometrics.keychain('delete')
   await writeKeys(pass, { createdAt: meta.createdAt })
   touch()
   return status()
@@ -1006,6 +1067,7 @@ async function audit() {
 }
 
 module.exports = {
+  setBiometric, unlockBiometric,
   status,
   create,
   unlock,

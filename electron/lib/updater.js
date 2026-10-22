@@ -25,8 +25,11 @@ const fs = require('fs')
 const https = require('https')
 const path = require('path')
 const { spawn, execFile } = require('child_process')
+const { Transform } = require('stream')
+const { pipeline } = require('stream/promises')
 const { app, shell, safeStorage } = require('electron')
 const store = require('./store')
+const { parseVersion, compareVersions, parseManifest, validTarget } = require('./update-metadata')
 
 const OWNER = 'Wyclaew'
 const REPO = 'All-In-One-Downloader'
@@ -41,6 +44,9 @@ const TRUSTED_HOST = /^(?:github\.com|api\.github\.com|objects\.githubuserconten
 let state = { phase: 'idle', current: null, latest: null, notes: '', percent: 0, message: '', url: RELEASES_PAGE }
 let pending = null
 let timer = null
+let startupTimer = null
+let checking = null
+let manualCheck = false
 
 function publish(patch) {
   state = { ...state, ...patch }
@@ -51,26 +57,6 @@ function publish(patch) {
 /* -------------------------------------------------------------------------- */
 /* versions                                                                    */
 /* -------------------------------------------------------------------------- */
-
-function parseVersion(v) {
-  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([\w.]+))?/.exec(String(v || '').trim())
-  if (!m) return null
-  return { parts: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] || '' }
-}
-
-/** a > b ? 1 : a < b ? -1 : 0. A pre-release sorts below its release. */
-function compareVersions(a, b) {
-  const x = parseVersion(a)
-  const y = parseVersion(b)
-  if (!x || !y) return 0
-  for (let i = 0; i < 3; i += 1) {
-    if (x.parts[i] !== y.parts[i]) return x.parts[i] > y.parts[i] ? 1 : -1
-  }
-  if (x.pre === y.pre) return 0
-  if (!x.pre) return 1
-  if (!y.pre) return -1
-  return x.pre > y.pre ? 1 : -1
-}
 
 /* -------------------------------------------------------------------------- */
 /* network                                                                     */
@@ -110,7 +96,7 @@ function setToken(value) {
   return !!sealed
 }
 
-function get(url, { json = false, accept = '*/*', redirects = 6, auth = false } = {}) {
+function get(url, { json = false, accept = '*/*', redirects = 6, auth = false, signal } = {}) {
   return new Promise((resolve, reject) => {
     let parsed
     try {
@@ -124,11 +110,14 @@ function get(url, { json = false, accept = '*/*', redirects = 6, auth = false } 
     const headers = { 'User-Agent': UA, Accept: json ? 'application/vnd.github+json' : accept }
     const secret = auth && parsed.hostname === 'api.github.com' ? token() : ''
     if (secret) headers.Authorization = `Bearer ${secret}`
-    const req = https.get(url, { headers, timeout: 30000 }, (res) => {
+    const req = https.get(url, { headers, timeout: 30000, signal }, (res) => {
+      res.on('error', () => {})
       if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
         res.resume()
         if (redirects <= 0) return reject(new Error('Çok fazla yönlendirme.'))
-        return resolve(get(new URL(res.headers.location, url).href, { json, accept, redirects: redirects - 1, auth }))
+        let next
+        try { next = new URL(res.headers.location, url).href } catch { return reject(new Error('Güncelleme yönlendirmesi geçersiz.')) }
+        return resolve(get(next, { json, accept, redirects: redirects - 1, auth, signal }))
       }
       if (res.statusCode !== 200) {
         res.resume()
@@ -150,20 +139,15 @@ function get(url, { json = false, accept = '*/*', redirects = 6, auth = false } 
 }
 
 async function getText(url, opts) {
-  const res = await get(url, opts)
+  const res = await get(url, { ...opts, signal: AbortSignal.timeout(30000) })
   const chunks = []
-  for await (const c of res) chunks.push(c)
+  let size = 0
+  for await (const c of res) {
+    size += c.length
+    if (size > 2 * 1024 * 1024) { res.destroy(); throw new Error('Güncelleme yanıtı boyut sınırını aştı.') }
+    chunks.push(c)
+  }
   return Buffer.concat(chunks).toString('utf8')
-}
-
-/** The few fields we need from electron-builder's latest*.yml. */
-function parseManifest(text) {
-  const files = []
-  const re = /-\s+url:\s*(\S+)\s*\n\s+sha512:\s*(\S+)\s*\n\s+size:\s*(\d+)/g
-  let m
-  while ((m = re.exec(text)) !== null) files.push({ url: m[1], sha512: m[2], size: Number(m[3]) })
-  const version = (/^version:\s*(\S+)/m.exec(text) || [])[1] || ''
-  return { version, files }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -179,6 +163,7 @@ function platformPick(manifest) {
   return null
 }
 
+
 function manifestName() {
   if (process.platform === 'darwin') return 'latest-mac.yml'
   if (process.platform === 'win32') return 'latest.yml'
@@ -190,15 +175,24 @@ function manifestName() {
 /* -------------------------------------------------------------------------- */
 
 /** Ask GitHub whether a newer version exists. Quiet unless something changed. */
-async function check({ manual = false } = {}) {
+function check({ manual = false } = {}) {
+  if (state.phase === 'downloading' || state.phase === 'installing') return Promise.resolve(state)
+  manualCheck ||= manual
+  if (!checking) checking = performCheck().finally(() => { checking = null; manualCheck = false })
+  return checking
+}
+
+async function performCheck() {
   const current = app.getVersion()
-  if (state.phase === 'downloading' || state.phase === 'installing') return state
+  const previous = state
   publish({ phase: 'checking', current, message: '' })
   try {
     const release = JSON.parse(await getText(API, { json: true, auth: true }))
     const latest = String(release.tag_name || '').replace(/^v/, '')
-    if (!latest || compareVersions(latest, current) <= 0) {
-      return publish({ phase: 'current', latest: latest || current, message: manual ? 'Uygulama güncel.' : '' })
+    if (!parseVersion(latest) || release.draft || release.prerelease) throw new Error('GitHub geçerli bir kararlı sürüm döndürmedi.')
+    if (compareVersions(latest, current) <= 0) {
+      pending = null
+      return publish({ phase: 'current', latest, automatic: false, notes: '', message: manualCheck ? 'Uygulama güncel.' : '' })
     }
     const name = manifestName()
     const assetOf = (n) => (release.assets || []).find((a) => a.name === n)
@@ -214,7 +208,7 @@ async function check({ manual = false } = {}) {
       const manifest = parseManifest(await getText(m.url, m.opts))
       const pick = platformPick(manifest)
       const asset = pick && assetOf(pick.url)
-      if (asset) {
+      if (manifest.version === latest && validTarget(pick, asset, manifest.version)) {
         const d = fetchAsset(asset)
         target = { ...pick, download: d.url, downloadOpts: d.opts, name: pick.url }
       }
@@ -235,7 +229,8 @@ async function check({ manual = false } = {}) {
       message: '',
     })
   } catch (err) {
-    return publish({ phase: manual ? 'error' : 'idle', message: manual ? err.message : '', private: err.code === 'PRIVATE' })
+    if (pending && previous.phase === 'available') return publish({ ...previous, message: manualCheck ? err.message : previous.message })
+    return publish({ phase: manualCheck ? 'error' : 'idle', automatic: false, message: manualCheck ? err.message : '', private: err.code === 'PRIVATE' })
   }
 }
 
@@ -250,29 +245,30 @@ async function install() {
   }
 
   const dir = path.join(app.getPath('userData'), 'updates')
-  fs.rmSync(dir, { recursive: true, force: true })
-  fs.mkdirSync(dir, { recursive: true })
   const file = path.join(dir, path.basename(target.name))
 
   publish({ phase: 'downloading', percent: 0, message: '' })
   try {
+    fs.rmSync(dir, { recursive: true, force: true })
+    fs.mkdirSync(dir, { recursive: true })
     const res = await get(target.download, target.downloadOpts || {})
     const hash = crypto.createHash('sha512')
-    const out = fs.createWriteStream(file)
     let got = 0
     let last = 0
-    for await (const chunk of res) {
+    const meter = new Transform({ transform(chunk, _encoding, next) {
+      try {
       got += chunk.length
       if (got > target.size) throw new Error('İndirilen dosya beklenenden büyük.')
       hash.update(chunk)
-      if (!out.write(chunk)) await new Promise((r) => out.once('drain', r))
       const percent = Math.floor((got / target.size) * 100)
       if (percent !== last) {
         last = percent
         publish({ percent })
       }
-    }
-    await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())))
+      next(null, chunk)
+      } catch (err) { next(err) }
+    } })
+    await pipeline(res, meter, fs.createWriteStream(file))
     if (got !== target.size) throw new Error('İndirme yarım kaldı.')
     if (hash.digest('base64') !== target.sha512) {
       throw new Error('İndirilen dosyanın imzası (SHA-512) uyuşmadı; kurulmadı.')
@@ -286,7 +282,7 @@ async function install() {
   publish({ phase: 'installing', percent: 100, message: `${latest} kuruluyor, uygulama yeniden açılacak…` })
   try {
     if (process.platform === 'darwin') await swapMac(file, dir)
-    else if (process.platform === 'win32') runWindowsInstaller(file)
+    else if (process.platform === 'win32') await runWindowsInstaller(file)
   } catch (err) {
     publish({ phase: 'available', message: err.message })
     throw err
@@ -355,29 +351,37 @@ async function swapMac(zip, dir) {
     ].join('\n'),
     { mode: 0o700 }
   )
-  const child = spawn('/bin/sh', [script], { detached: true, stdio: 'ignore' })
-  child.unref()
+  await launchDetached('/bin/sh', [script])
+}
+
+function launchDetached(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { detached: true, stdio: 'ignore' })
+    child.once('error', reject)
+    child.once('spawn', () => { child.unref(); resolve() })
+  })
 }
 
 function runWindowsInstaller(exe) {
   // /S: silent. --force-run: start the app again once installed. The installer
   // closes the running copy itself, which is us, a moment after we quit anyway.
-  const child = spawn(exe, ['/S', '--updated', '--force-run'], { detached: true, stdio: 'ignore' })
-  child.unref()
+  return launchDetached(exe, ['/S', '--updated', '--force-run'])
 }
 
 /** Check shortly after start, then every six hours, if the user allows it. */
 function schedule() {
   if (timer) clearInterval(timer)
+  clearTimeout(startupTimer)
   const run = () => {
     if (store.getState().settings.autoCheckUpdates === false) return
     check().catch(() => {})
   }
-  setTimeout(run, 15000)
+  startupTimer = setTimeout(run, 15000)
+  startupTimer.unref?.()
   timer = setInterval(run, 6 * 3600 * 1000)
   if (timer.unref) timer.unref()
 }
 
 const getStatus = () => ({ ...state, current: app.getVersion(), hasToken: !!store.getState().settings.updateTokenSealed })
 
-module.exports = { check, install, schedule, getStatus, setToken, compareVersions, parseManifest, _swapMac: swapMac }
+module.exports = { check, install, schedule, getStatus, setToken, compareVersions, parseManifest, validTarget, _swapMac: swapMac }

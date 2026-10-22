@@ -110,7 +110,8 @@ export function useVault() {
 /** Merge persisted download fields with the live progress channel. */
 export function withProgress(download: Download, progress: Record<string, ProgressEvent>): Download {
   const live = progress[download.id]
-  if (!live) return download
+  if (!live || live.status !== download.status) return download
+  if (download.stage === 'processing' && live.stage === 'downloading') return download
   return {
     ...download,
     status: live.status,

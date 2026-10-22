@@ -639,6 +639,14 @@ function registerIpc() {
     return true
   })
 
+  handle('dl:series', ({ id, series } = {}) => {
+    const download = store.findDownload(id)
+    if (!download) throw new Error('İndirme bulunamadı.')
+    const name = typeof series === 'string' ? series.trim().slice(0, 160) : ''
+    store.commit(() => { download.series = name || null })
+    return true
+  })
+
   handle('settings:update', (raw) => {
     // Settings the interface has no business writing: an executable path the
     // app will later spawn, a sealed credential, bookkeeping. A compromised page
@@ -825,8 +833,21 @@ function registerIpc() {
     return vaultState()
   })
 
+  handle('vault:biometric:set', async (enabled) => {
+    await vault.setBiometric(enabled === true)
+    pushVault()
+    return vaultState()
+  })
+
+  handle('vault:biometric:unlock', async () => {
+    await vault.unlockBiometric()
+    pushVault()
+    return vaultState()
+  })
+
   handle('vault:changePassphrase', async ({ current, next } = {}) => {
     await vault.changePassphrase(current, next)
+    pushVault()
     return vaultState()
   })
 

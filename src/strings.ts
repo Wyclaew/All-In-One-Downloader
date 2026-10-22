@@ -222,17 +222,17 @@ export const T = {
       'İstediğin bağlantıyı vekil sunucu üzerinden çözümleyip indirir. Gerçek bir VPN tüm bilgisayarı tünelden geçirir — bu ise bağlantı başına çalışır: bir videoyu tünelden, yanındakini doğrudan indirebilirsin, aynı anda. URL kutusunun yanındaki VPN düğmesi hangi bağlantının hangi yoldan gideceğini belirler. socks5://, http:// ve https:// adresleri kabul edilir; kullanıcı adı/parola yazabilirsin (socks5://ad:parola@sunucu:port).',
     proxyTest: 'Sına',
     proxyTor:
-      'Cloudflare WARP adresini siteden gizler, o kadar: Cloudflare senin kim olduğunu görür. Gerçekten anonim olması gerekiyorsa Tor — üç röle, hiçbiri iki ucu birden bilmez. Tor bağlantı başına yavaştır, ama bu uygulamada beklenmedik bir avantajı var: çok parçalı indirici birden çok bağlantı açıyor ve her parçaya ayrı bir devre verildiği için hızlar toplanıyor. Kurulum: Tor kurup çalıştır (Homebrew ile "brew install tor" sonra "tor"), ya da Tor Browser\'ı aç — ilki 9050, ikincisi 9150 portunda dinler. Yukarıdaki düğmelerden yeşil işaretli olan şu an açık olandır.',
+      'Vekil, sitenin gördüğü bağlantı adresini değiştirir. Hız seçtiğin hizmete ve video sunucusuna bağlıdır. Uygulama bütün parçaları seçtiğin vekilden geçirir; hız uğruna doğrudan bağlantıya geçmez. Tor genellikle daha yavaştır. Tor hizmeti çoğunlukla 9050, Tor Browser 9150 portunu kullanır; yeşil işaretli seçenek şu an erişilebilir olandır.',
     proxyDefault: 'Yeni bağlantılar varsayılan olarak VPN ile eklensin',
     proxyWarp:
-      'Cloudflare ile kullanmak için: Cloudflare WARP\'ı kur, sonra terminalde "warp-cli mode proxy" ve "warp-cli connect" çalıştır — WARP 127.0.0.1:40000 üzerinde bir SOCKS5 sunucusu açar, yukarıdaki varsayılan adres de orayı gösterir. Uygulama WARP\'ı kurmaz ve ayarlarını değiştirmez; yalnızca oraya bağlanır. Not: ffmpeg SOCKS desteklemez, bu yüzden yt-dlp kapalıyken parçalı akışlar (HLS/DASH) vekille inmez — o durumda yt-dlp\'yi açık tut ya da HTTP vekili kullan.',
+      'Uygulama burada seçtiğin HTTP veya SOCKS vekiline bağlanır; WARP veya Tor kurulumunu değiştirmez. Yerel HLS parça motoru HTTP ve SOCKS vekillerini kullanabilir. FFmpeg ile aktarılan diğer akışlarda ve altyazı işlemlerinde SOCKS desteği sınırlıdır; bu işlemler vekili atlayarak doğrudan bağlanmaz.',
 
     engine: 'İndirme motoru',
     engineHint:
-      'Açıkken sayfaları yt-dlp çözümler ve indirmeyi o yapar. Kapatırsan yt-dlp hiç çağrılmaz: her bağlantıyı kendi çözümleyicim çözer, indirmeyi de kendisi yapar — düz dosyalar için parçalı HTTP (duraklat/sürdür çalışır), HLS/DASH için ffmpeg. Kalite, master playlist içindeki varyantlardan seçilir. Kapalıyken yt-dlp\'nin bildiği siteler (YouTube gibi) için elde kalan tek yol kendi çözümleyicim olur, yani bazı sayfalarda sonuç değişir.',
+      'YouTube gibi platformlarda yt-dlp özel çıkarıcıları kullanılabilir. Genel sitelerde önce kendi çözümleyicisi denenir; aşağıdan bu sıra değiştirilebilir. Kapatıldığında yt-dlp çağrılmaz. Desteklenen HLS ve düz dosyaları uygulama parçalarla indirir; diğer akışlar için FFmpeg gerekir.',
     engineOn: 'yt-dlp kullan',
     engineOffNote:
-      'yt-dlp kapalı. Çözümleme ve indirme tamamen kendi motorumda; ffmpeg gerekli. Bu motorda hız sınırı uygulanmaz ve parçalı akışlarda duraklatma baştan başlamak demektir.',
+      'yt-dlp kapalı. Uygulama kendi çözümleyicisini kullanıyor. Yerel HLS motorunda tamamlanan parçalar korunur ve hız sınırı uygulanır; birleştirmek için FFmpeg gerekir. Diğer HLS/DASH türlerinde duraklatma baştan başlayabilir.',
 
     deletePolicy: 'Kayıttan silerken dosya',
     deletePolicyHint:
@@ -259,8 +259,8 @@ export const T = {
 
     resolver: 'Kendi çözümleyicim',
     resolverHint:
-      'yt-dlp bir sayfayı tanımazsa devreye girer: sayfayı ve gömülü oynatıcıları tarar, gerekirse sayfayı görünmez bir tarayıcıda çalıştırıp akışı yakalar. Yukarıda bir tarayıcı seçtiysen o oturumu kullanır, yani sitelere yeniden giriş yapman gerekmez.',
-    resolverOn: 'Tanınmayan siteler için çözümleyiciyi kullan',
+      'Sayfayı, iç içe oynatıcıları ve kaynak bilgilerini tarar; gerekirse oynatıcıyı görünmez tarayıcıda çalıştırır ve alternatifleri dener. Bulduğu akışı doğrular. Mevcut tarayıcı oturumu seçilebilir; sitenin ayrıca doğrulama istemesi mümkündür.',
+    resolverOn: 'Kendi çözümleyicisini kullan',
     resolverWait: 'En fazla bekleme:',
     resolverParallel: 'Aynı anda çözümlenecek bağlantı:',
 

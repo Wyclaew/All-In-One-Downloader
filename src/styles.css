@@ -2772,3 +2772,17 @@ a {
   background: var(--panel);
   color: var(--text);
 }
+
+/* Collections reuse the library's cards, surface tokens and spacing. Native
+   disclosure keeps focus/keyboard behavior without a second navigation layer. */
+.series-collection { grid-column: 1 / -1; border: 1px solid var(--rule); border-radius: 10px; background: var(--panel); min-width: 0; }
+.series-collection > summary { display: flex; align-items: center; gap: 12px; padding: 16px; cursor: pointer; font-weight: 600; list-style: none; }
+.series-collection > summary::-webkit-details-marker { display: none; }
+.series-collection > summary::after { content: '+'; color: var(--dim); font-size: 20px; }
+.series-collection[open] > summary::after { content: '−'; }
+.series-collection > summary:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; border-radius: 10px; }
+.series-collection > summary .grow { flex: 1; }
+.series-collection > .home-grid { padding: 0 16px 16px; }
+.series-collection .card-v { content-visibility: auto; contain-intrinsic-size: auto 230px; }
+.home-head { flex-wrap: wrap; }
+@media (prefers-reduced-motion: reduce) { .card-v-poster img { transition: none; } }

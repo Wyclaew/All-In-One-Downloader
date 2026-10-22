@@ -17,14 +17,18 @@ function defaultSettings() {
     concurrency: 2,
     // Connections per file. A single TCP stream is usually shaped well below the
     // line's capacity, so several pieces at once is what fills it.
-    connections: 4,
+    connections: 8,
     defaultQuality: 1080, // 0 = en iyi
     container: 'mp4',
     audioFormat: 'mp3',
     filenameTemplate: '%(title).120B.%(ext)s',
     cookiesBrowser: '', // '' | chrome | safari | firefox | edge | brave
-    writeSubs: false,
-    subLangs: 'tr,en',
+    writeSubs: true,
+    subLangs: 'tr',
+    preferredAudioLanguage: 'en',
+    autoRecover: true,
+    recoveryAttempts: 3,
+    groupEpisodes: true,
     embedThumbnail: true,
     embedMetadata: true,
     rateLimit: '', // ör. 4M
@@ -61,6 +65,8 @@ function defaultSettings() {
     useYtdlp: true,
     // in-house page resolver, for sites yt-dlp has no extractor for
     useResolver: true,
+    resolverFirst: true,
+    nativeHls: true,
     // Site recipes: user-editable scripts that run inside the page.
     useUserScripts: true,
     // Long enough that a pre-roll can finish and the real stream can start.
@@ -73,7 +79,7 @@ function defaultSettings() {
     resolverConcurrency: 3,
 
     // subtitles fetched from a provider, separate from yt-dlp's own --write-subs
-    subtitleLangs: 'tr,en',
+    subtitleLangs: 'tr',
     subtitleApiKey: '',
     autoFetchSubtitles: false,
     syncSubtitles: true,
@@ -176,6 +182,7 @@ function init() {
     s.enriching = 0
   }
   for (const d of state.downloads) {
+    if (d.retryAt) { d.status = 'paused'; d.retryAt = null; d.note = 'Otomatik deneme uygulama kapanınca durduruldu; sürdürebilirsin.' }
     if (d.status === 'running') {
       d.status = 'paused'
       d.stage = null
@@ -198,7 +205,18 @@ function migrateSettings() {
     // Subtitles go inside the video now, not beside it.
     s.embedSubtitleFile = true
   }
-  s.settingsRev = 2
+  if (rev < 3) {
+    s.writeSubs = true
+    if (!s.subLangs || s.subLangs === 'tr,en') s.subLangs = 'tr'
+    const { parseTitle } = require('./subtitles')
+    for (const item of [...state.items, ...state.downloads]) {
+      const parsed = parseTitle(item.title || '')
+      if (parsed.episode !== null && !item.series) {
+        item.series = parsed.title; item.season = parsed.season; item.episode = parsed.episode
+      }
+    }
+  }
+  s.settingsRev = 3
 }
 
 /**
