@@ -1,11 +1,39 @@
 # Claude için devir notu — All in One Downloader 0.13.0
 
 Son güncelleme: 23 Ekim 2026. 0.11.0/0.12.0 geliştirmeleri ve üçüncü kod denetimi
-bu sürümde birleştirildi. Hedef yayın etiketi **v0.13.0**; GitHub Actions
-paketleme/yayın sonucu yayın tamamlanınca ayrıca kaydedilecek.
+bu sürümde birleştirildi. **v0.13.0 yayımlandı**, kaynak commit'i `6b1380d`.
+[Sürüm ve indirmeler](https://github.com/Wyclaew/All-In-One-Downloader/releases/tag/v0.13.0).
 Kullanıcının gerçek kitaplığı, kasa dosyaları ve indirilen
 videoları testlerde kullanılmadı. Yerel Apple Silicon uygulaması:
 `release/mac-arm64/All in One Downloader.app`.
+
+## GitHub yayın ve güncelleme doğrulaması
+
+- `main` ve annotated `v0.13.0` etiketi push edildi. Mac arm64/x64 DMG + ZIP,
+  Windows EXE, blockmap'ler ve iki update manifesti yayınlandı. GitHub `/latest`
+  bu sürümü döndürüyor; draft/prerelease değil.
+- [Release workflow 39862592920](https://github.com/Wyclaew/All-In-One-Downloader/actions/runs/39862592920)
+  son durumda **success**: Mac build, Windows build ve Install notes başarılı.
+  Yerelde **55/55** test geçti. Her iki CI runner'da araçlar eksik olduğu için
+  **46 geçti, 9 FFmpeg/yt-dlp entegrasyonu atlandı**, hata yok. Bu 9 test yerelde
+  gerçek araçlarla çalıştı; CI'da bütün 55 çalıştı denmemeli.
+- İlk notes denemesi GitHub draft release'ini tag endpoint'inden okuyamadı
+  (404). `build/verify-release.js` authenticated, sayfalı release listesinde
+  tag arayacak şekilde düzeltildi; bu araç değişikliği `main` üzerindedir ve
+  uygulama paketinin kodunu değiştirmez. Aynı v0.13.0 taslağındaki 7 zorunlu
+  paket/manifest doğrulandı, yayınlandı ve notes job yeniden çalıştırılıp geçti.
+  Yayın etiketi zorla taşınmadı; yeniden uygulama sürümü üretilmedi.
+- Yayındaki Mac arm64 ZIP'i GitHub'dan yeniden indirildi: **95.375.859 bayt**,
+  `latest-mac.yml` ile SHA-512 eşleşti. Açılan paketin deep/strict codesign
+  doğrulaması geçti; app.asar içindeki **40 kod/arayüz dosyası** çalışma kopyasıyla
+  bayt olarak aynı, paket sürümü 0.13.0. Yerel paket de aynı kontrolleri geçti.
+- Ayrı geçici veri klasörüyle **v0.10.0 etiketindeki gerçek eski updater kodu**
+  ve yeni updater, public GitHub API üzerinde test edildi. İkisi de mevcut
+  sürüm 0.10.0 iken `phase=available`, `latest=0.13.0`, `automatic=true` döndürdü.
+  Bu, bildirim ve indirilebilir hedef seçiminin doğrulamasıdır; kullanıcının
+  çalışan uygulaması değiştirilmedi, tam otomatik swap/install denenmedi.
+- README ve yayın notları 0.13.0 davranışını anlatır. Otomatik kontrol açıksa
+  açılıştan 15 sn sonra ve 6 saatte bir üst banner gelir; elle kontrol de vardır.
 
 ## 0.13.0 kod denetiminde eklenen düzeltmeler
 
@@ -255,11 +283,10 @@ videoları testlerde kullanılmadı. Yerel Apple Silicon uygulaması:
 - `tests/manual/ui-smoke.js`: ayrı profil ile tek koleksiyonda 3 bölüm, sıralama,
   yeni ayarlar ve sıfır renderer error doğrulandı; ekran görüntüleri
   `/tmp/aio-ui-smoke-results/` altında üretildi.
-- **0.12.0 Mac arm64** uygulaması yerel olarak paketlendi; `codesign --verify
-  --deep --strict` geçti. app.asar içindeki **39 kod/arayüz dosyasının** çalışma
-  kopyasıyla bayt eşitliği ve paket sürümü kontrol edildi. 47 JS dosyası syntax
-  kontrolünden geçti. Paket `--publish never` ile üretildi; yayın yapılmadı.
-  Windows paket/cihaz testi yapılmadı. Gerçek Touch ID etkileşimi,
+- **0.13.0 Mac arm64** uygulaması yerel olarak paketlendi ve GitHub paketi de
+  ayrıca kontrol edildi (yukarıdaki yayın doğrulaması). Yerel `--publish never`
+  paketleme GitHub yayınına karışmadı. Windows paketi GitHub runner'da üretildi;
+  Windows cihazında kurulum/gerçek video indirme sınanmadı. Gerçek Touch ID etkileşimi,
   tam uzunlukta film ve farklı ağlar için manuel test hâlâ değerli.
 - Canlı test:
   `npx electron tests/manual/resolve-sites.js --own-sample --captions 'https://.../'`.
