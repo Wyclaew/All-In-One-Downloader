@@ -13,6 +13,11 @@ let server, exitCode = 0
 app.whenReady().then(async () => {
   const { resolvePage } = require('../../electron/lib/resolver')
   const { describeStream } = require('../../electron/lib/mediainfo')
+  const { execFileSync } = require('child_process')
+  const { ffmpegPath, toolEnv } = require('../../electron/lib/binaries')
+  const moviePath = path.join(profile, 'runtime.mp4')
+  const ffmpeg = ffmpegPath()
+  if (ffmpeg) execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=128x96:r=10:d=2.5', '-c:v', 'libx264', '-preset', 'ultrafast', '-movflags', '+faststart', moviePath], { env: toolEnv() })
   const received = []
   let base
   server = http.createServer((req, res) => {
@@ -23,6 +28,18 @@ app.whenReady().then(async () => {
     if (req.url === '/missing.mp4') { res.writeHead(404); res.end('<html>not found</html>'); return }
     if (req.url === '/poster.mp4') { res.end('<html>HTML disguised as mp4</html>'); return }
     if (req.url === '/exchange' && req.method === 'POST') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ playback: { sources: [{ url: '/opaque?post=1', type: 'application/x-mpegURL' }] } })); return }
+    if (req.url === '/runtime') { res.setHeader('Set-Cookie', 'runtime=yes; Path=/'); res.end('<title>Runtime metadata fixture</title><video muted preload="metadata"></video><script>setTimeout(()=>{ document.querySelector("video").src="/runtime.mp4" },1200)</script>'); return }
+    if (req.url === '/runtime.mp4' && ffmpeg) {
+      if (!/runtime=yes/.test(req.headers.cookie || '')) { res.writeHead(403); res.end(); return }
+      const bytes = fs.readFileSync(moviePath)
+      res.setHeader('Content-Type', 'video/mp4'); res.setHeader('Accept-Ranges', 'bytes')
+      const range = String(req.headers.range || '').match(/^bytes=(\d+)-(\d*)$/)
+      if (range) {
+        const start = Number(range[1]), end = range[2] ? Math.min(bytes.length - 1, Number(range[2])) : bytes.length - 1
+        res.writeHead(206, { 'Content-Length': end - start + 1, 'Content-Range': `bytes ${start}-${end}/${bytes.length}` }); res.end(bytes.subarray(start, end + 1)); return
+      }
+      res.setHeader('Content-Length', bytes.length); res.end(req.method === 'HEAD' ? undefined : bytes); return
+    }
     if (req.url === '/root') { res.end('<title>Nested fixture</title><track kind="subtitles" srclang="tr" src="/tr.vtt"><iframe src="/wrapper"></iframe>'); return }
     if (req.url === '/wrapper') { res.end('<iframe src="/dynamic"></iframe>'); return }
     const fetchScript = `fetch('/exchange', {method:'POST',body:'id=123'}).then(r=>r.json()).then(value=>window.playback=value)`
@@ -44,6 +61,17 @@ app.whenReady().then(async () => {
     results.push({ route, engine: result.engine, candidates: result.candidates.length })
   }
   assert.ok(received.some((r) => r.path === '/exchange' && r.method === 'POST'))
+  if (ffmpeg) {
+    const runtime = await resolvePage(base + '/runtime', { timeoutMs: 12000, minStreamSeconds: 0, useUserScripts: false })
+    const candidate = runtime.candidates.find((c) => c.url === base + '/runtime.mp4')
+    assert.ok(candidate, 'Loaded video runtime metadata was not associated with the source')
+    assert.equal(candidate.info.durationSource, 'player')
+    assert.equal(candidate.info.duration, 2.5)
+    assert.equal(candidate.info.filesize, fs.statSync(moviePath).size)
+    assert.equal(candidate.info.filesizeEstimated, false)
+    assert.ok(received.some((r) => r.path === '/runtime.mp4' && /runtime=yes/.test(r.cookie)))
+    results.push({ route: '/runtime', engine: runtime.engine, durationSource: candidate.info.durationSource, exactSize: true })
+  }
   for (const route of ['/missing.mp4', '/poster.mp4']) assert.equal((await resolvePage(base + route, { staticOnly: true })).candidates.length, 0)
   const drm = await describeStream(base + '/drm', { kind: 'unknown' }); assert.ok(drm.drm); assert.equal(drm.kind, 'dash')
   const started = Date.now()

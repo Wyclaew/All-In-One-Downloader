@@ -18,6 +18,7 @@ const { failureKind, retryDelay } = require('./recovery')
 const { formatSelector, rankCandidates, languageCode } = require('./media-preferences')
 const { TransferStats } = require('./transfer-stats')
 const { locateDownload } = require('./locate')
+const network = require('./network-context')
 
 const TAG = '@P@'
 const PROGRESS_TEMPLATE =
@@ -45,6 +46,18 @@ function proxyFor(download, settings) {
   return String(settings.proxyUrl || '').trim()
 }
 
+
+async function prepareNetwork(download, settings, job) {
+  if (!download.useProxy) return { ...settings, proxyUrl: '' }
+  const key = download.sourceId || download.id
+  const hadContext = !!network.getContext(key)
+  const proxyUrl = await network.ensureForSource(key, { settings, signal: job.abort.signal,
+    onProgress: (status) => {
+      if (!job.paused && !job.canceled) store.commit(() => { download.note = status.message || 'Güvenli bağlantı hazırlanıyor' })
+    } })
+  if (!hadContext && download.resolved?.pageUrl) download.refreshPending = true
+  return { ...settings, proxyUrl }
+}
 
 function buildArgs(download, settings, printFile) {
   const args = [
@@ -718,7 +731,8 @@ async function prepareRecovery(download, settings, job) {
       download.url = candidate.url
       download.resolved = { ...download.resolved, referer: candidate.referer || download.resolved.pageUrl,
         origin: candidate.origin || '', userAgent: candidate.userAgent || result.userAgent,
-        cookieFile: candidate.cookieFile || null, kind: candidate.kind }
+        cookieFile: candidate.cookieFile || null, kind: candidate.kind,
+        selectedVariantUrl: candidate.info?.selectedVariantUrl || null, rejectedVariantUrls: candidate.info?.rejectedVariantUrls || [] }
       download.streamSubtitles = require('./text-tracks').mergeTextTracks(candidate.info?.subtitles || [], candidate.subtitles || [])
       download.streamAudioTracks = candidate.info?.audioTracks || []
       download.refreshPending = false
@@ -747,7 +761,9 @@ function start(downloadId) {
   if (download.pendingFilePath && fs.existsSync(download.pendingFilePath)) {
     const job = beginJob(download)
     job.destinations.add(download.pendingFilePath)
-    completeJob(job, download, settings, download.pendingFilePath)
+    prepareNetwork(download, settings, job)
+      .then((effective) => completeJob(job, download, effective, download.pendingFilePath))
+      .catch((err) => settle(job, download, settings, { paused: job.paused, canceled: job.canceled, error: err.message, raw: err }))
     return
   }
   if (settings.useYtdlp === false || (download.resolved?.kind === 'hls' && settings.nativeHls !== false) || (download.resolved?.kind === 'file' && !download.audioOnly && !settings.rateLimit)) return startOwn(download, settings)
@@ -760,7 +776,7 @@ function start(downloadId) {
  */
 async function startOwn(download, settings) {
   const job = beginJob(download)
-  try { await prepareRecovery(download, settings, job) } catch (err) {
+  try { settings = await prepareNetwork(download, settings, job); await prepareRecovery(download, settings, job) } catch (err) {
     return settle(job, download, settings, { paused: job.paused, canceled: job.canceled, error: err.message, raw: err })
   }
 
@@ -825,7 +841,7 @@ async function startYtdlp(download, settings) {
   }
 
   const job = beginJob(download)
-  try { await prepareRecovery(download, settings, job) } catch (err) {
+  try { settings = await prepareNetwork(download, settings, job); await prepareRecovery(download, settings, job) } catch (err) {
     return settle(job, download, settings, { paused: job.paused, canceled: job.canceled, error: err.message, raw: err })
   }
   const args = buildArgs(download, settings, job.printFile)
@@ -925,9 +941,8 @@ async function startYtdlp(download, settings) {
  * identical to "there are none". The tracks were listed in the master playlist
  * the whole time.
  *
- * ffmpeg does the fetching: a subtitle rendition is itself a playlist of WebVTT
- * segments, and ffmpeg concatenates and converts them to SRT in one pass, which
- * beats reimplementing either half.
+ * Scoped HTTP fetches keep cookies and the selected route attached to every
+ * subtitle hop. FFmpeg converts only the prepared local files.
  */
 async function fetchStreamSubtitles(download, filePath, settings, job = null) {
   const tracks = Array.isArray(download.streamSubtitles) ? download.streamSubtitles : []
@@ -936,7 +951,7 @@ async function fetchStreamSubtitles(download, filePath, settings, job = null) {
   const bin = ffmpegPath()
   if (!bin) return { found: tracks.length, saved: [] }
 
-  const { normaliseLanguage, ffprobeHeaderArgs } = require('./mediainfo')
+  const { normaliseLanguage } = require('./mediainfo')
   const wanted = String(settings.subLangs || 'tr,en')
     .split(',')
     .map((l) => normaliseLanguage(l) || l.trim().toLowerCase())
@@ -954,26 +969,34 @@ async function fetchStreamSubtitles(download, filePath, settings, job = null) {
     // Fetched into our own folder, never beside the video: it is muxed in below
     // and only kept if that fails.
     const out = subtitles.subtitlePathFor(filePath, code)
-    const env = proxy ? { ...toolEnv(), ...(require('./proxy').ffmpegEnv(proxy) || {}) } : toolEnv()
-    // A SOCKS proxy cannot be handed to ffmpeg; skip rather than fetch around it.
-    if (proxy && !require('./proxy').ffmpegEnv(proxy)) break
-
-    const ok = await new Promise((resolve) => {
-      const child = spawn(
-        bin,
-        [
-          '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-rw_timeout', '15000000',
-          ...ffprobeHeaderArgs(track.url, { ...download.resolved, referer: track.referer || download.resolved?.referer }),
-          '-i', track.url,
-          out,
-        ],
-        { env, windowsHide: true }
-      )
-      if (job) job.child = child
-      const timeout = setTimeout(() => child.kill('SIGKILL'), 90000)
-      child.on('error', () => { clearTimeout(timeout); resolve(false) })
-      child.on('close', (code2) => { clearTimeout(timeout); resolve(code2 === 0) })
-    })
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'aio-caption-'))
+    const input = path.join(temporary, 'track.vtt')
+    let ok = false
+    try {
+      const localPath = await require('./subtitle-fetch').fetchSubtitle(track.url, input, {
+        resolved: { ...download.resolved, referer: track.referer || download.resolved?.referer },
+        proxy, signal: job?.abort.signal,
+      })
+      if (job?.paused || job?.canceled) break
+      ok = await new Promise((resolve) => {
+        const child = spawn(bin, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+          '-protocol_whitelist', 'file', ...(localPath.endsWith('.m3u8') ? ['-allowed_extensions', 'ALL'] : []), '-i', localPath, out],
+          { env: toolEnv(), windowsHide: true })
+        if (job) job.child = child
+        const abort = () => child.kill('SIGKILL')
+        const timeout = setTimeout(abort, 30000)
+        const finish = (value) => { clearTimeout(timeout); job?.abort.signal.removeEventListener('abort', abort); resolve(value) }
+        if (job?.abort.signal.aborted) abort()
+        else job?.abort.signal.addEventListener('abort', abort, { once: true })
+        child.on('error', () => finish(false))
+        child.on('close', (code2) => finish(code2 === 0))
+      })
+    } catch (err) {
+      if (!job?.paused && !job?.canceled) store.toast(`Altyazı alınamadı: ${err.message}`, 'warn')
+    } finally {
+      await require('./subtitle-fetch').cleanupSubtitle(input)
+      fs.rmSync(temporary, { recursive: true, force: true })
+    }
 
     if (ok && fileSizeOf(out)) saved.push({ lang: code, path: out })
     else {

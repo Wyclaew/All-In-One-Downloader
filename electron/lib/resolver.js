@@ -27,7 +27,7 @@ const os = require('os')
 const path = require('path')
 const { BrowserWindow, session } = require('electron')
 const { createBlocker } = require('./blocklist')
-const { describeStream } = require('./mediainfo')
+const { describeStream, applyPlayerMetadata, estimateVariantSizes } = require('./mediainfo')
 const { electronRules: proxyRules, fetchVia } = require('./proxy')
 const userscripts = require('./userscripts')
 const { discoverSources } = require('./source-discovery')
@@ -1291,13 +1291,15 @@ function browserScan(
     // proxy possible: this page goes through the tunnel while the one resolving
     // beside it does not. Chromium understands SOCKS here, so no tunnelling of
     // our own is needed on this path.
-    const configureProxy = ses.setProxy(proxy ? { proxyRules: proxyRules(proxy), proxyBypassRules: '<local>' } : { mode: 'direct' })
+    const configureProxy = ses.setProxy(proxy ? { mode: 'fixed_servers', proxyRules: proxyRules(proxy), proxyBypassRules: '<-loopback>' } : { mode: 'direct' })
     const captureController = new AbortController()
     const captureSignal = signal ? AbortSignal.any([signal, captureController.signal]) : captureController.signal
     const hits = new Map()
     const textTracks = []
     const discoveredFrames = new Map()
     const requestContexts = new Map()
+    const runtimeByUrl = new Map()
+    const runtimeByFrame = new Map()
     let alternateAt = Date.now()
     const skipped = new Set()
     const jsonScanned = new Set()
@@ -1344,15 +1346,39 @@ function browserScan(
     const takeOffer = (item, referer) => {
       if (typeof item === 'string') return record(item, referer, 'content-type')
       if (!item || typeof item !== 'object') return
+      if (item.from === 'media-element' && item.playerMetadata && typeof item.playerMetadata === 'object') {
+        const metadata = item.playerMetadata
+        if (isHttp(item.url) && (runtimeByUrl.size < 160 || runtimeByUrl.has(item.url.split('#')[0]))) runtimeByUrl.set(item.url.split('#')[0], metadata)
+        else if (typeof metadata.src === 'string' && metadata.src.startsWith('blob:') && (runtimeByFrame.size < 40 || runtimeByFrame.has(referer))) runtimeByFrame.set(referer, metadata)
+        // Metadata is tied to a loaded URL, or to the sole verified manifest in
+        // this frame. Never apply one player's duration to all network traffic.
+        for (const hit of hits.values()) applyRuntimeMetadata(hit)
+      }
       if (typeof item.title === 'string' && item.title.trim() && !title) {
         title = item.title.trim().slice(0, 300)
       }
-      if (typeof item.duration === 'number' && item.duration > 0 && !scriptDuration) {
+      if (typeof item.duration === 'number' && Number.isFinite(item.duration) && item.duration > 0 && !scriptDuration) {
         scriptDuration = item.duration
       }
       if (typeof item.note === 'string' && item.note) note(item.note)
       if (item.drm === true) encrypted = true
       if (typeof item.url === 'string') record(item.url, referer, 'content-type', item.kind)
+    }
+
+    function runtimeMetadataFor(hit) {
+      const direct = runtimeByUrl.get(hit.url.split('#')[0])
+      if (direct) return direct
+      const metadata = runtimeByFrame.get(hit.referer)
+      if (!metadata || !['hls', 'dash'].includes(hit.kind)) return null
+      const all = [...hits.values()]
+      const children = new Set(all.flatMap((h) => (h.info?.variants || []).map((v) => v.url).filter(Boolean)))
+      const sameFrame = all.filter((h) => h.referer === hit.referer && !h.invalid && ['hls', 'dash'].includes(h.kind) && !children.has(h.url))
+      return sameFrame.length === 1 && sameFrame[0] === hit ? metadata : null
+    }
+    function applyRuntimeMetadata(hit) {
+      if (!hit.info) return
+      applyPlayerMetadata(hit.info, runtimeMetadataFor(hit))
+      estimateVariantSizes(hit.info)
     }
 
     const record = (url, referer, why, declaredKind = null) => {
@@ -1425,6 +1451,7 @@ function browserScan(
           if (done || captureSignal.aborted) return { playable: false }
           const cookies = await ses.cookies.get({})
           if (cookies.length) { writeCookieJar(cookies, captureCookieFile); resolved.cookieFile = captureCookieFile }
+          resolved.playerMetadata = runtimeMetadataFor(hit)
           return await describeStream(hit.url, resolved)
         } finally {
           const resume = measurementWaiters.shift()
@@ -1438,6 +1465,7 @@ function browserScan(
         .then((info) => {
           hit.info = info
           if (info.kind) hit.kind = info.kind
+          applyRuntimeMetadata(hit)
           if (info.drm) encrypted = true
           if (!info.playable && !info.drm) { hit.invalid = true; return }
           if (done) return
@@ -2059,7 +2087,7 @@ function dropShortStreams(candidates, minSeconds, expected = null) {
     floor = Math.max(minSeconds / 2, longest * 0.25)
   }
 
-  const kept = candidates.filter((c) => c.info?.drm || (c.info?.live && c.info?.playable) || (c.info?.duration && c.info.duration >= floor))
+  const kept = candidates.filter((c) => c.info?.drm || (c.info?.live && c.info?.playable) || (!c.info?.duration && c.info?.playable) || (c.info?.duration && c.info.duration >= floor))
 
   // Without a declared runtime, an empty result more likely means our guess was
   // wrong than that everything was an advert — so keep what we had.
@@ -2067,7 +2095,7 @@ function dropShortStreams(candidates, minSeconds, expected = null) {
 
   if (expected) {
     kept.sort(
-      (a, b) => Math.abs(a.info.duration - expected) - Math.abs(b.info.duration - expected)
+      (a, b) => (a.info?.duration ? Math.abs(a.info.duration - expected) : Infinity) - (b.info?.duration ? Math.abs(b.info.duration - expected) : Infinity)
     )
   }
   return { kept, dropped: candidates.length - kept.length }

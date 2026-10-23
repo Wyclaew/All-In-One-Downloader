@@ -16,6 +16,7 @@ import {
   Meter,
   Modal,
   Thumb,
+  thumbnailForRoute,
 } from '../components/ui'
 
 /**
@@ -49,6 +50,10 @@ export default function Sources({
   const [rescanning, setRescanning] = useState<Record<string, boolean>>({})
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [batchQuality, setBatchQuality] = useState<string | null>(null)
+  const [batchAction, setBatchAction] = useState<'retry' | 'stop' | null>(null)
+  const [sourceActions, setSourceActions] = useState<Record<string, { stop?: boolean; metadata?: boolean }>>({})
+  const [diagnostics, setDiagnostics] = useState<{ sourceId: string; title: string; text: string | null; loading: boolean } | null>(null)
+  const [copyingReport, setCopyingReport] = useState(false)
 
   // A ticked item can disappear under you — a rescan replaces the list, or the
   // item is removed. Without this the bar counts things that no longer exist and
@@ -147,8 +152,54 @@ export default function Sources({
     setRescanning((prev) => ({ ...prev, [source.id]: false }))
   }
 
+  const busyCount = state.sources.filter((source) => source.status === 'queued' || source.status === 'probing' || source.enriching > 0).length
+  const failedCount = state.sources.filter((source) => source.status === 'error').length
+  const canceledCount = state.sources.filter((source) => source.status === 'canceled').length
+  const readyCount = state.sources.filter((source) => source.status === 'ready').length
+
+  const runBatchAction = async (action: 'retry' | 'stop') => {
+    if (batchAction) return
+    setBatchAction(action)
+    try {
+      const count = await (action === 'retry' ? api.retryFailedSources() : api.cancelAllSources())
+      if (count) onToast(action === 'retry' ? `${count} kaynak yeniden tarama sırasına alındı.` : `${count} kaynak taraması durduruldu.`, 'info')
+    } finally { setBatchAction(null) }
+  }
+
+  const runSourceAction = async (source: Source, action: 'stop' | 'metadata') => {
+    if (sourceActions[source.id]?.[action]) return
+    setSourceActions((prev) => ({ ...prev, [source.id]: { ...prev[source.id], [action]: true } }))
+    try {
+      const result = await (action === 'stop' ? api.cancelSource(source.id) : api.refreshSourceMetadata(source.id))
+      if (result && action === 'stop') onToast('Kaynak taraması durduruldu.', 'info')
+    } finally { setSourceActions((prev) => ({ ...prev, [source.id]: { ...prev[source.id], [action]: false } })) }
+  }
+
+  const openDiagnostics = async (source: Source) => {
+    setDiagnostics({ sourceId: source.id, title: source.title || source.site, text: null, loading: true })
+    const text = await api.sourceDiagnostics(source.id)
+    setDiagnostics((current) => current?.sourceId === source.id ? { ...current, text, loading: false } : current)
+  }
+
   return (
     <>
+      <div className="source-toolbar" aria-label="Kaynak durumları">
+        <div className="source-summary" role="status">
+          <span><strong>{state.sources.length}</strong> kaynak</span>
+          {busyCount ? <span><strong>{busyCount}</strong> işleniyor</span> : null}
+          {readyCount ? <span><strong>{readyCount}</strong> hazır</span> : null}
+          {failedCount ? <span className="source-failed"><strong>{failedCount}</strong> hata</span> : null}
+          {canceledCount ? <span><strong>{canceledCount}</strong> durduruldu</span> : null}
+        </div>
+        <div className="source-toolbar-actions">
+          <Btn size="sm" variant="ghost" icon="refresh" disabled={!(failedCount + canceledCount) || !!batchAction} spinning={batchAction === 'retry'} title="Hatalı ve durdurulan kaynakları yeniden dene" onClick={() => runBatchAction('retry')}>
+            Yeniden dene{failedCount + canceledCount ? ` (${failedCount + canceledCount})` : ''}
+          </Btn>
+          <Btn size="sm" variant="ghost" icon="x" disabled={!busyCount || !!batchAction} spinning={batchAction === 'stop'} onClick={() => runBatchAction('stop')}>
+            Tümünü durdur
+          </Btn>
+        </div>
+      </div>
       {state.sources.map((source) => {
         const items = itemsBySource.get(source.id) || []
         const doneCount = items.filter((i) => {
@@ -158,6 +209,10 @@ export default function Sources({
         const groupValue = groupQuality[source.id] ?? fallbackQuality
         const waiting = source.status === 'queued'
         const probing = source.status === 'probing' || waiting
+        const busy = probing || source.enriching > 0 || !!sourceActions[source.id]?.stop || !!sourceActions[source.id]?.metadata
+        const missingMetadata = items.filter((item) => !item.isLive && (!(item.duration && item.duration > 0) || !sizeFor(item, qualityFor(item)))).length
+        const networkLabel = source.network?.label || (source.network?.kind === 'tor' ? 'Tor bağlantısı' : source.useProxy ? 'Vekil bağlantı' : 'Doğrudan bağlantı')
+        const progressLabel = waiting ? T.source.waiting : source.stage === 'network' ? 'Ağ bağlantısı hazırlanıyor…' : source.stage === 'resolver' ? T.source.resolving : T.source.probing
         const open = !source.collapsed
 
         return (
@@ -172,6 +227,7 @@ export default function Sources({
               tabIndex={0}
               aria-expanded={open}
               onKeyDown={(e) => {
+                if (e.target !== e.currentTarget) return
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault()
                   api.toggleSource(source.id)
@@ -232,6 +288,11 @@ export default function Sources({
                   ) : null}
                   <span className="sep" />
                   <span>{fmt.relativeTime(source.addedAt)}</span>
+                  <span className="sep" />
+                  <span className="group-network" title={networkLabel}>
+                    {source.network?.kind === 'tor' || source.network?.kind === 'proxy' || source.useProxy ? <Icon name="shield" size={11} /> : null}
+                    {networkLabel}
+                  </span>
                   {source.resolvedBy && source.resolvedBy !== 'yt-dlp' ? <span className="sep" /> : null}
                   {source.resolvedBy && source.resolvedBy !== 'yt-dlp' ? (
                     <span style={{ color: 'var(--signal)' }}>{source.resolvedBy}</span>
@@ -244,6 +305,11 @@ export default function Sources({
               </div>
 
               <div className="group-actions" onClick={(e) => e.stopPropagation()}>
+                {busy ? (
+                  <Btn size="sm" variant="ghost" icon="x" disabled={!!sourceActions[source.id]?.stop} spinning={!!sourceActions[source.id]?.stop} onClick={() => runSourceAction(source, 'stop')}>
+                    Durdur
+                  </Btn>
+                ) : null}
                 <select
                   className="select"
                   value={groupValue}
@@ -288,6 +354,18 @@ export default function Sources({
                   variant="danger"
                   onClick={() => setPendingRemove(source)}
                 />
+                <Menu title="Kaynak işlemleri">
+                  {(close) => (
+                    <>
+                      <MenuItem icon="refresh" disabled={busy || !items.length || !missingMetadata} onClick={() => { void runSourceAction(source, 'metadata'); close() }}>
+                        Eksik süre / boyut bilgilerini tamamla
+                      </MenuItem>
+                      <MenuItem icon="target" onClick={() => { void openDiagnostics(source); close() }}>
+                        Tanılama raporunu aç
+                      </MenuItem>
+                    </>
+                  )}
+                </Menu>
               </div>
 
               <div className="group-counters">
@@ -298,21 +376,27 @@ export default function Sources({
             {open ? (
               <div className="group-body">
                 {probing ? (
-                  <div className="group-note">
-                    {waiting
-                      ? T.source.waiting
-                      : source.stage === 'resolver'
-                        ? `${T.source.resolving}${source.note ? ` — ${source.note}` : ''}`
-                        : T.source.probing}
+                  <div className="group-note" role="status">
+                    {progressLabel}{source.note && source.note !== progressLabel ? ` — ${source.note}` : ''}
                   </div>
                 ) : source.error ? (
                   <div className="group-note bad">{source.error}</div>
+                ) : source.note ? (
+                  <div className="group-note" role="status">{source.note}</div>
+                ) : null}
+
+                {missingMetadata && !probing ? (
+                  <div className="group-note group-metadata">
+                    <span>{source.enriching || sourceActions[source.id]?.metadata ? 'Süre ve boyut bilgileri kontrol ediliyor…' : `${missingMetadata} öğenin süre veya boyut bilgisi eksik.`}</span>
+                    <Btn size="sm" variant="ghost" icon="refresh" spinning={!!sourceActions[source.id]?.metadata || source.enriching > 0} disabled={busy} onClick={() => runSourceAction(source, 'metadata')}>Bilgileri tamamla</Btn>
+                  </div>
                 ) : null}
 
                 {items.map((item) => (
                   <Row
                     key={item.id}
                     item={item}
+                    useProxy={source.useProxy}
                     download={downloadByUrl.get(item.url) || null}
                     quality={qualityFor(item)}
                     selected={selected.has(item.id)}
@@ -401,6 +485,23 @@ export default function Sources({
           {T.confirm.removeSourceBody}
         </Modal>
       ) : null}
+
+      {diagnostics ? (
+        <Modal title="Kaynak tanılama raporu" onClose={() => setDiagnostics(null)} footer={
+          <>
+            <Btn autoFocus onClick={() => setDiagnostics(null)}>Kapat</Btn>
+            <Btn variant="primary" icon="link" disabled={!diagnostics.text || diagnostics.loading || copyingReport} spinning={copyingReport} onClick={async () => {
+              if (!diagnostics.text) return
+              setCopyingReport(true)
+              try { if (await api.writeClipboard(diagnostics.text)) onToast('Tanılama raporu kopyalandı.', 'ok') } finally { setCopyingReport(false) }
+            }}>Raporu kopyala</Btn>
+          </>
+        }>
+          <p className="source-report-title">{diagnostics.title}</p>
+          <p>Son tarama adımlarını, bağlantı yolunu ve bulunan medya bilgilerini içerir.</p>
+          {diagnostics.loading ? <p role="status">Rapor hazırlanıyor…</p> : diagnostics.text ? <pre className="source-report" tabIndex={0} aria-label="Tanılama raporu JSON">{diagnostics.text}</pre> : <p role="status">Rapor hazırlanamadı. Pencereyi kapatıp yeniden dene.</p>}
+        </Modal>
+      ) : null}
     </>
   )
 }
@@ -409,6 +510,7 @@ export default function Sources({
 
 function Row({
   item,
+  useProxy,
   download,
   quality,
   selected,
@@ -419,6 +521,7 @@ function Row({
   onToast,
 }: {
   item: MediaItem
+  useProxy?: boolean
   download: Download | null
   quality: string
   selected: boolean
@@ -437,7 +540,7 @@ function Row({
   return (
     <div className={`row${selected ? ' selected' : ''}`}>
       <Check state={selected} label={T.batch.selectOne} onChange={onToggleSelect} />
-      <Thumb src={item.thumbnail} duration={fmt.duration(item.duration)} audio={audio} />
+      <Thumb src={thumbnailForRoute(item.thumbnail, useProxy)} duration={fmt.duration(item.duration)} audio={audio} />
 
       <div className="row-ident">
         <span className="row-title clamp2" title={item.title}>
@@ -464,8 +567,10 @@ function Row({
           ) : null}
           {size ? <span className="sep" /> : null}
           <span>{item.site}</span>
-          {!item.enriched ? <span className="sep" /> : null}
-          {!item.enriched ? <span style={{ color: 'var(--dimmer)' }}>{T.item.unknownDuration}</span> : null}
+          {!item.duration && !item.isLive ? <span className="sep" /> : null}
+          {!item.duration && !item.isLive ? <span>{T.item.unknownDuration}</span> : null}
+          {!size && !item.isLive ? <span className="sep" /> : null}
+          {!size && !item.isLive ? <span>boyut bilinmiyor</span> : null}
         </div>
       </div>
 

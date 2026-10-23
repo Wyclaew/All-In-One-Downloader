@@ -89,9 +89,22 @@ function installDiscovery() {
   try { performance.getEntriesByType('resource').filter((e) => media.test(e.name)).slice(-80).forEach((e) => offer(e.name)) } catch {}
   const sweep = () => {
     try {
-      document.querySelectorAll('video,video source,audio').forEach((v) => {
+      Array.from(document.querySelectorAll('video,video source,audio')).slice(0, 80).forEach((v) => {
         if (v.currentSrc && !v.currentSrc.startsWith('blob:')) offer(v.currentSrc)
         if (v.src && !v.src.startsWith('blob:')) offer(v.src)
+        // Values from a loaded media element supplement an independently
+        // verified source. A blob URL itself is never offered as a download.
+        if (v.readyState >= 1 && !v.closest('.video-ads,.jw-flag-ads,.vjs-ad-playing,.ad-showing')) {
+          const src = v.currentSrc || v.src || ''
+          if (!/^(?:https?:|blob:)/i.test(src)) return
+          const output = window.__aioSeen || (window.__aioSeen = [])
+          if (output.length < 200) output.push({
+            url: /^https?:/i.test(src) ? src : null,
+            playerMetadata: { duration: Number.isFinite(v.duration) && v.duration > 0 ? v.duration : null,
+              width: v.videoWidth || null, height: v.videoHeight || null, src },
+            from: 'media-element',
+          })
+        }
       })
       document.querySelectorAll('script[type="application/json"],script#__NEXT_DATA__,script#__NUXT_DATA__').forEach((s) => {
         if (s.textContent.length < 512 * 1024) { try { walk(originalParse(s.textContent), 'state') } catch {} }

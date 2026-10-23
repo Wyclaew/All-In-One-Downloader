@@ -201,64 +201,91 @@ function resolveCookieArg(id) {
  * Dump the selected browser's cookies to a Netscape jar.
  *
  * yt-dlp already knows how to decrypt every browser's cookie store (including
- * asking macOS Keychain for the Chromium key), and it writes the jar out on
- * exit even when the URL it was handed fails to extract. That makes it the
- * cheapest way to hand the user's real session to our own page resolver, so
+ * asking macOS Keychain for the Chromium key), and it writes the jar on exit.
+ * An empty local playlist triggers that export without a network request. The
+ * resulting session can then be used by our own page resolver, so
  * pages that need them to be signed in work without a second login.
  *
  * Cached for a few minutes — the keychain round trip isn't free.
  */
-let jarCache = { arg: null, file: null, at: 0 }
+const jarCache = new Map()
+const jarExports = new Map()
 const JAR_TTL = 5 * 60 * 1000
+const JAR_HEADER = '# Netscape HTTP Cookie File\n'
 
 function exportCookieJar(browserId) {
-  const arg = resolveCookieArg(browserId)
+  let arg
+  try { arg = resolveCookieArg(browserId) } catch { return Promise.resolve(null) }
   if (!arg) return Promise.resolve(null)
 
-  if (jarCache.arg === arg && jarCache.file && Date.now() - jarCache.at < JAR_TTL) {
+  const cached = jarCache.get(arg)
+  if (cached && Date.now() - cached.at < JAR_TTL) {
     try {
-      if (fs.existsSync(jarCache.file)) return Promise.resolve(jarCache.file)
+      if (fs.statSync(cached.file).isFile()) return Promise.resolve(cached.file)
     } catch {
       /* fall through and re-export */
     }
   }
+  if (jarExports.has(arg)) return jarExports.get(arg)
 
-  return new Promise((resolve) => {
-    let bin
-    try {
-      bin = ytdlpPathOrThrow()
-    } catch {
-      return resolve(null)
-    }
-    const file = path.join(os.tmpdir(), `edl-browser-cookies-${Date.now()}.txt`)
-    execFile(
-      bin,
-      [
-        '--ignore-config',
-        '--no-warnings',
-        '--cookies-from-browser',
-        arg,
-        '--cookies',
-        file,
-        '--simulate',
-        // Any URL works: the jar is written on exit regardless of extraction.
-        'https://example.com',
-      ],
-      { env: toolEnv(), timeout: 60000, windowsHide: true },
-      () => {
-        try {
-          if (fs.existsSync(file) && fs.statSync(file).size > 0) {
-            try { fs.chmodSync(file, 0o600) } catch {}
-            jarCache = { arg, file, at: Date.now() }
-            return resolve(file)
-          }
-        } catch {
-          /* nothing written */
-        }
-        resolve(null)
+  const pending = new Promise((resolve) => {
+    let dir
+    const discard = () => {
+      if (dir) {
+        try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* best effort; directory remains private */ }
       }
-    )
+      resolve(null)
+    }
+    try {
+      const bin = ytdlpPathOrThrow()
+      // mkdtemp creates an unpredictable directory with mode 0700 on POSIX,
+      // before any cookie data exists. Date-based filenames collided between
+      // concurrent sources and exposed the jar until a later chmod.
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'edl-browser-cookies-'))
+      const file = path.join(dir, 'cookies.txt')
+      const info = path.join(dir, 'empty.info.json')
+      fs.writeFileSync(file, JAR_HEADER, { mode: 0o600, flag: 'wx' })
+      fs.writeFileSync(info, JSON.stringify({
+        _type: 'playlist', id: 'aio-cookie-export', title: 'Cookie export',
+        extractor: 'aio-cookie-export', extractor_key: 'Generic', entries: [],
+      }), { mode: 0o600, flag: 'wx' })
+      execFile(
+        bin,
+        [
+          '--ignore-config',
+          '--no-warnings',
+          '--cookies-from-browser', arg,
+          '--cookies', file,
+          '--skip-download',
+          // Current yt-dlp otherwise removes the playlist's empty entries
+          // during info-file sanitization, which turns this into an error.
+          '--no-clean-info-json',
+          '--load-info-json', info,
+        ],
+        { env: toolEnv(), timeout: 60000, windowsHide: true },
+        (err) => {
+          if (err) return discard()
+          try {
+            const stat = fs.statSync(file)
+            // The precreated header alone does not prove that the tool saved
+            // its jar. An empty browser still produces yt-dlp's full header.
+            if (!stat.isFile() || stat.size <= Buffer.byteLength(JAR_HEADER)) return discard()
+            fs.chmodSync(file, 0o600)
+            fs.rmSync(info, { force: true })
+            jarCache.set(arg, { file, at: Date.now() })
+            resolve(file)
+          } catch { discard() }
+        }
+      )
+    } catch {
+      discard()
+    }
   })
+  jarExports.set(arg, pending)
+  pending.then(() => { if (jarExports.get(arg) === pending) jarExports.delete(arg) })
+  // Expiration only controls reuse. Older issued jars may still be referenced
+  // by an active source/download; their lifecycle must not be guessed here.
+  return pending
 }
 
 module.exports = { detectBrowsers, resolveCookieArg, exportCookieJar }

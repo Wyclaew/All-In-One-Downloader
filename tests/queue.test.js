@@ -5,17 +5,22 @@ const fs = require('fs')
 const path = require('path')
 const http = require('http')
 const { execFileSync } = require('child_process')
-const { root, load } = require('./helpers.cjs')
+const { root, load, electron } = require('./helpers.cjs')
+// Caption storage imports Electron lazily during postprocessing.
+require('electron')
+require.cache[require.resolve('electron')].exports = electron
 const binaries = load('electron/lib/binaries.js')
 const store = load('electron/lib/store.js')
 const downloader = load('electron/lib/downloader.js')
+load('electron/lib/subtitles.js') // Dynamic postprocessing reads the Electron shim too.
 const { ffmpegPath, locate, toolEnv } = binaries
 const ffmpeg = ffmpegPath()
 const ytdlp = locate('yt-dlp')
 const stages = []
 store.commit = (fn) => { const out = fn(store.getState()); stages.push(store.getState().downloads[0]?.status); return out }
 store.send = () => {}
-store.toast = () => {}
+const notices = []
+store.toast = (message) => notices.push(message)
 let server
 
 test.after(async () => {
@@ -28,6 +33,7 @@ test('both transfer engines automatically refresh an expired stream and complete
   const mediaDir = path.join(root, 'origin')
   const outDir = path.join(root, 'downloads')
   fs.mkdirSync(mediaDir); fs.mkdirSync(outDir)
+  fs.writeFileSync(path.join(mediaDir, 'tr.vtt'), 'WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nTürkçe altyazı örneği\n')
   execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=128x96:r=10:d=3',
     '-f', 'lavfi', '-i', 'sine=frequency=400:duration=3', '-map', '0:v', '-map', '1:a',
     '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-g', '10', '-f', 'hls', '-hls_time', '1', '-hls_list_size', '0',
@@ -39,7 +45,7 @@ test('both transfer engines automatically refresh an expired stream and complete
     if (req.url === '/page') { res.setHeader('Content-Type', 'text/html'); res.end(`<title>Queue fixture</title><video src="${base}/fresh/master.m3u8"></video>`); return }
     const file = path.join(mediaDir, path.basename(req.url))
     if (!fs.existsSync(file)) { res.writeHead(404); res.end(); return }
-    res.setHeader('Content-Type', req.url.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t')
+    res.setHeader('Content-Type', req.url.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : req.url.endsWith('.vtt') ? 'text/vtt' : 'video/mp2t')
     fs.createReadStream(file).pipe(res)
   })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
@@ -67,4 +73,21 @@ test('both transfer engines automatically refresh an expired stream and complete
     assert.ok(fs.statSync(download.filePath).size > 0)
   }
   assert.ok(stages.includes('queued'))
+})
+
+test('own transfer fetches scoped Turkish captions locally and embeds them in the finished video', { skip: !ffmpeg || !ytdlp, timeout: 20000 }, async () => {
+  Object.assign(store.getState().settings, { nativeHls: true, writeSubs: true, subLangs: 'tr' })
+  const item = store.getState().items[0]
+  const origin = new URL(item.url).origin
+  item.url = origin + '/fresh/master.m3u8'
+  item.subtitles = [{ url: origin + '/tr.vtt', lang: 'tr', name: 'Türkçe', forced: false }]
+  const download = downloader.enqueue({ item })
+  downloader.pumpQueue()
+  const until = Date.now() + 15000
+  while (!['done', 'error'].includes(download.status) && Date.now() < until) await new Promise((r) => setTimeout(r, 50))
+  assert.equal(download.status, 'done', download.error || download.note)
+  assert.equal(download.subtitleLanguage, 'tr', JSON.stringify({ notices, tracks: download.streamSubtitles, path: download.filePath }))
+  assert.equal(download.subtitlePath, null)
+  const inspect = JSON.parse(execFileSync(binaries.ffprobePath(), ['-v', 'error', '-show_streams', '-of', 'json', download.filePath], { env: toolEnv() }))
+  assert.ok(inspect.streams.some((stream) => stream.codec_type === 'subtitle' && /^(tr|tur)$/.test(stream.tags?.language)))
 })

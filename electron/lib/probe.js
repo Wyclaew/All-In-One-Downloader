@@ -19,11 +19,14 @@ const { uid, siteLabel, hostOf, num, resolvedArgs, settingNumber } = require('./
 const { failureKind, retryDelay, sleep } = require('./recovery')
 const { rankCandidates } = require('./media-preferences')
 const { parseTitle } = require('./subtitles')
+const network = require('./network-context')
+const diagnostics = require('./diagnostics')
 
 const MAX_JSON = 64 * 1024 * 1024 // channels can dump a lot of JSON
 
 const running = new Map() // sourceId -> child process
 const controllers = new Map()
+const metadataJobs = new Map()
 
 function baseArgs(settings) {
   const args = ['--no-warnings', '--ignore-config', '--socket-timeout', '20', '--retries', '3']
@@ -98,7 +101,7 @@ async function runJson(url, extraArgs, settings, trackKey = null) {
     catch (err) {
       if (settings.signal?.aborted || settings.autoRecover === false || attempt >= 2 || !['network', 'busy'].includes(failureKind(err))) throw err
       const source = trackKey && store.findSource(trackKey)
-      if (source) store.commit(() => { source.note = `Geçici sunucu hatası; yeniden deneniyor (${attempt + 1}/2)` })
+      if (source) note(source, `Geçici sunucu hatası; yeniden deneniyor (${attempt + 1}/2)`)
       await sleep(retryDelay(attempt, failureKind(err)), settings.signal)
     }
   }
@@ -302,9 +305,23 @@ function itemFromNode(node, source, index) {
  * the same moment. So it travels attached to the settings object handed to each
  * call rather than being read from global state deeper down.
  */
-function proxied(settings, source) {
-  const proxy = source && source.useProxy ? String(settings.proxyUrl || '').trim() : ''
-  return proxy ? { ...settings, proxy } : settings
+function note(source, message, stage = source.stage) {
+  if (!store.findSource(source.id)) return
+  store.commit(() => {
+    source.note = diagnostics.redact(message)
+    diagnostics.addEvent(source, stage, message)
+  })
+}
+
+async function sourceSettings(settings, source, signal) {
+  let proxy = ''
+  if (source.useProxy) {
+    proxy = await network.ensureForSource(source.id, { settings, signal,
+      onProgress: (status) => note(source, status.message || `Tor hazırlanıyor (%${status.percent || 0})`, 'network') })
+  }
+  if (signal?.aborted) throw Object.assign(new Error('Çözümleme durduruldu.'), { code: 'ABORTED' })
+  store.commit(() => { source.network = network.getContext(source.id) || { kind: 'direct', isolated: false, label: 'Doğrudan' } })
+  return { ...settings, proxy, signal }
 }
 
 /**
@@ -347,6 +364,7 @@ async function probeUrl(url, { sourceId = null, playlistEnd = 0 } = {}) {
   cancelProbe(source.id)
   const controller = new AbortController()
   controllers.set(source.id, controller)
+  const started = Date.now()
   try {
     return await runProbe(source, playlistEnd, controller.signal)
   } catch (err) {
@@ -354,28 +372,39 @@ async function probeUrl(url, { sourceId = null, playlistEnd = 0 } = {}) {
     if (!controller.signal.aborted && (source.status === 'probing' || source.status === 'queued')) {
       store.commit(() => {
         source.status = 'error'
-        source.error = (err && err.message) || 'Beklenmeyen bir hata oldu.'
+        source.error = diagnostics.redact((err && err.message) || 'Beklenmeyen bir hata oldu.')
+        source.stage = null
+        source.note = null
+        diagnostics.addEvent(source, 'error', source.error, 'error')
       })
     }
     return source
   } finally {
-    if (controllers.get(source.id) === controller) { controllers.delete(source.id); running.delete(source.id) }
+    if (controllers.get(source.id) === controller) {
+      store.commit(() => { source.elapsedMs = Date.now() - started; diagnostics.addEvent(source, source.status, source.error || `${source.count || 0} medya bulundu`, source.status === 'error' ? 'error' : 'info') })
+      controllers.delete(source.id); running.delete(source.id)
+    }
   }
 }
 
 async function runProbe(source, playlistEnd, signal) {
   const previousJar = store.itemsOfSource(source.id).find((item) => item.resolved?.cookieFile)?.resolved.cookieFile || null
-  const settings = { ...proxied(store.getState().settings, source), signal, browserCookieJar: previousJar }
-  const ytdlpOff = settings.useYtdlp === false
+  const globalSettings = store.getState().settings
+  const ytdlpOff = globalSettings.useYtdlp === false
 
   store.commit((s) => {
     source.status = 'probing'
-    source.stage = ytdlpOff ? 'resolver' : 'ytdlp'
-    source.note = null
+    source.stage = source.useProxy ? 'network' : (ytdlpOff ? 'resolver' : 'ytdlp')
+    source.attempts = (source.attempts || 0) + 1
+    diagnostics.addEvent(source, 'start', 'Çözümleme başladı')
+    source.note = source.useProxy ? 'Güvenli bağlantı hazırlanıyor' : null
     source.error = null
     // A rescan replaces the found media but leaves downloads alone.
     s.items = s.items.filter((i) => i.sourceId !== source.id)
+    source.count = 0
   })
+  const settings = { ...await sourceSettings(globalSettings, source, signal), browserCookieJar: previousJar }
+  store.commit(() => { source.stage = ytdlpOff ? 'resolver' : 'ytdlp'; source.note = null })
 
   // yt-dlp switched off in settings: no probing, no embed hand-off, no
   // enrichment through it. Every page goes to our own resolver.
@@ -532,11 +561,15 @@ function itemFromCandidate(candidate, source, index, title, userAgent, total, th
     series: parseTitle(title || '').episode ? parseTitle(title || '').title : null,
     season: parseTitle(title || '').season,
     episode: parseTitle(title || '').episode,
-    isLive: info ? !!info.live : false,
+    isLive: info?.live ?? null,
+    durationSource: info?.durationSource || null,
+    filesizeSource: info?.filesizeSource || null,
+    metadataStatus: info?.filesize && (info.duration || info.live === true) ? 'complete' : 'partial',
+    metadataCheckedAt: Date.now(),
     site: hostOf(source.url) || source.site,
     addedAt: Date.now(),
     // Verified during resolution — no second metadata pass needed.
-    enriched: !!(info && (info.duration || info.height)),
+    enriched: !!(info?.filesize && (info.duration || info.live === true)),
     variants: info && info.variants ? info.variants.map((v) => v.height).filter(Boolean) : [],
     drm: !!(info && info.drm),
     resolved: {
@@ -547,6 +580,8 @@ function itemFromCandidate(candidate, source, index, title, userAgent, total, th
       cookieFile: candidate.cookieFile || null,
       kind: candidate.kind,
       engine: candidate.via,
+      selectedVariantUrl: info?.selectedVariantUrl || null,
+      rejectedVariantUrls: info?.rejectedVariantUrls || [],
       // A flag, not the address. A proxy URL can carry a password, and this
       // object is written to library.json in plain text — the address is looked
       // up from settings at the moment it is needed instead.
@@ -610,7 +645,7 @@ async function tryResolve(source, settings, fallbackError) {
       timeoutMs: Math.max(8000, settingNumber(settings.resolverTimeout, 45000)),
       onProgress: (message) => {
         const live = store.findSource(source.id)
-        if (live) store.commit(() => { live.note = message })
+        if (live && !settings.signal?.aborted) note(live, message)
       },
     })
   } catch (err) {
@@ -760,153 +795,119 @@ function applyResolution(source, result, fallbackError) {
  * Second chance at metadata for resolved streams the verification pass couldn't
  * read: ffprobe and the manifest parser first, yt-dlp as a last resort.
  */
-async function enrichResolved(sourceId) {
-  const pending = store.itemsOfSource(sourceId).filter((i) => i.resolved && !i.enriched)
+async function enrichResolved(sourceId) { return enrich(sourceId) }
+
+function needsMetadata(item) {
+  return !item.enriched || (!item.duration && item.isLive !== true) || !item.filesize
+}
+
+/** Metadata is a cancellable job of its own; it can outlive the initial scan. */
+function enrich(sourceId, settingsOverride = null, { force = false } = {}) {
+  const existing = metadataJobs.get(sourceId)
+  if (existing && !existing.controller.signal.aborted) return existing.promise
+  if (existing) metadataJobs.delete(sourceId)
   const source = store.findSource(sourceId)
-  if (!pending.length) return
-  if (source) store.commit(() => { source.enriching = pending.length })
-
-  const settings = store.getState().settings
-  const proxy =
-    source && source.useProxy ? String(settings.proxyUrl || '').trim() : ''
-
-  for (const item of pending) {
-    let filled = false
+  if (!source || (source.status !== 'ready' && force)) return Promise.resolve(false)
+  const base = settingsOverride || store.getState().settings
+  const limit = Math.min(200, Math.max(0, Number(base.enrichLimit) || 0))
+  const pending = store.itemsOfSource(sourceId).filter((i) => i.url && (force || needsMetadata(i)))
+    .filter((i) => force || !i.enriched || Date.now() - (i.metadataCheckedAt || 0) > 15 * 60000).slice(0, force ? Math.max(1, limit) : limit)
+  if (!pending.length) return Promise.resolve(false)
+  const controller = new AbortController()
+  const job = { controller, promise: null }
+  metadataJobs.set(sourceId, job)
+  job.promise = (async () => {
+    const timeout = setTimeout(() => controller.abort(), 180000)
+    let cursor = 0, finished = 0
+    store.commit(() => { source.enriching = pending.length; diagnostics.addEvent(source, 'metadata', `${pending.length} medya bilgisi inceleniyor`) })
     try {
-      const info = await describeStream(item.url, { ...item.resolved, proxy })
-      if (info && (info.duration || info.height)) {
-        filled = true
-        store.commit(() => {
-          const live = store.findItem(item.id)
-          if (!live) return
-          live.duration = info.duration ?? live.duration
-          live.height = info.height || live.height
-          live.filesize = info.filesize || live.filesize
-          live.filesizeEstimated = info.filesize ? !!info.filesizeEstimated : live.filesizeEstimated
-          if (info.sizes && Object.keys(info.sizes).length) live.sizes = info.sizes
-          if (info.subtitles && info.subtitles.length) live.subtitles = info.subtitles
-          live.isLive = !!info.live
-          live.variants = (info.variants || []).map((v) => v.height).filter(Boolean)
-          live.drm = !!info.drm
-          live.enriched = true
+      const settings = await sourceSettings(base, source, controller.signal)
+      const active = (item) => !controller.signal.aborted && metadataJobs.get(sourceId) === job && store.findItem(item.id)
+      const patch = (item, fn) => { if (active(item)) store.commit(() => { const live = active(item); if (live) fn(live) }) }
+      async function worker() {
+        while (cursor < pending.length && !controller.signal.aborted) {
+          const item = pending[cursor++]
+          if (!active(item)) continue
+          patch(item, (live) => { live.metadataStatus = 'loading' })
+          let learned = false
+          try {
+            if (item.resolved) {
+              const info = await describeStream(item.url, { ...item.resolved, proxy: settings.proxy, signal: controller.signal })
+              if (info && !info.rejected) patch(item, (live) => {
+                learned = !!(info.duration || info.height || info.filesize || info.live === true)
+                live.duration = info.duration ?? live.duration
+                live.durationSource = info.durationSource || live.durationSource
+                live.height = info.height || live.height
+                if (info.filesize) { live.filesize = info.filesize; live.filesizeEstimated = !!info.filesizeEstimated; live.filesizeSource = info.filesizeSource || null }
+                if (info.sizes && Object.keys(info.sizes).length) live.sizes = info.sizes
+                if (info.subtitles?.length) live.subtitles = require('./text-tracks').mergeTextTracks(live.subtitles || [], info.subtitles)
+                if (info.audioTracks?.length) live.audioTracks = info.audioTracks
+                live.isLive = info.live ?? live.isLive ?? null
+                if (info.variants?.length) live.variants = info.variants.map((v) => v.height).filter(Boolean)
+                live.drm = !!info.drm
+                live.resolved.selectedVariantUrl = info.selectedVariantUrl || live.resolved.selectedVariantUrl
+                live.resolved.rejectedVariantUrls = info.rejectedVariantUrls || live.resolved.rejectedVariantUrls || []
+              })
+            }
+            if (active(item) && needsMetadata(item) && settings.useYtdlp !== false) {
+              const { json } = await runJson(item.url, ['-J', '--no-playlist', ...(item.resolved ? resolvedArgs(item.resolved) : [])],
+                { ...settings, cookiesBrowser: item.resolved ? '' : settings.cookiesBrowser })
+              patch(item, (live) => {
+                const sizes = sizesFromFormats(json)
+                const best = Object.values(sizes).filter(Number.isFinite).sort((a, b) => b - a)[0]
+                learned = learned || !!(json.duration || json.filesize || json.filesize_approx)
+                if (!live.resolved) live.title = json.title || live.title
+                if (num(json.duration) !== null) { live.duration = num(json.duration); live.durationSource = 'extractor' }
+                live.thumbnail = bestThumb(json) || live.thumbnail
+                live.uploader = json.uploader || json.channel || live.uploader
+                live.ext = json.ext || live.ext
+                live.height = heightOf(json) || live.height
+                const size = num(json.filesize) || num(json.filesize_approx) || best
+                if (size) { live.filesize = size; live.filesizeEstimated = !num(json.filesize); live.filesizeSource = 'extractor' }
+                if (Object.keys(sizes).length) live.sizes = sizes
+                if (typeof json.is_live === 'boolean') live.isLive = json.is_live
+                live.language = json.language || live.language
+                if (json.formats?.length) live.audioTracks = json.formats.filter((f) => f.acodec && f.acodec !== 'none').map((f) => ({ lang: f.language || '', name: f.format_note || '' }))
+                live.series = json.series || live.series
+                live.season = num(json.season_number) ?? live.season
+                live.episode = num(json.episode_number) ?? live.episode
+              })
+            }
+          } catch (err) {
+            if (!controller.signal.aborted) store.commit(() => diagnostics.addEvent(source, 'metadata', err.message, 'warn'))
+          } finally {
+            patch(item, (live) => {
+              live.enriched = true
+              live.metadataCheckedAt = Date.now()
+              live.metadataStatus = live.filesize && (live.duration || live.isLive === true) ? 'complete' : (learned || live.duration || live.filesize || live.height) ? 'partial' : 'unavailable'
+            })
+            finished += 1
+            if (metadataJobs.get(sourceId) === job && store.findSource(sourceId)) store.commit(() => { source.enriching = pending.length - finished })
+          }
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(3, pending.length) }, worker))
+      return true
+    } finally {
+      clearTimeout(timeout)
+      if (metadataJobs.get(sourceId) === job) {
+        metadataJobs.delete(sourceId)
+        if (store.findSource(sourceId)) store.commit(() => {
+          source.enriching = 0
+          if (source.status === 'ready') source.note = null
+          for (const item of pending) { const live = store.findItem(item.id); if (live?.metadataStatus === 'loading') live.metadataStatus = 'partial' }
+          diagnostics.addEvent(source, 'metadata', controller.signal.aborted ? 'Bilgi taraması durduruldu' : 'Bilgi taraması tamamlandı')
         })
       }
-    } catch {
-      /* fall through to yt-dlp */
     }
-
-    if (!filled && store.getState().settings.useYtdlp === false) {
-      // Nothing else to ask: with yt-dlp off, the manifest and ffprobe were the
-      // only sources. Mark it seen so the pass doesn't run again forever.
-      store.commit(() => {
-        const live = store.findItem(item.id)
-        if (live) live.enriched = true
-      })
-    } else if (!filled) {
-      const bare = { ...store.getState().settings, cookiesBrowser: '', proxy }
-      try {
-        const { json } = await runJson(
-          item.url,
-          ['-J', '--no-playlist', ...resolvedArgs(item.resolved)],
-          bare
-        )
-        store.commit(() => {
-          const live = store.findItem(item.id)
-          if (!live || !json) return
-          const sizes = sizesFromFormats(json)
-          live.duration = num(json.duration) ?? live.duration
-          live.height = heightOf(json) || live.height
-          live.filesize = num(json.filesize) || num(json.filesize_approx) || live.filesize
-          if (Object.keys(sizes).length) live.sizes = sizes
-          live.isLive = !!json.is_live
-          live.enriched = true
-        })
-      } catch {
-        store.commit(() => {
-          const live = store.findItem(item.id)
-          if (live) live.enriched = true
-        })
-      }
-    }
-
-    if (source) store.commit(() => { source.enriching = Math.max(0, source.enriching - 1) })
-  }
-
-  if (source) store.commit(() => { source.enriching = 0 })
+  })()
+  return job.promise
 }
 
-/** Fill in duration/thumbnail for entries the flat pass left blank. */
-async function enrich(sourceId, settingsOverride = null) {
-  const settings = settingsOverride || store.getState().settings
-  const limit = Math.max(0, Number(settings.enrichLimit) || 0)
-  if (!limit) return
-  const source = store.findSource(sourceId)
-  if (!source) return
-  const pending = store
-    .itemsOfSource(sourceId)
-    .filter((i) => !i.enriched && i.url)
-    .slice(0, limit)
-  if (!pending.length) return
-
-  store.commit(() => {
-    source.enriching = pending.length
-  })
-
-  const CONCURRENCY = 3
-  let cursor = 0
-
-  async function worker() {
-    while (cursor < pending.length) {
-      const item = pending[cursor++]
-      if (!store.findItem(item.id)) continue
-      try {
-        // Deliberately not --flat-playlist: --no-playlist already keeps this to
-        // the one video, and the flat pass suppresses the format list — which is
-        // the only place a size for each quality can come from.
-        const { json } = await runJson(item.url, ['-J', '--no-playlist'], settings)
-        store.commit(() => {
-          const live = store.findItem(item.id)
-          if (!live) return
-          const sizes = sizesFromFormats(json)
-          const heights = Object.keys(sizes)
-            .map(Number)
-            .filter((h) => Number.isFinite(h) && h > 0)
-          const best = heights.length ? sizes[Math.max(...heights)] : null
-          live.title = json.title || live.title
-          live.duration = num(json.duration) ?? live.duration
-          live.thumbnail = bestThumb(json) || live.thumbnail
-          live.uploader = json.uploader || json.channel || live.uploader
-          live.ext = json.ext || live.ext
-          live.height = heightOf(json) || live.height
-          live.filesize = num(json.filesize) || num(json.filesize_approx) || best || live.filesize
-          live.filesizeEstimated = !num(json.filesize) && !!(num(json.filesize_approx) || best)
-          if (Object.keys(sizes).length) live.sizes = sizes
-          live.isLive = !!json.is_live
-          live.language = json.language || live.language
-          live.audioTracks = (json.formats || []).filter((f) => f.acodec && f.acodec !== 'none').map((f) => ({ lang: f.language || '', name: f.format_note || '' }))
-          live.series = json.series || live.series
-          live.season = num(json.season_number) ?? live.season
-          live.episode = num(json.episode_number) ?? live.episode
-          live.site = siteLabel(json.webpage_url || live.url, json.extractor_key)
-          live.enriched = true
-        })
-      } catch {
-        store.commit(() => {
-          const live = store.findItem(item.id)
-          if (live) live.enriched = true // don't retry forever
-        })
-      }
-      const s = store.findSource(sourceId)
-      if (s) store.commit(() => { s.enriching = Math.max(0, pending.length - cursor) })
-    }
-  }
-
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker))
-  const s = store.findSource(sourceId)
-  if (s) store.commit(() => { s.enriching = 0 })
-}
+function refreshMetadata(sourceId) { return enrich(sourceId, null, { force: true }) }
 
 function cancelProbe(sourceId) {
+  metadataJobs.get(sourceId)?.controller.abort()
   controllers.get(sourceId)?.abort()
   controllers.delete(sourceId)
   const child = running.get(sourceId)
@@ -917,6 +918,7 @@ function cancelProbe(sourceId) {
 }
 
 function killAll() {
+  for (const job of metadataJobs.values()) job.controller.abort()
   for (const controller of controllers.values()) controller.abort()
   controllers.clear()
   for (const child of running.values()) {
@@ -939,47 +941,59 @@ async function captureSource(sourceId) {
   cancelProbe(sourceId)
   const controller = new AbortController()
   controllers.set(sourceId, controller)
+  const started = Date.now()
   const previousJar = store.itemsOfSource(source.id).find((item) => item.resolved?.cookieFile)?.resolved.cookieFile || null
-  const settings = { ...proxied(store.getState().settings, source), signal: controller.signal, browserCookieJar: previousJar }
-
   store.commit((s) => {
     source.status = 'probing'
-    source.stage = 'resolver'
-    source.note = 'tarayıcı penceresi açılıyor'
+    source.stage = source.useProxy ? 'network' : 'resolver'
+    source.note = 'Tarayıcı penceresi hazırlanıyor'
     source.error = null
+    source.attempts = (source.attempts || 0) + 1
+    diagnostics.addEvent(source, 'start', 'Tarayıcıda yakalama başladı')
     s.items = s.items.filter((i) => i.sourceId !== source.id)
+    source.count = 0
   })
-
-  let browserCookieJar = settings.browserCookieJar || null
-  if (settings.cookiesBrowser) {
-    browserCookieJar = await exportCookieJar(settings.cookiesBrowser).catch(() => null)
-  }
-
-  let result = null
   try {
-    result = await assistedCapture(source.url, {
-      browserCookieJar,
-      preferredAudioLanguage: settings.preferredAudioLanguage || 'en',
-      signal: controller.signal,
-      proxy: settings.proxy || '',
-      useUserScripts: settings.useUserScripts !== false,
-      blockRules: {
-        extraBlockedHosts: settings.extraBlockedHosts,
-        blockTrackers: settings.blockTrackers,
-      },
-      minStreamSeconds: settingNumber(settings.minStreamSeconds, 120),
-      timeoutMs: 300000,
-      onProgress: (message) => {
-        const live = store.findSource(sourceId)
-        if (live) store.commit(() => { live.note = message })
-      },
-    })
-  } catch (err) {
-    console.error('[assisted]', err)
-  }
+    const settings = { ...await sourceSettings(store.getState().settings, source, controller.signal), browserCookieJar: previousJar }
+    store.commit(() => { source.stage = 'resolver'; source.note = 'Tarayıcı penceresi açılıyor' })
 
-  if (!controller.signal.aborted && store.findSource(sourceId)) applyResolution(source, result, 'Pencere kapatıldı, akış yakalanmadı.')
-  if (controllers.get(sourceId) === controller) controllers.delete(sourceId)
+    let browserCookieJar = settings.browserCookieJar || null
+    if (settings.cookiesBrowser) {
+      browserCookieJar = await exportCookieJar(settings.cookiesBrowser).catch(() => null)
+    }
+
+    let result = null
+    try {
+      result = await assistedCapture(source.url, {
+        browserCookieJar,
+        preferredAudioLanguage: settings.preferredAudioLanguage || 'en',
+        signal: controller.signal,
+        proxy: settings.proxy || '',
+        useUserScripts: settings.useUserScripts !== false,
+        blockRules: {
+          extraBlockedHosts: settings.extraBlockedHosts,
+          blockTrackers: settings.blockTrackers,
+        },
+        minStreamSeconds: settingNumber(settings.minStreamSeconds, 120),
+        timeoutMs: 300000,
+        onProgress: (message) => {
+          const live = store.findSource(sourceId)
+          if (live && !settings.signal?.aborted) note(live, message)
+        },
+      })
+    } catch (err) {
+      console.error('[assisted]', err)
+    }
+
+    if (!controller.signal.aborted && store.findSource(sourceId)) applyResolution(source, result, 'Pencere kapatıldı, akış yakalanmadı.')
+  } catch (err) {
+    if (!controller.signal.aborted) store.commit(() => { source.status = 'error'; source.error = diagnostics.redact(err.message); source.stage = null; source.note = null; diagnostics.addEvent(source, 'error', err.message, 'error') })
+  } finally {
+    if (controllers.get(sourceId) === controller) {
+      store.commit(() => { source.elapsedMs = Date.now() - started })
+      controllers.delete(sourceId)
+    }
+  }
   return source
 }
 
@@ -988,6 +1002,8 @@ module.exports = {
   probeUrl,
   captureSource,
   cancelProbe,
+  refreshMetadata,
+  needsMetadata,
   killAll,
   readableError,
   itemFromNode, itemFromCandidate,

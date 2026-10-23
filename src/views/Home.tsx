@@ -4,7 +4,7 @@ import * as fmt from '../format'
 import { T } from '../strings'
 import { useFileThumb } from '../thumbs'
 import type { AppState, Download } from '../types'
-import { Btn, Empty, Icon, Menu, MenuItem, Modal } from '../components/ui'
+import { thumbnailForRoute, Btn, Empty, Icon, Menu, MenuItem, Modal } from '../components/ui'
 import SubtitlePicker from '../components/SubtitlePicker'
 
 /**
@@ -247,7 +247,7 @@ function Card({
   const pos = key ? positions[key] : undefined
   const done = !!(key && watched[key])
   const ratio = pos && pos.duration ? Math.min(1, pos.at / pos.duration) : done ? 1 : 0
-  const poster = local || (!remoteFailed ? d.thumbnail : null)
+  const poster = local || (!remoteFailed ? thumbnailForRoute(d.thumbnail, d.useProxy) : null)
 
   const play = () => api.playFile(d.filePath as string)
 

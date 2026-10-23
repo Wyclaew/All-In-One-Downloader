@@ -1,4 +1,4 @@
-export type SourceStatus = 'queued' | 'probing' | 'ready' | 'empty' | 'error'
+export type SourceStatus = 'queued' | 'probing' | 'ready' | 'empty' | 'error' | 'canceled'
 
 export interface Source {
   id: string
@@ -18,10 +18,14 @@ export interface Source {
   count: number
   enriching: number
   /** What the source is doing right now, and a human line about it. */
-  stage?: 'ytdlp' | 'resolver' | null
+  stage?: 'network' | 'ytdlp' | 'resolver' | null
   note?: string | null
   /** 'yt-dlp' | 'sayfa taraması' | 'tarayıcı motoru' */
   resolvedBy?: string | null
+  attempts?: number
+  elapsedMs?: number
+  network?: { kind: 'direct' | 'tor' | 'proxy'; isolated?: boolean; label?: string }
+  events?: { at: number; stage: string; message: string; level: string }[]
 }
 
 /** A stream our own resolver found, plus what yt-dlp needs to fetch it. */
@@ -33,6 +37,8 @@ export interface Resolved {
   cookieFile: string | null
   kind: 'hls' | 'dash' | 'file'
   engine?: string
+  selectedVariantUrl?: string | null
+  rejectedVariantUrls?: string[]
 }
 
 export interface MediaItem {
@@ -51,7 +57,11 @@ export interface MediaItem {
   filesizeEstimated?: boolean
   /** height -> bytes, plus an optional `audio` key. Answers per quality. */
   sizes?: Record<string, number>
-  isLive: boolean
+  isLive: boolean | null
+  durationSource?: string | null
+  filesizeSource?: string | null
+  metadataStatus?: 'loading' | 'complete' | 'partial' | 'unavailable'
+  metadataCheckedAt?: number
   site: string
   addedAt: number
   enriched: boolean
@@ -159,6 +169,8 @@ export interface Settings {
 
   proxyUrl: string
   proxyByDefault: boolean
+  autoStartTor: boolean
+  isolateTorSources: boolean
 
   useYtdlp: boolean
   useResolver: boolean
@@ -197,6 +209,7 @@ export interface TorStatus {
   /** Whether a tor binary exists on this machine at all. */
   available?: boolean
   hint?: string
+  activeSources?: number
 }
 
 /**
@@ -281,6 +294,9 @@ export interface VaultState {
   biometricAvailable?: boolean
   biometricEnabled?: boolean
   biometricReady?: boolean
+  biometricStatus?: 'checking' | 'available' | 'unsupported-platform' | 'helper-missing' | 'helper-error' | 'not-enrolled' | 'locked-out' | 'unavailable'
+  biometricReason?: string
+  biometricAction?: 'system-settings' | 'password' | 'retry' | null
   entries: VaultEntry[]
 }
 
@@ -333,6 +349,7 @@ export interface ProgressEvent {
 }
 
 export interface Tools {
+  ffprobe?: { path: string; version?: string | null } | null
   ytdlp: { path: string; version: string | null } | null
   ffmpeg: { path: string; version: string | null } | null
   platform: string

@@ -45,9 +45,10 @@ function defaultSettings() {
     // Minutes of inactivity before the vault locks itself. 0 = never.
     vaultAutoLockMinutes: 15,
 
-    // Per-link proxy. Empty disables it outright. The default address is where
-    // Cloudflare WARP listens in proxy mode (`warp-cli mode proxy`).
-    proxyUrl: 'socks5://127.0.0.1:40000',
+    // Selected only for links whose VPN switch is on. Tor starts on demand.
+    proxyUrl: 'socks5://127.0.0.1:9061',
+    autoStartTor: true,
+    isolateTorSources: true,
     // Whether the toggle beside the URL field starts switched on.
     proxyByDefault: false,
     // The app runs its own tor when this is on, so nobody has to keep a terminal
@@ -178,14 +179,20 @@ function init() {
     if (s.status === 'probing' || s.status === 'queued') {
       s.status = 'error'
       s.error = 'Çözümleme yarıda kaldı. Yeniden tara.'
+      s.stage = null
+      s.note = null
     }
+    delete s.network // A local Tor bridge never survives process restart.
     s.enriching = 0
   }
+  for (const item of state.items) if (item.metadataStatus === 'loading') item.metadataStatus = 'partial'
   for (const d of state.downloads) {
-    if (d.retryAt) { d.status = 'paused'; d.retryAt = null; d.note = 'Otomatik deneme uygulama kapanınca durduruldu; sürdürebilirsin.' }
+    if (d.retryAt) { d.status = 'paused'; d.stage = null; d.retryAt = null; d.speed = null; d.eta = null; d.note = 'Otomatik deneme uygulama kapanınca durduruldu; sürdürebilirsin.' }
     if (d.status === 'running') {
       d.status = 'paused'
       d.stage = null
+      d.speed = null
+      d.eta = null
     }
   }
   save()

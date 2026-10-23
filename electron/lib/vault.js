@@ -89,6 +89,7 @@ let migrating = null
 let thumbCache = new Map()
 let lockEpoch = 0
 let biometricBusy = false
+let biometricEnrollmentIssue = null
 
 /* ---- unlock throttling ---- */
 
@@ -575,6 +576,7 @@ const exists = () => !!readMeta()
 
 function status() {
   const meta = readMeta()
+  const biometric = biometrics.status()
   return {
     exists: !!meta,
     unlocked: isUnlocked(),
@@ -585,10 +587,20 @@ function status() {
     upgrading: isUnlocked() ? entries.filter((e) => e.k !== 2).length : 0,
     retryAfter: Math.max(0, Math.ceil((blockedUntil - Date.now()) / 1000)),
     strong: !!(meta && meta.version === 2),
-    biometricAvailable: biometrics.available(),
+    biometricAvailable: biometric.available,
+    biometricStatus: biometric.status,
+    biometricReason: biometric.available
+      ? (biometricEnrollmentIssue || (meta?.biometricEnabled && meta.legacy ? 'Kasayı şifrenle aç. Kasa yükseltmesi tamamlanınca Touch ID’yi yeniden etkinleştir.' : biometric.reason))
+      : biometric.reason,
+    biometricAction: biometric.action,
     biometricEnabled: !!meta?.biometricEnabled,
-    biometricReady: !!meta?.biometricEnabled && !legacy,
+    biometricReady: !!meta?.biometricEnabled && meta.version === 2 && !meta.legacy && !biometricEnrollmentIssue,
   }
+}
+
+async function refreshBiometricStatus() {
+  await biometrics.refresh()
+  return status()
 }
 
 function configure({ autoLockMinutes } = {}) {
@@ -669,7 +681,15 @@ function wrongPassphrase(cause) {
  * old index, then move to a random master key and the stronger KDF. The old key
  * survives only wrapped, until the last old blob has been converted.
  */
-async function upgradeFromV1(pass, meta) {
+function checkUnlockEpoch(epoch) {
+  if (lockEpoch !== epoch) {
+    const error = new Error('Kasa güvenlik nedeniyle kilitlendi. Yeniden açmayı dene.')
+    error.code = 'SESSION_CANCELED'
+    throw error
+  }
+}
+
+async function upgradeFromV1(pass, meta, epoch) {
   const salt = Buffer.from(meta.salt, 'base64')
   const kdf = meta.kdf || {}
   const old = await scrypt(pass, salt, {
@@ -679,9 +699,12 @@ async function upgradeFromV1(pass, meta) {
   })
   let list
   try {
+    checkUnlockEpoch(epoch)
     list = await loadIndexWith(old, legacyIndexFile())
+    checkUnlockEpoch(epoch)
   } catch (err) {
     old.fill(0)
+    if (err.code === 'SESSION_CANCELED') throw err
     throw wrongPassphrase(err)
   }
   master = crypto.randomBytes(KEY_LEN)
@@ -690,8 +713,11 @@ async function upgradeFromV1(pass, meta) {
   // The new index is written before the new meta, and the old index is removed
   // only after both: a crash at any point leaves one complete, openable vault.
   await saveIndex()
+  checkUnlockEpoch(epoch)
   await writeKeys(pass, { createdAt: meta.createdAt })
+  checkUnlockEpoch(epoch)
   await fsp.rm(legacyIndexFile(), { force: true })
+  checkUnlockEpoch(epoch)
 }
 
 async function unlock(passphrase) {
@@ -700,36 +726,54 @@ async function unlock(passphrase) {
   if (master) return status()
   throttle()
   const pass = String(passphrase || '')
+  const epoch = lockEpoch
 
   if (meta.version !== 2) {
-    await upgradeFromV1(pass, meta)
+    await upgradeFromV1(pass, meta, epoch)
+    await ensureDirs()
+    checkUnlockEpoch(epoch)
   } else {
+    let nextMaster = null
+    let nextLegacy = null
     const kek = await scrypt(pass, Buffer.from(meta.salt, 'base64'), {
       N: Number(meta.kdf && meta.kdf.N) || KDF_V2.N,
       r: Number(meta.kdf && meta.kdf.r) || KDF_V2.r,
       p: Number(meta.kdf && meta.kdf.p) || KDF_V2.p,
     })
     try {
-      master = openWith(kek, Buffer.from(meta.wrapped, 'base64'))
-      legacy = meta.legacy ? openWith(kek, Buffer.from(meta.legacy, 'base64')) : null
-    } catch (err) {
-      master = null
-      legacy = null
-      throw wrongPassphrase(err)
+      checkUnlockEpoch(epoch)
+      try {
+        nextMaster = openWith(kek, Buffer.from(meta.wrapped, 'base64'))
+        nextLegacy = meta.legacy ? openWith(kek, Buffer.from(meta.legacy, 'base64')) : null
+      } catch (err) {
+        throw wrongPassphrase(err)
+      }
+      let list
+      try {
+        list = await loadIndexWith(nextMaster, indexFile())
+      } catch (err) {
+        checkUnlockEpoch(epoch)
+        throw new Error(`Kasa dizini açılamadı: ${err.message}`)
+      }
+      await ensureDirs()
+      checkUnlockEpoch(epoch)
+      if (keyIdentity(readMeta()) !== keyIdentity(meta)) throw new Error('Kasa anahtarı değişti. Yeniden açmayı dene.')
+      // Keep candidate keys local until all asynchronous work is done. A lock
+      // during derivation or index reads must never establish a new session.
+      if (master) return status()
+      master = nextMaster; nextMaster = null
+      legacy = nextLegacy; nextLegacy = null
+      entries = list
     } finally {
       kek.fill(0)
-    }
-    try {
-      entries = await loadIndexWith(master, indexFile())
-    } catch (err) {
-      lock({ reason: 'quit' })
-      throw new Error(`Kasa dizini açılamadı: ${err.message}`)
+      nextMaster?.fill(0)
+      nextLegacy?.fill(0)
     }
   }
 
+  checkUnlockEpoch(epoch)
   failures = 0
   blockedUntil = 0
-  await ensureDirs()
   armAutoLock()
   migrateInBackground(pass)
   return status()
@@ -757,6 +801,7 @@ async function setBiometric(enabled) {
       }
     } else await biometrics.keychain('delete')
     await writeJsonAtomic(metaFile(), { ...readMeta(), biometricEnabled: !!enabled })
+    biometricEnrollmentIssue = null
     touch()
     return status()
   } finally { secret?.fill(0); biometricBusy = false }
@@ -766,26 +811,42 @@ async function unlockBiometric() {
   if (master) return status()
   if (biometricBusy) throw new Error('Bir Touch ID işlemi zaten sürüyor.')
   const meta = readMeta()
-  if (!meta?.biometricEnabled || meta.version !== 2) throw new Error('Önce şifrenle açıp Touch ID’yi etkinleştir.')
+  if (!meta?.biometricEnabled || meta.version !== 2 || meta.legacy) throw new Error('Önce şifrenle açıp Touch ID’yi etkinleştir.')
   biometricBusy = true
   const epoch = lockEpoch
   let secret = null
   let key = null
   try {
     secret = await biometrics.keychain('get')
-    const data = JSON.parse(secret.toString('utf8'))
-    if (data.identity !== keyIdentity(readMeta())) throw new Error('Kasa anahtarı değişmiş; şifrenle açıp Touch ID’yi yeniden etkinleştir.')
+    let data
+    try { data = JSON.parse(secret.toString('utf8')) } catch { throw biometricKeyError() }
+    if (data.version !== 1 || data.identity !== keyIdentity(readMeta())) throw biometricKeyError()
+    if (typeof data.key !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(data.key)) throw biometricKeyError()
     key = Buffer.from(data.key, 'base64')
-    if (key.length !== KEY_LEN) throw new Error('Touch ID anahtarı geçersiz.')
+    if (key.length !== KEY_LEN) throw biometricKeyError()
     const list = await loadIndexWith(key, indexFile())
     if (lockEpoch !== epoch) throw new Error('Kasa güvenlik nedeniyle kilitlendi. Yeniden açmayı dene.')
+    if (keyIdentity(readMeta()) !== keyIdentity(meta)) throw biometricKeyError()
+    // A password unlock can finish while macOS is showing Touch ID. Keep the
+    // established session and clear this extra copy instead of replacing it.
+    if (master) return status()
     master = key; key = null
     legacy = null
     entries = list
     failures = 0; blockedUntil = 0
+    biometricEnrollmentIssue = null
     armAutoLock()
     return status()
+  } catch (err) {
+    if (err.code === 'key-missing' || err.code === 'invalid-key') biometricEnrollmentIssue = err.message
+    throw err
   } finally { secret?.fill(0); key?.fill(0); biometricBusy = false }
+}
+
+function biometricKeyError() {
+  const error = new Error('Touch ID kaydı bu kasayla eşleşmiyor. Kasayı şifrenle açıp Touch ID’yi yeniden etkinleştir.')
+  error.code = 'invalid-key'
+  return error
 }
 
 /** Rewrap the master key under a new passphrase. The files themselves do not move. */
@@ -812,6 +873,7 @@ async function changePassphrase(current, next) {
   checkStrength(pass)
   if (meta.biometricEnabled) await biometrics.keychain('delete')
   await writeKeys(pass, { createdAt: meta.createdAt })
+  biometricEnrollmentIssue = null
   touch()
   return status()
 }
@@ -1068,7 +1130,7 @@ async function audit() {
 
 module.exports = {
   setBiometric, unlockBiometric,
-  status,
+  status, refreshBiometricStatus,
   create,
   unlock,
   lock,

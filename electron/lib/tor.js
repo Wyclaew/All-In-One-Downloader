@@ -24,16 +24,6 @@ const { locate, IS_WIN } = require('./binaries')
 
 const PORT_CANDIDATES = [9061, 9062, 9063, 9064, 9065]
 
-let child = null
-let status = { state: 'off', percent: 0, message: '', port: null, binary: null }
-let starting = null
-
-function publish(patch) {
-  status = { ...status, ...patch }
-  store.send('tor', status)
-  return status
-}
-
 /* -------------------------------------------------------------------------- */
 /* finding a binary                                                            */
 /* -------------------------------------------------------------------------- */
@@ -70,8 +60,8 @@ function bundledPaths() {
 }
 
 /** The tor we would run, or null. Settings win, then PATH, then Tor Browser. */
-function findBinary() {
-  const configured = String(store.getState().settings.torPath || '').trim()
+function findBinary(settings = store.getState().settings) {
+  const configured = String(settings.torPath || '').trim()
   if (configured && fs.existsSync(configured)) return configured
 
   const onPath = locate(IS_WIN ? 'tor.exe' : 'tor')
@@ -125,16 +115,12 @@ function dataDir() {
   return dir
 }
 
-/**
- * IsolateSOCKSAuth is what makes several connections worthwhile over Tor: each
- * distinct SOCKS username gets its own circuit, so the parts of a multi-part
- * download travel separately instead of queueing behind one another.
- */
+/** Each source bridge authenticates with its own random SOCKS identity. */
 function writeConfig(dir, port) {
   const file = path.join(dir, 'torrc')
   const lines = [
     `SocksPort 127.0.0.1:${port} IsolateSOCKSAuth KeepAliveIsolateSOCKSAuth`,
-    `DataDirectory ${dir}`,
+    `DataDirectory ${JSON.stringify(dir)}`,
     'ClientOnly 1',
     'AvoidDiskWrites 1',
     'Log notice stdout',
@@ -147,128 +133,198 @@ function writeConfig(dir, port) {
 /* running                                                                     */
 /* -------------------------------------------------------------------------- */
 
-const RE_BOOTSTRAP = /Bootstrapped (\d+)%(?:\s*\(([^)]*)\))?/
-
-function start() {
-  if (status.state === 'on' && child) return Promise.resolve(status)
-  if (starting) return starting
-
-  starting = (async () => {
-    const binary = findBinary()
-    if (!binary) {
-      publish({ state: 'error', percent: 0, message: `Tor bulunamadı. ${installHint()}`, binary: null })
-      throw new Error(status.message)
+/** A manager factory keeps lifecycle tests entirely away from the real daemon. */
+function createTorManager({
+  find = findBinary, freePort = pickPort, directory = dataDir, configure = writeConfig,
+  launch = spawn, stateStore = store, bootstrapTimeoutMs = 90000,
+  terminateTimeoutMs = 3000,
+} = {}) {
+  let child = null
+  let attempt = null
+  let retiring = null
+  let status = { state: 'off', percent: 0, message: '', port: null, binary: null }
+  const listeners = new Set()
+  const aborted = () => Object.assign(new Error('Tor bağlantısı iptal edildi.'), { code: 'ABORTED' })
+  function publish(patch) {
+    status = { ...status, ...patch }
+    stateStore.send('tor', status)
+    for (const listener of listeners) {
+      try { listener({ ...status }) } catch { /* progress must not break startup */ }
     }
-
-    const port = await pickPort()
-    const dir = dataDir()
-    const config = writeConfig(dir, port)
-
-    publish({ state: 'starting', percent: 0, message: 'Başlatılıyor…', port, binary })
-
-    return new Promise((resolve, reject) => {
-      let settled = false
-      const proc = spawn(binary, ['-f', config], { windowsHide: true })
-      child = proc
-
-      const fail = (message) => {
-        if (settled) return
-        settled = true
-        // Kill the process directly rather than going through stop(): stop()
-        // resets the status to "off" with an empty message, which would wipe the
-        // reason we are about to show the user.
-        killChild(proc)
-        if (child === proc) child = null
-        publish({ state: 'error', percent: 0, message })
-        reject(new Error(message))
+    return { ...status }
+  }
+  function retire(proc) {
+    if (!proc || proc.exitCode != null || proc.signalCode != null) return Promise.resolve()
+    if (retiring?.proc === proc) return retiring.promise
+    const entry = { proc, promise: null }
+    entry.promise = new Promise((resolve, reject) => {
+      let forceTimer, limitTimer
+      const done = () => {
+        clearTimeout(forceTimer); clearTimeout(limitTimer)
+        if (retiring === entry) retiring = null
+        resolve()
       }
-
-      // Bootstrapping over a slow line is normal; never finishing is not.
-      const timer = setTimeout(() => fail('Tor 90 saniyede bağlanamadı. Ağ engelli olabilir.'), 90000)
-
+      proc.once('close', done)
+      forceTimer = setTimeout(() => {
+        try { proc.kill('SIGKILL') } catch { /* already exited */ }
+        limitTimer = setTimeout(() => {
+          proc.removeListener('close', done)
+          // Keep this rejected retirement: starting another daemon over the same
+          // data directory while the previous process is alive is unsafe.
+          reject(new Error('Önceki Tor işlemi kapanmadı. Uygulamayı yeniden başlat.'))
+        }, 1000)
+        limitTimer.unref?.()
+      }, terminateTimeoutMs)
+      forceTimer.unref?.()
+      try { proc.kill('SIGTERM') } catch { done() }
+    })
+    retiring = entry
+    entry.promise.catch(() => {})
+    return entry.promise
+  }
+  function settle(current, error) {
+    if (current.settled) return
+    current.settled = true
+    clearTimeout(current.timer)
+    if (attempt === current) attempt = null
+    if (error) {
+      if (child === current.proc) child = null
+      if (current.proc) retire(current.proc)
+      current.reject(error)
+    } else current.resolve({ ...status })
+  }
+  function launchAttempt(settings) {
+    const current = { proc: null, settled: false, waiters: 0, timer: null }
+    current.promise = new Promise((resolve, reject) => { current.resolve = resolve; current.reject = reject })
+    // A stop may happen before a caller has attached its own waiter.
+    current.promise.catch(() => {})
+    attempt = current
+    publish({ state: 'starting', percent: 0, message: 'Başlatılıyor…', port: null })
+    ;(async () => {
+      if (retiring) await retiring.promise
+      if (current.settled) return
+      const binary = find(settings)
+      if (!binary) throw new Error(`Tor bulunamadı. ${installHint()}`)
+      const port = await freePort()
+      if (current.settled) return
+      const config = configure(directory(), port)
+      const proc = launch(binary, ['-f', config], { windowsHide: true })
+      current.proc = proc
+      child = proc
+      publish({ port, binary })
+      current.timer = setTimeout(() => {
+        if (current.settled) return
+        const error = new Error('Tor 90 saniyede bağlanamadı. Ağ engelli olabilir.')
+        publish({ state: 'error', percent: 0, message: error.message })
+        settle(current, error)
+      }, bootstrapTimeoutMs)
+      let buffer = ''
       const read = (chunk) => {
-        const text = String(chunk)
-        const match = RE_BOOTSTRAP.exec(text)
-        if (match) {
-          const percent = Number(match[1])
+        if (current.settled && child !== proc) return
+        buffer = (buffer + String(chunk)).slice(-8192)
+        if (/Could not bind|Address already in use/i.test(buffer) && !current.settled) {
+          const error = new Error('Tor portu kullanımda. Tekrar dene.')
+          publish({ state: 'error', percent: 0, message: error.message })
+          settle(current, error)
+          return
+        }
+        const matches = [...buffer.matchAll(/Bootstrapped (\d+)%(?:\s*\(([^)]*)\))?/g)]
+        const match = matches[matches.length - 1]
+        if (match && !current.settled) {
+          const percent = Math.min(100, Number(match[1]))
           publish({ percent, message: match[2] || `%${percent}` })
-          if (percent >= 100 && !settled) {
-            settled = true
-            clearTimeout(timer)
+          if (percent >= 100) {
             publish({ state: 'on', percent: 100, message: 'Bağlandı' })
-            store.commit((s) => {
-              s.settings.proxyUrl = `socks5://127.0.0.1:${port}`
-              s.settings.torAutoStart = true
-            })
-            store.toast(`Tor hazır — vekil adresi socks5://127.0.0.1:${port} olarak ayarlandı.`, 'ok')
-            resolve(status)
+            settle(current)
           }
         }
-        if (/Could not bind|Address already in use/i.test(text)) fail('Port kullanımda. Tekrar dene.')
       }
-
-      proc.stdout.on('data', read)
-      proc.stderr.on('data', read)
-      proc.on('error', (err) => {
-        clearTimeout(timer)
-        fail(`Tor başlatılamadı: ${err.message}`)
+      proc.stdout?.on('data', read)
+      proc.stderr?.on('data', read)
+      proc.on('error', (error) => {
+        if (current.settled || child !== proc) return
+        const failure = new Error(`Tor başlatılamadı: ${error.message}`)
+        publish({ state: 'error', percent: 0, message: failure.message })
+        settle(current, failure)
       })
       proc.on('close', (code) => {
-        clearTimeout(timer)
-        if (child === proc) child = null
-        if (!settled) return fail(`Tor beklenmedik şekilde kapandı (${code}).`)
-        // A tor that dies later still has to stop claiming it is connected.
-        if (status.state === 'on') publish({ state: 'off', percent: 0, message: 'Kapandı' })
+        if (child !== proc) return
+        child = null
+        const error = new Error(`Tor beklenmedik şekilde kapandı (${code}).`)
+        publish({ state: 'error', percent: 0, message: error.message })
+        if (!current.settled) settle(current, error)
       })
+    })().catch((error) => {
+      if (current.settled) return
+      publish({ state: 'error', percent: 0, message: error.message })
+      settle(current, error)
     })
-  })()
-
-  return starting.finally(() => {
-    starting = null
-  })
-}
-
-function killChild(proc) {
-  if (!proc) return
-  try {
-    proc.kill('SIGTERM')
-    // Tor closes its circuits on the way out; if it takes too long, insist.
-    const timer = setTimeout(() => {
-      try {
-        proc.kill('SIGKILL')
-      } catch {
-        /* already gone */
-      }
-    }, 3000)
-    if (timer.unref) timer.unref()
-  } catch {
-    /* already gone */
+    return current
   }
+  function ensureStarted({ settings = stateStore.getState().settings, signal, onProgress } = {}) {
+    if (signal?.aborted) return Promise.reject(aborted())
+    if (status.state === 'on' && child) {
+      try { onProgress?.({ ...status }) } catch {}
+      return Promise.resolve({ ...status })
+    }
+    const current = attempt || launchAttempt(settings)
+    current.waiters += 1
+    return new Promise((resolve, reject) => {
+      let finished = false
+      const done = (error, value) => {
+        if (finished) return
+        finished = true
+        signal?.removeEventListener('abort', cancel)
+        if (onProgress) listeners.delete(onProgress)
+        current.waiters -= 1
+        error ? reject(error) : resolve(value)
+      }
+      const cancel = () => {
+        done(aborted())
+        if (!current.settled && !current.waiters) {
+          settle(current, aborted())
+          publish({ state: 'off', percent: 0, message: '', port: null })
+        }
+      }
+      if (onProgress) {
+        listeners.add(onProgress)
+        try { onProgress({ ...status }) } catch {}
+      }
+      signal?.addEventListener('abort', cancel, { once: true })
+      current.promise.then((value) => done(null, value), (error) => done(error))
+      if (signal?.aborted) cancel()
+    })
+  }
+  async function start(options = {}) {
+    const ready = await ensureStarted(options)
+    stateStore.commit((state) => {
+      state.settings.torAutoStart = true
+      const selected = String(state.settings.proxyUrl || '').trim()
+      if (!selected || /^socks5h?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):906[1-5]\/?$/i.test(selected)) {
+        state.settings.proxyUrl = `socks5://127.0.0.1:${ready.port}`
+      }
+    })
+    return ready
+  }
+  function stop() {
+    const current = attempt
+    if (current) settle(current, aborted())
+    const proc = child
+    child = null
+    if (proc) retire(proc)
+    return publish({ state: 'off', percent: 0, message: '', port: null })
+  }
+  function stopAndForget() {
+    stateStore.commit((state) => { state.settings.torAutoStart = false })
+    return stop()
+  }
+  function restoreIfWanted() {
+    if (stateStore.getState().settings.torAutoStart) {
+      ensureStarted().catch((error) => console.error('[tor]', error.message))
+    }
+  }
+  function getStatus() { return { ...status, available: !!find(stateStore.getState().settings), hint: installHint() } }
+  return { start, ensureStarted, stop, stopAndForget, restoreIfWanted, getStatus }
 }
 
-function stop() {
-  const proc = child
-  child = null
-  killChild(proc)
-  if (status.state !== 'off') publish({ state: 'off', percent: 0, message: '' })
-  return status
-}
-
-/** Turning it off is a decision, so it survives a restart just as turning it on does. */
-function stopAndForget() {
-  store.commit((s) => {
-    s.settings.torAutoStart = false
-  })
-  return stop()
-}
-
-function restoreIfWanted() {
-  if (!store.getState().settings.torAutoStart) return
-  start().catch((err) => console.error('[tor]', err.message))
-}
-
-function getStatus() {
-  return { ...status, available: !!findBinary(), hint: installHint() }
-}
-
-module.exports = { start, stop, stopAndForget, restoreIfWanted, getStatus, findBinary }
+module.exports = { ...createTorManager(), findBinary, createTorManager }

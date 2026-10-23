@@ -40,6 +40,14 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
     { id: string; label: string; url: string; note: string; up: boolean }[] | null
   >(null)
 
+  useEffect(() => {
+    setProxyUrl(settings.proxyUrl || '')
+  }, [settings.proxyUrl])
+
+  useEffect(() => {
+    setProxyResult(null)
+  }, [proxyUrl])
+
   // Only offer browsers whose cookie store actually exists on this machine —
   // picking a missing one used to fail every request with a cryptic error.
   useEffect(() => {
@@ -62,6 +70,7 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
   }, [])
 
   const patch = (next: Partial<SettingsShape>) => api.updateSettings(next)
+  const managedTorSelected = !proxyUrl.trim() || /^socks(?:5h?)?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):906[1-5]\/?$/i.test(proxyUrl.trim())
 
   const updateEngine = async () => {
     setUpdating(true)
@@ -295,7 +304,9 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
                 className="input wide"
                 value={proxyUrl}
                 spellCheck={false}
-                placeholder="socks5://127.0.0.1:40000"
+                placeholder="socks5://127.0.0.1:9061"
+                aria-label="Vekil sunucu adresi"
+                autoComplete="off"
                 onChange={(e) => setProxyUrl(e.target.value)}
                 onBlur={() => patch({ proxyUrl: proxyUrl.trim() })}
               />
@@ -306,11 +317,15 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
                 disabled={checking || !proxyUrl.trim()}
                 onClick={async () => {
                   setChecking(true)
-                  const res = await api.checkProxy()
-                  setChecking(false)
-                  if (res) {
-                    setProxyResult(res.message)
-                    onToast(res.message, res.ok ? 'ok' : 'error')
+                  try {
+                    await patch({ proxyUrl: proxyUrl.trim() })
+                    const res = await api.checkProxy()
+                    if (res) {
+                      setProxyResult(res.message)
+                      onToast(res.message, res.ok ? 'ok' : 'error')
+                    }
+                  } finally {
+                    setChecking(false)
                   }
                 }}
               >
@@ -336,7 +351,38 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
                 </Btn>
               ))}
             </div>
-            <TorPanel onToast={onToast} />
+            <div className="tor-options">
+              <div>
+                <Toggle
+                  checked={settings.autoStartTor !== false}
+                  onChange={(v) => patch({ autoStartTor: v })}
+                  label="Gerektiğinde Tor’u otomatik başlat"
+                />
+                <p className="set-hint">
+                  VPN açık bir bağlantıyı çözümlerken uygulamanın Tor seçeneği kullanılıyorsa önce Tor’a bağlanılır.
+                  Özel vekil ve WARP seçimin korunur.
+                </p>
+              </div>
+              <div>
+                <Toggle
+                  checked={settings.isolateTorSources !== false}
+                  onChange={(v) => patch({ isolateTorSources: v })}
+                  label="Her kaynak için ayrı Tor oturumu kullan"
+                />
+                <p className="set-hint">
+                  Tor arka planda tek kez çalışır. Bu seçenek açıkken iki kaynak aynı Tor devrelerini paylaşmaz;
+                  aynı kaynağın çözümlemesi ve indirmesi birlikte kalır.
+                </p>
+              </div>
+              <p className="set-hint">
+                Ayrı oturumlar farklı çıkış adresi veya daha fazla hız garantilemez. Tor genellikle daha yavaştır.
+              </p>
+              <TorPanel
+                onToast={onToast}
+                autoStart={settings.autoStartTor !== false}
+                managedSelected={managedTorSelected}
+              />
+            </div>
             <Toggle
               checked={!!settings.proxyByDefault}
               onChange={(v) => patch({ proxyByDefault: v })}
@@ -644,6 +690,14 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
           okLabel={T.settings.ffmpegFound}
           missingLabel={T.settings.ffmpegMissing}
         />
+        <ToolLine
+          name="ffprobe"
+          ok={!!tools?.ffprobe}
+          version={tools?.ffprobe?.version || null}
+          path={tools?.ffprobe?.path || null}
+          okLabel="Medya bilgisi aracı hazır"
+          missingLabel="Bulunamadı — bazı videoların süre, boyut ve ses bilgisi eksik kalabilir. FFmpeg ile birlikte kurulur."
+        />
 
         <p className="set-hint" style={{ marginTop: 10 }}>
           {T.settings.toolsHint} <code className="mono">{tools?.installHint || 'brew install yt-dlp ffmpeg'}</code>
@@ -713,20 +767,32 @@ function Row({
  * Tor, started and stopped from here.
  *
  * The point is that nobody has to keep a terminal open: the app runs its own tor
- * on its own port, sets the proxy address to match, and takes it down on quit. If
+ * on its own port and takes it down on quit. Custom proxy choices are preserved. If
  * no tor binary exists on the machine we say exactly that and how to get one,
  * rather than offering a switch that cannot do anything.
  */
-function TorPanel({ onToast }: { onToast: (message: string, kind?: 'info' | 'warn' | 'error' | 'ok') => void }) {
+function TorPanel({ onToast, autoStart, managedSelected }: {
+  onToast: (message: string, kind?: 'info' | 'warn' | 'error' | 'ok') => void
+  autoStart: boolean
+  managedSelected: boolean
+}) {
   const [tor, setTor] = useState<TorStatus | null>(null)
   const [working, setWorking] = useState(false)
 
   useEffect(() => {
     let alive = true
-    api.torStatus().then((s) => alive && s && setTor(s))
+    let receivedEvent = false
+    api.torStatus().then((s) => {
+      if (alive && s) setTor((previous) => receivedEvent && previous
+        ? { ...s, ...previous, available: s.available, hint: s.hint }
+        : s)
+    })
     // Bootstrapping reports its progress as it goes, so the button is not the
     // only thing the user has to look at while it takes half a minute.
-    const off = bridge.onTor((s) => setTor((prev) => ({ ...(prev || s), ...s })))
+    const off = bridge.onTor((s) => {
+      receivedEvent = true
+      setTor((prev) => ({ ...(prev || s), ...s }))
+    })
     return () => {
       alive = false
       off()
@@ -738,44 +804,52 @@ function TorPanel({ onToast }: { onToast: (message: string, kind?: 'info' | 'war
   const on = tor.state === 'on'
   const starting = tor.state === 'starting'
   const line = on
-    ? `Açık — socks5://127.0.0.1:${tor.port}`
+    ? 'Tor bağlı. VPN açık kaynaklar seçilen vekil üzerinden aktarılır.'
     : starting
       ? `Bağlanıyor… %${tor.percent}${tor.message ? ` — ${tor.message}` : ''}`
       : tor.state === 'error'
         ? tor.message
         : tor.available
-          ? 'Kapalı. Açtığında vekil adresi kendiliğinden ayarlanır.'
+          ? managedSelected && autoStart
+            ? 'Hazır. VPN açık ilk Tor bağlantısını eklediğinde otomatik bağlanır.'
+            : managedSelected
+              ? 'Tor kapalı. Otomatik başlatma kapalıyken bağlantı eklemeden önce Tor’u başlat.'
+              : 'Tor kapalı. Seçili özel vekil için Tor başlatılmaz.'
           : `Bu makinede tor yok. ${tor.hint || ''}`
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div className="tor-status">
       <div className="set-inline">
         <Btn
           size="sm"
           icon={on ? 'check' : 'shield'}
           variant={on ? 'default' : 'ghost'}
           spinning={working || starting}
-          disabled={working || starting || (!tor.available && !on)}
+          disabled={(working && !starting) || (!tor.available && !on && !starting)}
           onClick={async () => {
             setWorking(true)
-            const next = on ? await api.torStop() : await api.torStart()
-            setWorking(false)
-            if (next) setTor(next)
-            if (!on && next && next.state !== 'on') onToast(next.message || 'Tor açılamadı.', 'error')
+            try {
+              const stopping = on || starting
+              const next = stopping ? await api.torStop() : await api.torStart()
+              if (next) setTor(next)
+              if (!stopping && next && next.state !== 'on') onToast(next.message || 'Tor açılamadı.', 'error')
+            } finally {
+              setWorking(false)
+            }
           }}
         >
-          {on ? "Tor'u kapat" : starting ? 'Bağlanıyor…' : "Tor'u arka planda başlat"}
+          {on ? "Tor'u kapat" : starting ? 'Bağlanmayı durdur' : "Tor'u arka planda başlat"}
         </Btn>
         {tor.binary ? (
           <span className="mono dim" style={{ fontSize: 11 }} title={tor.binary}>
-            {tor.binary.split('/').slice(-3).join('/')}
+            {tor.binary.split(/[\\/]/).slice(-1)[0]}
           </span>
         ) : null}
       </div>
-      <div className="set-hint" style={{ marginTop: 0, color: on ? 'var(--ok, #5c9c74)' : undefined }}>
+      <div className="set-hint" role="status" style={{ marginTop: 0, color: on ? 'var(--ok, #5c9c74)' : undefined }}>
         {line}
       </div>
-      <div className="set-hint" style={{ marginTop: 0 }}>{T.settings.proxyTor}</div>
+      {on && !managedSelected ? <div className="set-hint">Tor açık; bağlantılar seçili özel vekili kullanmaya devam eder.</div> : null}
     </div>
   )
 }

@@ -320,7 +320,7 @@ export const T = {
     title: 'Şifreli kasa',
     setupTitle: 'Şifreli kasa kur',
     setupBody:
-      'Kasaya attığın videolar diskte şifreli durur: dosya adları rastgele kimliklere döner, içerikleri okunamaz. Sadece burada, şifreni girerek açabilirsin.',
+      'Kasaya attığın videoların içerikleri ve gerçek dosya adları diskte şifreli durur. Kasayı şifrenle veya bu Mac’te etkinleştirdiğin Touch ID ile açabilirsin.',
     passphrase: 'Şifre',
     passphraseAgain: 'Şifre (yeniden)',
     tooShort: 'En az 8 karakter.',
@@ -333,11 +333,11 @@ export const T = {
     retry: (n: number) => `Çok fazla yanlış deneme — ${n} sn sonra tekrar dene.`,
     mismatch: 'İki şifre aynı değil.',
     noRecovery:
-      'Bu şifrenin bir kopyası hiçbir yerde tutulmuyor. Unutursan kasadaki dosyalar kurtarılamaz — kurtarma yolu bırakmak, şifreyi baştan anlamsız kılardı.',
+      'Kasa şifrenin bir kopyası tutulmaz. Touch ID kullansan da şifreni güvenli bir yerde sakla. Şifreni unutur ve Touch ID erişimini kaybedersen dosyaların kurtarılamaz.',
     create: 'Kasayı kur',
     created: 'Kasa kuruldu.',
     lockedTitle: 'Kasa kilitli',
-    lockedBody: 'Şifreni gir; kasadaki dosyaların listesi ancak açıkken görünür.',
+    lockedBody: 'Kasa şifrenle veya etkinleştirdiğin Touch ID ile aç. Dosyaların listesi yalnızca kasa açıkken görünür.',
     unlock: 'Kilidi aç',
     unlocked: 'Kasa açıldı.',
     lock: 'Kilitle',
@@ -365,7 +365,8 @@ export const T = {
     how: [
       'Her dosya 1 MB\'lık parçalara bölünüp her parça ayrı AES-256-GCM mesajı olarak şifrelenir. Parça sırası, dosya boyutu ve "son parça" işareti her parçanın doğrulamasına bağlıdır: tek bir bayt değiştirmek, parçaların yerini değiştirmek ya da dosyayı kısaltmak açılmasını engeller.',
       'Oynatırken diske hiçbir şifresiz kopya yazılmaz. Oynatıcı yalnızca izlediğin aralığı ister; o parçalar bellekte çözülür ve atılır. Uygulama çökse bile geride okunabilir bir dosya kalmaz.',
-      'Dosyaları rastgele bir 256 bitlik ana anahtar şifreler. Bu anahtar diskte yalnızca şifrenden türetilen anahtarla sarılmış hâlde durur. Türetme scrypt ile yapılır (N=131072, r=8): her deneme yaklaşık 128 MB bellek ve yarım saniye ister — milyonlarca şifre denemeyi pratikte imkânsız kılar.',
+      'Dosyaları rastgele bir 256 bitlik ana anahtar şifreler. Kasa klasöründe bu anahtar yalnızca şifrenden türetilen anahtarla sarılmış hâlde durur. Türetme scrypt ile yapılır (N=131072, r=8): her deneme yaklaşık 128 MB bellek kullanır.',
+      'Touch ID’yi etkinleştirirsen ana anahtarın ek bir kopyası yalnızca bu cihaza bağlı macOS Anahtar Zinciri’nde, mevcut parmak izlerinle korunur. Parmak izlerini değiştirmek veya kasa şifresini değiştirmek yeniden kurulum gerektirebilir. Kasa şifren kaydedilmez.',
       'Şifre hiçbir yerde, özet olarak bile, saklanmaz. Yanlış şifre, ana anahtarın kilidinin doğrulamada düşmesinden anlaşılır. Üç yanlış denemeden sonra uygulama giderek uzayan süreler bekletir.',
       'Dosya adları diskte rastgele kimliklerdir. Gerçek adlar, başlıklar, boyutlar ve kapak kareleri yalnızca şifreli dizinde ve şifreli bloklarda durur. Kasaya taşınan bir videonun kitaplıktaki kaydı, kapak karesi, altyazıları, izleme geçmişi ve tarayıcı önbelleğindeki kapağı da silinir.',
       'Kasa boşta kaldığında, bilgisayar uykuya geçtiğinde ve ekran kilitlendiğinde kendiliğinden kilitlenir. Kilitlenince bellekteki anahtarların üzerine sıfır yazılır ve kasa oynatıcıları kapanır.',

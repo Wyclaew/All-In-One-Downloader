@@ -64,7 +64,7 @@ app.whenReady().then(async () => {
       fs.rmSync(sampleDir, { recursive: true, force: true })
     }
     console.log(JSON.stringify({ url, sampleOk, sampleBytes, sampleDuration, subtitleProbe, sampleError, sampleEngine: ownSample ? 'own HLS HTTP + local FFmpeg mux' : sample ? 'yt-dlp native HLS test' : null, ms: Date.now() - start, engine: result.engine,
-      candidates: result.candidates?.map((c) => ({ host: new URL(c.url).hostname, kind: c.kind, duration: c.info?.duration, audioLanguages: (c.info?.audioTracks || []).map((t) => t.lang), subtitles: [...(c.info?.subtitles || []), ...(c.subtitles || [])].map((t) => t.lang) })),
+      candidates: result.candidates?.map((c) => ({ host: new URL(c.url).hostname, kind: c.kind, duration: c.info?.duration, durationSource: c.info?.durationSource, filesize: c.info?.filesize, filesizeEstimated: c.info?.filesizeEstimated, filesizeSource: c.info?.filesizeSource, audioLanguages: (c.info?.audioTracks || []).map((t) => t.lang), subtitles: [...(c.info?.subtitles || []), ...(c.subtitles || [])].map((t) => t.lang) })),
       accessRequired: result.accessRequired, challengeRequired: result.challengeRequired, failure: result.failure, loadError: result.loadError }))
   }
 }).catch((err) => { console.error(err); process.exitCode = 1 }).finally(() => {

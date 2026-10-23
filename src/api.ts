@@ -35,6 +35,11 @@ interface Bridge {
   toggleSource(id: string, collapsed?: boolean): Promise<Result<boolean>>
   rescanSource(id: string): Promise<Result<boolean>>
   captureSource(id: string): Promise<Result<boolean>>
+  cancelSource(id: string): Promise<Result<boolean>>
+  refreshSourceMetadata(id: string): Promise<Result<boolean>>
+  sourceDiagnostics(id: string): Promise<Result<string>>
+  retryFailedSources(): Promise<Result<number>>
+  cancelAllSources(): Promise<Result<number>>
   openSource(id: string): Promise<Result<boolean>>
   downloadSource(payload: {
     sourceId: string
@@ -80,6 +85,7 @@ interface Bridge {
   vaultUnlock(passphrase: string): Promise<Result<VaultState>>
   vaultSetBiometric(enabled: boolean): Promise<Result<VaultState>>
   vaultUnlockBiometric(): Promise<Result<VaultState>>
+  openTouchIdSettings(): Promise<Result<boolean>>
   vaultLock(): Promise<Result<VaultState>>
   vaultChangePassphrase(current: string, next: string): Promise<Result<VaultState>>
   vaultTakeDownload(id: string): Promise<Result<VaultEntry>>
@@ -162,6 +168,11 @@ export const api = {
   toggleSource: (id: string, collapsed?: boolean) => call(bridge.toggleSource(id, collapsed)),
   rescanSource: (id: string) => call(bridge.rescanSource(id)),
   captureSource: (id: string) => call(bridge.captureSource(id)),
+  cancelSource: (id: string) => call(bridge.cancelSource(id)),
+  refreshSourceMetadata: (id: string) => call(bridge.refreshSourceMetadata(id)),
+  sourceDiagnostics: (id: string) => call(bridge.sourceDiagnostics(id)),
+  retryFailedSources: () => call(bridge.retryFailedSources()),
+  cancelAllSources: () => call(bridge.cancelAllSources()),
   openSource: (id: string) => call(bridge.openSource(id)),
   downloadSource: (sourceId: string, opts: { quality?: number; audioOnly?: boolean; categoryId?: string | null } = {}) =>
     call(bridge.downloadSource({ sourceId, ...opts })),
@@ -211,6 +222,7 @@ export const api = {
   vaultUnlock: (passphrase: string) => call(bridge.vaultUnlock(passphrase)),
   vaultSetBiometric: (enabled: boolean) => call(bridge.vaultSetBiometric(enabled)),
   vaultUnlockBiometric: () => call(bridge.vaultUnlockBiometric()),
+  openTouchIdSettings: () => call(bridge.openTouchIdSettings()),
   vaultLock: () => call(bridge.vaultLock()),
   vaultChangePassphrase: (current: string, next: string) => call(bridge.vaultChangePassphrase(current, next)),
   vaultTakeDownload: (id: string) => call(bridge.vaultTakeDownload(id)),

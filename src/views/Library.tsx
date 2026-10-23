@@ -4,7 +4,7 @@ import * as fmt from '../format'
 import { describe } from '../quality'
 import { T } from '../strings'
 import type { AppState, Category, Download, Outlook } from '../types'
-import { Btn, Chip, Empty, Icon, IconBtn, Menu, MenuItem, Meter, Modal, Thumb } from '../components/ui'
+import { thumbnailForRoute, Btn, Chip, Empty, Icon, IconBtn, Menu, MenuItem, Meter, Modal, Thumb } from '../components/ui'
 import SubtitlePicker from '../components/SubtitlePicker'
 import { useFileThumb } from '../thumbs'
 
@@ -415,7 +415,7 @@ function Row({
         onClick={onRowClick}
         title={playable && !selecting ? T.library.play : undefined}
       >
-        <Thumb src={localThumb || d.thumbnail} duration={fmt.duration(d.duration)} audio={d.audioOnly} />
+        <Thumb src={localThumb || thumbnailForRoute(d.thumbnail, d.useProxy)} duration={fmt.duration(d.duration)} audio={d.audioOnly} />
       </div>
 
       <div className="dl-ident">

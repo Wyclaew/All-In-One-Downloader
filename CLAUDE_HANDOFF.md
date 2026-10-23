@@ -1,4 +1,180 @@
-# Claude için devir notu — All in One Downloader 0.13.0
+# Claude için devir notu — All in One Downloader 0.14.0
+
+Son güncelleme: 23 Ekim 2026. Kullanıcının en son istediği genel mimari taraması,
+otomatik Tor/ayrı kaynak oturumları, metadata ve görünür Touch ID geliştirmeleri
+uygulandı. Yayın doğrulama kaydı aşağıda tamamlanır. Kullanıcının gerçek
+kitaplığı, kasa dosyaları ve tarayıcı çerezleri testlerde kullanılmadı.
+
+- Plan: [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) — 21 uygulanmış geliştirme,
+  bütün ana katmanların taraması ve 40’tan fazla öncelikli sonraki iş.
+- Sürüm: `0.14.0`; yayın hedefi
+  [v0.14.0](https://github.com/Wyclaew/All-In-One-Downloader/releases/tag/v0.14.0).
+- Yerel Apple Silicon paket: `release/mac-arm64/All in One Downloader.app`.
+- Eski 0.13.0 yayın/test kaydı bu belgenin altındadır; aşağıdaki yeni sonuçların
+  yerine eski 55 test sayısı kullanılmamalı.
+
+## 0.14.0 ağ yaşam döngüsü
+
+- Yeni `network-context.js`: `ensureForSource(id,{settings,signal,onProgress})`
+  etkin vekil adresini verir. `getContext` yalnızca güvenli tür/etiket döndürür;
+  `releaseSource` ve `shutdown` kendi köprülerini kapatır.
+- Boş adres veya uygulamanın SOCKS5 loopback9061–9065 seçimi yönetilen Tor’dur.
+  Harici9050/9150, WARP40000 ve özel vekil ayrı kalır. Yeni kurulum9061;
+  var olan kullanıcının özel adresi üzerine yazılmaz.
+- `autoStartTor` ve `isolateTorSources` varsayılan true. Eski `torAutoStart`
+  açılışta hatırlanan çalışma tercihi içindir; isteğe bağlı başlatma onu
+  değiştirmez. Tor kurulu değilse kurulum mesajı gelir, doğrudan ağa geçilmez.
+- Chromium SOCKS kullanıcı/parola doğrulamadığı için kaynak başına kimliği gizli
+  bir loopback köprüsü ekler. Köprü, Tor’a kaynak başına rastgele ve sabit
+  SOCKS kimliğiyle gider. `IsolateSOCKSAuth KeepAliveIsolateSOCKSAuth` kullanılır.
+  Tek Tor daemon’u vardır. Tarayıcı/Node/yt-dlp aynı kaynağın kimliğini kullanır;
+  parçaları ayrı devrelere dağıtmak IP’ye bağlı imzalı adresleri bozabileceği
+  için yapılmaz. Farklı çıkış IP’si veya hız artışı garantisi yoktur.
+- Eşzamanlı başlatanlar ortak açılışı paylaşır; bir bekleyenin iptali diğerini
+  kesmez. Son bekleyen, geç gelen process ve timeout durumları test edildi.
+  Sınırlar64 kaynak/128 bağlantı-kaynak/512 toplam socket. Kimlikler runtime’dır.
+- `probe`, metadata, `startOwn`, `startYtdlp`, kurtarma ve **pendingFilePath son
+  işlem devamı** etkin adresi hazırlar. Uygulama yeniden açılıp kimlik değişirse
+  çözülmüş sayfa akışı indirmeden önce yenilenir.
+- Tor’u kapatmak yalnızca Tor’u kullanan işleri durdurur/duraklatır; özel vekil
+  işleri etkilenmez. Kaynak silinince köprüsü kaldırılır, sıradan iptal mevcut
+  indirmeyle paylaşılan kimliği silmez. Çıkışta bütün kendi köprüleri kapanır.
+- VPN’li kaynak/indirme kapakları renderer’ın doğrudan oturumunda yüklenmez.
+  Yerel dosya karesi/data görseli kullanılabilir; ağdan vekilli kapak önbelleği
+  henüz eklenmedi. Bu, medya akışı dışında fark edilen ağ sızıntısını kapatır.
+
+## Metadata ve kaynak araçları
+
+- `mediainfo`: scoped, yönlendirme başına çerez hesaplayan ve sadece başlık
+  okuyan dosya incelemesi; HEAD reddinde bir byte GET. Yanıt gövdesi indirilmez.
+- HLS süreleri gerçek segmentlerle, fractional EXTINF ve tamamlanmış playlist
+  kontrolüyle; DASH süreleri bounded XML ağacı, namespace, inheritance, dönem
+  sınırları ve finite timeline üzerinden çıkarılır. Bozuk XML, geçersiz
+  timescale ve sahte LL-HLS PART metadata üretmez. Canlı/unknown ayrılır.
+- HLS boyutu average bitrate, bütün bayt aralıkları veya en çok3 segment
+  başlığından; DASH boyutu süre+uygun bitrate’ten tahmin edilir. Mux çıktısı
+  farklı olabileceği için segment tahminleri kesin dosya boyutu sayılmaz.
+- En yüksek varyant kesin bozuksa çalışan alt varyant doğrulanır. `selectedVariantUrl`
+  ve bounded `rejectedVariantUrls` medya/indirme boyunca taşınır; `pickVariant`
+  doğrulamada reddedileni tekrar seçmez. Test edilmemiş kaliteler korunur.
+- Gerçek HTMLMediaElement metadata’sı yüklediği kaynakla ilişkilendirilir.
+  `durationSource`: manifest/player/probe/extractor; `filesizeSource`:
+  content-length/probe/manifest-bitrate/segment-sample/byte-ranges/probe-bitrate/extractor.
+  `isLive` null olabilir. Bilinmeyen süre false/0’a çevrilmez.
+- Metadata işleri ayrı AbortController ve en çok3 işçi/180sn/200öğe sınırı
+  kullanır. Otomatik eksik tarama limiti ayarlıdır; kısmi sonuçlar15dk içinde
+  otomatik tekrarlanmaz, elle tekrar mümkün. Eski iptal edilmiş iş, yeni işin
+  güncellemesini/bitirme durumunu ezemez. Medya kimliği değiştirilmez.
+- Kaynak IPC: cancel, cancelAll, retryFailed, metadata, diagnostics. Rescan ve
+  assisted capture ortak çözümleme kuyruğuna girer. Silinmiş/iptal edilmiş
+  kuyruk girdileri çalışmaz; iptalden sonra gerçek öğe sayısı hesaplanır.
+- Sources ekranı toplu/per-source araçlar, ağ etiketi, network notu, eksik bilgi
+  sayısı ve rapor modalı içerir. İç kontrolün klavye olayı grup başlığını açmaz.
+- `diagnostics.js` en çok60 olay tutar. Paylaşılabilir raporda URL yolu/query,
+  HTTP/SOCKS kimlikleri, Cookie/Authorization ve token’lar temizlenir. Tam
+  medya URL’si, çerez dosyası ve kasa anahtarı rapora konmaz.
+- Yeniden başlatmada ölmüş ağ etiketi, yarım metadata yüklemesi, eski hız/ETA
+  temizlenir. Araçlar ekranında ffprobe görünür.
+
+## Altyazı, çerez ve kasa düzeltmeleri
+
+- `subtitle-fetch.js`: scoped HTTP + seçili vekille doğrudan VTT/SRT/ASS veya
+  sınırlı HLS WebVTT önce özel yerel dosyalara alınır. FFmpeg sadece `file`
+  protokolüyle dönüştürür; uzak URL/çerez başlığı FFmpeg’e verilmez. Toplam16MiB,
+  30sn, en çok2000segment/4işçi sınırları ve exclusive dosya oluşturma var.
+- `allowed_extensions` yalnızca yerel HLS girdisinde verilir; düz VTT/SRT
+  demuxer’ına HLS seçeneği gönderilmez. Generic binary CDN MIME, içerik geçerli
+  metin altyazısıysa kabul edilir. Canlı/encrypted/range/fMP4 altyazı türleri
+  açıkça reddedilir; hatalı kaynak gömülmüş altyazı diye raporlanmaz.
+- Cookie jar’lı uzak ffprobe atlanır. Desteklenmeyen uzak FFmpeg aktarımında
+  jar varsa güvenli biçimde hata verilir; native scoped HLS veya yt-dlp
+  kullanılmalıdır. FFmpeg’in global Cookie header’ı yönlendirme/alt manifestte
+  host-only/Secure/path kapsamını güvenle koruyamıyor; `-cookies` sürümler
+  arasında güvenilir host-only eşdeğeri varsayılmadı. Yerel mux etkilenmez.
+- ownengine dosya/probe isteklerinde **aynı hostun farklı yoluna yönlendirmede
+  de** Cookie yeniden hesaplanır. Header bekleyen dosya probe’u iptal edilir.
+- `browsers.exportCookieJar` artık örnek internet isteği göndermez. Yerel boş
+  playlist + `--load-info-json --no-clean-info-json --skip-download` kullanır.
+  mkdtemp0700, baştan0600 dosyalar, tarayıcı argümanı başına cache/tek in-flight
+  export ve hata temizliği var. Eski verilen jar’lar aktif iş referansı
+  kaybolabileceği için TTL’de silinmez; referanslı yaşam döngüsü sonraki iştir.
+- Vault’un kilitli/açık/ilk kurulum ekranında kalıcı Touch ID paneli var.
+  Native LAContext durumları sensör/kayıt/lockout/helper sorununu açıklar;
+  sabit güvenli macOS Touch ID ayarı bağlantısı ve durum yenileme bulunur.
+  İlk kayıt için şifreyle açmak gerekir. Keychain anahtarı eskimiş/kayıpsa
+  yeniden kayıt yolu gösterilir. Native Keychain koruma bayrakları aynı kaldı.
+- Şifre türetme ve indeks yükleme sırasında candidate anahtar oturuma
+  atanmaz; epoch kontrolü uyku/kilit sonrası eski şifre işleminin kasayı
+  tekrar açmasını önler. Biyometrik key identity/epoch kontrolleri korunur.
+
+## Doğrulama — 0.14.0
+
+- Son tam yerel tur: **128/128 geçti, 0 skip**, yaklaşık6.1sn. Gerçek araçlarla
+  şifreli/plain HLS, byte-range/resume, ses seçimi, kaynak kurtarma ve **Türkçe
+  altyazının bitmiş MP4’e gerçekten gömülmesi** test edildi. Önceki ara turlarda
+  yeni caption fixture’ın Electron shim/MIME kurulum hataları düzeltildi.
+- `postprocessing-route.test`: var olan dosyanın son işlemi sürdürülürken Tor
+  yolu hazırlanır ve altyazı aynı kaynağın proxy adresini alır.
+- Gerçek yt-dlp2026.08.19, sentetik Firefox SQLite profili ve yasaklanmış
+  DNS/socket ile çevrimdışı export yaptı; **0 ağ isteği**. Gerçek kullanıcı
+  tarayıcı çerezi/Keychain girdisi okunmadı.
+- Gerçek Tor0.4.9.11 + Chromium: `tests/manual/tor-smoke.js` son tur71.7sn;
+  tek daemon, iki farklı SOCKS kimliği, Node ve Chromium’un aynı kaynak
+  kimliklerini paylaşması, ikisinin Tor Project API’de IsTor=true alması,
+  kendi daemon’unun kapanması ve geçici profil temizliği geçti. Çıkış IP’leri
+  yazdırılmadı; farklı IP veya hız ölçümü yapıldı sayılmaz.
+- `tests/manual/source-lifecycle.js`: gerçek main IPC + renderer bridge ile
+  kuyruktaki işin iptali sonrası istek gitmemesi, toplu retry/stop, metadata
+  kimliği korunması ve temizlenmiş rapor geçti.
+- Gerçek Chromium controlled resolver suite: POST/nested/state/alternatif
+  oynatıcı, cookie’li MP4 için player duration/exact size, HTML/404 reddi,
+  gizlenmiş DASH DRM, stalled manifest sınırı ve oturum reuse temizliği geçti.
+- Verilen canlı iki URL’de yeniden kısa örnek: Dizibox3.244.677bayt/6.089389sn
+  (14.8sn toplam), Hdfilmcehennemi4.131.693bayt/15.014989sn (31.3sn toplam).
+  Bölüm süresi yaklaşık3635sn bulundu. Hdf başlangıç403 doğrulaması sürse de
+  sayfanın alternatif oynatıcısından akış bulundu; TR VTT HTTP200/3288bayt
+  gözlendi. Bu altyazı yanıtının bütün bölümü kapsadığı veya sesin İngilizce
+  olduğu doğrulanmadı; canlı tam bölüm indirilmedi, örnekler silindi.
+- Synthetic Sources/Vault light/dark dar pencere UI kontrolleri, yeni
+  düğmeler, rapor/copy, klavye guard, Tor settings toggles/WARP koruması geçti.
+  Gerçek main UI smoke: tek koleksiyon3bölüm, sezon sırası, renderer error0.
+- Typecheck, renderer build ve diff whitespace kontrolü geçti. Native helper
+  arm64/x64 derleme/imza ve bu Mac’te **sadece promptsuz available durumu**
+  doğrulandı. Gerçek parmak izi kaydet/aç yapılmadı; kullanıcı kasası açılmadı.
+
+## Yerel paket doğrulaması — 0.14.0
+
+- Apple Silicon uygulaması `--publish never` ile üretildi. Deep/strict codesign
+  doğrulaması geçti; app.asar içindeki **43 kaynak/arayüz dosyası** çalışma
+  kopyasıyla bayt olarak aynı, paket sürümü0.14.0.
+- Paket içindeki native helper’ın promptsuz status çağrısı
+  `available=true` döndürdü. Gerçek kasaya erişim veya biyometrik kayıt yapılmadı.
+
+## Kalan önemli sınırlar
+
+- Her bağlantıyı koşulsuz çözme, gerçek üyelik/DRM/CAPTCHA atlatma veya Tor ile
+  hız garantisi yok. Yeni native DASH/liveHLS motoru henüz yazılmadı.
+- Cookie snapshot/export dosyalarının referanslı süre/çıkış temizliği, idle Tor
+  kaynak emekliliği ve kaynak bazında ağ değiştirme plandadır.
+- Gerçek Touch ID kayıt/aç etkileşimi, tam film/dizi resume ve Windows cihazında
+  kurulum/indirme halen manuel test değerindedir. CI Windows paket üretimi,
+  gerçek Windows cihaz testi yerine geçmez.
+- Plan uygulanmış/sonraki işleri açıkça ayırır. Reklam/izleyici listesi bu turda
+  büyütülmedi; güvenilirlik, görünür kontroller ve ağ tutarlılığına odaklanıldı.
+
+## Araştırma kaynakları — bu tur
+
+- [Chromium SOCKS ve kimlik doğrulama sınırı](https://chromium.googlesource.com/chromium/src/+/a3e71ebfa307d8760eb68b777e2998a869940092/net/docs/proxy.md)
+- [Tor SOCKS isolation](https://spec.torproject.org/socks-extensions.html)
+- [HLS RFC8216](https://www.rfc-editor.org/rfc/rfc8216.html)
+- [DASH zaman modeli](https://dashif.org/Guidelines-TimingModel/)
+- [FFmpeg HTTP cookies](https://ffmpeg.org/ffmpeg-protocols.html#HTTP-Cookies)
+- [FFmpeg güncel HTTP uygulaması](https://ffmpeg.org/doxygen/trunk/http_8c_source.html)
+- [Apple LocalAuthentication](https://developer.apple.com/documentation/localauthentication)
+
+---
+
+# Önceki yayın kaydı — 0.13.0
 
 Son güncelleme: 23 Ekim 2026. 0.11.0/0.12.0 geliştirmeleri ve üçüncü kod denetimi
 bu sürümde birleştirildi. **v0.13.0 yayımlandı**, kaynak commit'i `6b1380d`.

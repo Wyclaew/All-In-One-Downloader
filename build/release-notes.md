@@ -1,25 +1,24 @@
-Çözümleyici ve indirme sistemi yenilendi: dinamik oynatıcıları bulma, parçalı videolarda kaldığı yerden devam etme ve geçici hatalardan otomatik kurtarma geliştirildi. İngilizce ses/Türkçe altyazı tercihi, Touch ID ve dizi grupları bu sürümde birlikte geliyor.
+Tor bağlantısı, video bilgileri ve kasa kullanımı güçlendirildi. Kaynakları topluca tekrar deneyebilir, takılan taramayı durdurabilir ve eksik video bilgilerini yeniden inceletebilirsin.
 
-## 0.13.0 ile gelenler
+## 0.14.0 ile gelenler
 
-- **Daha güçlü çözümleyici:** genel sitelerde önce uygulamanın kendi motoru çalışır. İç içe oynatıcılar, JSON/POST yanıtları, uzantısız ve göreli kaynaklar, alternatif oynatıcılar taranır. Gerçek video doğrulanır; kapak görseli veya hata sayfası video kabul edilmez.
-- **Parçalı HLS indirme:** TS, fMP4, AES-128 ve bayt aralıkları desteklenir. Hızlı bağlantı sıradaki işi alır; tamamlanan parçalar doğrulanıp saklanır. Duraklatıp devam ederken yalnızca eksikler indirilir. Son birleştirme yerel olarak yapılır.
-- **Otomatik kurtarma ve süre hesabı:** geçici ağ/sunucu hataları sınırlı olarak tekrar denenir; süresi dolmuş akış sayfasından yenilenir. Hız ve tahmini süre ölçülen parçalara dayanır.
-- **Ses ve altyazı:** varsayılan tercih İngilizce ses ve Türkçe altyazıdır. Ayarlardan Türkçe/kaynak sesi seçilebilir. Ayrı ses grupları korunur; dil etiketi yoksa İngilizce olduğu iddia edilmez. Yalnızca zorunlu kısa altyazı, tam altyazıyla karıştırılmaz.
-- **Mac'te Touch ID:** kasayı önce şifreyle açıp Touch ID'yi etkinleştir. Anahtar mevcut parmak izi kaydıyla Keychain'de korunur; kasa şifresi kaydedilmez. Şifreyle açma seçeneği devam eder.
-- **Dizi grupları:** aynı dizinin bölümleri ana sayfada sezon/bölüm sırasıyla bir arada durur. Elle koleksiyon atanabilir.
-- **Hata düzeltmeleri:** iptal edilen taramanın ağ istekleri durdurulur; eski tarayıcı oturumu sonraki taramaya taşınmaz. Bekleyen manifest isteği sonsuza kadar çözümlemeyi tutamaz. Güncellemede disk yazım hatası, yanlış dosya özeti ve eşzamanlı kontrol durumları ele alınır.
-- **Yayın doğrulaması:** Mac/Windows paketleri ve güncelleme dosyaları tamamlanıp doğrulanmadan sürüm otomatik güncellemede görünmez.
+- **Otomatik Tor:** VPN’li kaynakta uygulamanın Tor seçeneği kullanılıyorsa kendisi bağlanır. Ayrı kaynaklar ayrı Tor oturumları alır; her kaynağın çözümlemesi, indirmesi ve altyazısı aynı kimlikte kalır. Özel vekil ve WARP tercihin korunur. İki davranış ayarlardan yönetilebilir.
+- **Daha ayrıntılı video bilgisi:** HLS/DASH yayın listeleri, oynatıcı verileri, dosya ve sınırlı parça başlıklarından süre/boyut çıkarılır. Tahminler işaretlenir. Bozuk kalite bağlantısının yerine doğrulanmış seçenek seçilebilir.
+- **Kaynak araçları:** toplu tekrar dene/durdur, kaynak başına durdur, eksik bilgileri yeniden tara ve temizlenmiş hata raporunu kopyala.
+- **Görünür Touch ID:** kasa kilitliyken de kurulum/durum paneli görünür. Önce kasayı şifreyle açıp Touch ID’yi etkinleştir. Parmak izi/Keychain sorunu varsa açıklama ve güvenli yeniden kayıt yolu gösterilir; şifreyle erişim devam eder.
+- **Daha güvenilir işlemler:** iptal edilmiş eski metadata işi yeni taramayı engellemez. Uyku/kilit sırasında bekleyen şifre işlemi kasayı tekrar açamaz. Yeniden başlatmada eski ağ ve yükleniyor durumları temizlenir.
+- **Özel ağ tercihi korunur:** VPN’li kaynakların uzak kapakları doğrudan yüklenmez; tarayıcı oturumu internete örnek istek göndermeden aktarılır. Son işlemler sürdürülürken de kaynak bağlantısı hazırlanır.
+- **Tor üzerinden altyazı:** WebVTT/SRT ve desteklenen parçalı WebVTT önce seçili ağdan alınır, yerelde dönüştürülür. Yönlendirmelerde çerez kapsamı korunur.
 
-Verilen Dizibox ve Hdfilmcehennemi bölüm bağlantılarında oturum açmadan, uygulamanın kendi motoruyla kısa örnek indirme doğrulandı. Bu, tüm siteler veya tam bölüm için garanti değildir. Gerçek üyelik, CAPTCHA ve DRM gereksinimleri atlatılmaz. Kaynakta olmayan ses veya altyazı üretilemez.
+Tor için ayrıca `brew install tor` veya Tor Browser kurulumu gerekir. Ayrı Tor oturumları farklı IP/hız garantilemez. Gerçek üyelik, insan doğrulaması ve DRM gereksinimleri atlatılmaz; kaynağın sunmadığı ses/altyazı üretilemez.
 
 ## İndir
 
 | Sistem | Dosya |
 |---|---|
-| macOS Apple Silicon | `All-in-One-Downloader-0.13.0-arm64.dmg` |
-| macOS Intel | `All-in-One-Downloader-0.13.0-x64.dmg` |
-| Windows 10/11 64 bit | `All-in-One-Downloader-0.13.0-setup.exe` |
+| macOS Apple Silicon | `All-in-One-Downloader-0.14.0-arm64.dmg` |
+| macOS Intel | `All-in-One-Downloader-0.14.0-x64.dmg` |
+| Windows 10/11 64 bit | `All-in-One-Downloader-0.14.0-setup.exe` |
 
 Uygulama içindeki güncelleme denetimi açıksa yeni sürüm üstte bildirilir. Açılıştan yaklaşık 15 saniye sonra, ardından altı saatte bir kontrol edilir. Hemen kontrol etmek için Ayarlar → Uygulama → Güncellemeleri denetle kullanılabilir. Kurulum kullanıcı düğmeye bastığında başlar.
 
@@ -42,4 +41,4 @@ Paket ad-hoc imzalıdır; Apple Developer ID/notarization kullanılmadığında 
 
 Windows'ta imza sertifikası olmadığı için SmartScreen uyarısı görülebilir.
 
-Geliştirici ayrıntıları ve kalan testler: depodaki `CLAUDE_HANDOFF.md`.
+Mimari tarama ve geliştirme planı: `DEVELOPMENT_PLAN.md`. Geliştirici ayrıntıları ve kalan testler: `CLAUDE_HANDOFF.md`.

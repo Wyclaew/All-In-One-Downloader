@@ -12,7 +12,7 @@ interface Props {
 }
 
 export default function Vault({ vault, autoLockMinutes, onToast }: Props) {
-  if (!vault.exists) return <Setup onToast={onToast} />
+  if (!vault.exists) return <Setup vault={vault} onToast={onToast} />
   if (!vault.unlocked) return <Locked vault={vault} onToast={onToast} retryAfter={vault.retryAfter || 0} />
   return <Contents vault={vault} autoLockMinutes={autoLockMinutes} onToast={onToast} />
 }
@@ -21,7 +21,7 @@ export default function Vault({ vault, autoLockMinutes, onToast }: Props) {
 /* first run                                                                   */
 /* -------------------------------------------------------------------------- */
 
-function Setup({ onToast }: { onToast: Props['onToast'] }) {
+function Setup({ vault, onToast }: { vault: VaultState; onToast: Props['onToast'] }) {
   const [pass, setPass] = useState('')
   const [again, setAgain] = useState('')
   const [busy, setBusy] = useState(false)
@@ -56,6 +56,7 @@ function Setup({ onToast }: { onToast: Props['onToast'] }) {
           <input
             className="input"
             type="password"
+            autoComplete="new-password"
             value={pass}
             autoFocus
             spellCheck={false}
@@ -67,6 +68,7 @@ function Setup({ onToast }: { onToast: Props['onToast'] }) {
           <input
             className="input"
             type="password"
+            autoComplete="new-password"
             value={again}
             spellCheck={false}
             onChange={(e) => setAgain(e.target.value)}
@@ -82,6 +84,8 @@ function Setup({ onToast }: { onToast: Props['onToast'] }) {
         <Btn variant="primary" icon="lock" disabled={!ready} spinning={busy} onClick={create}>
           {T.vault.create}
         </Btn>
+
+        <TouchIDPanel vault={vault} disabled={busy} />
 
         <details className="vault-detail">
           <summary>{T.vault.howTitle}</summary>
@@ -102,7 +106,7 @@ function Setup({ onToast }: { onToast: Props['onToast'] }) {
 
 function Locked({ vault, onToast, retryAfter }: { vault: VaultState; onToast: Props['onToast']; retryAfter: number }) {
   const [pass, setPass] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState<'password' | 'biometric' | null>(null)
 
   const [remaining, setRemaining] = useState(retryAfter)
   useEffect(() => {
@@ -113,21 +117,24 @@ function Locked({ vault, onToast, retryAfter }: { vault: VaultState; onToast: Pr
 
   const unlockBiometric = async () => {
     if (busy) return
-    setBusy(true)
-    const res = await api.vaultUnlockBiometric()
-    setBusy(false)
-    if (res) onToast(T.vault.unlocked, 'ok')
+    setBusy('biometric')
+    try {
+      const res = await api.vaultUnlockBiometric()
+      if (res) onToast(T.vault.unlocked, 'ok')
+    } finally { setBusy(null) }
   }
 
   const unlock = async () => {
     if (!pass || busy || remaining > 0) return
-    setBusy(true)
-    const res = await api.vaultUnlock(pass)
-    setBusy(false)
-    // The passphrase leaves the interface either way: on success it is no longer
-    // needed, on failure it should not sit in a field waiting to be retried blind.
-    setPass('')
-    if (res) onToast(T.vault.unlocked, 'ok')
+    setBusy('password')
+    try {
+      const res = await api.vaultUnlock(pass)
+      if (res) onToast(T.vault.unlocked, 'ok')
+    } finally {
+      setBusy(null)
+      // Clear after either result, including a disconnected bridge.
+      setPass('')
+    }
   }
 
   return (
@@ -139,11 +146,14 @@ function Locked({ vault, onToast, retryAfter }: { vault: VaultState; onToast: Pr
         </div>
         <p className="vault-body">{T.vault.lockedBody}</p>
 
+        <TouchIDPanel vault={vault} disabled={!!busy} unlocking={busy === 'biometric'} onUnlock={unlockBiometric} />
+
         <label className="vault-field">
           <span>{T.vault.passphrase}</span>
           <input
             className="input"
             type="password"
+            autoComplete="current-password"
             value={pass}
             autoFocus
             spellCheck={false}
@@ -154,12 +164,9 @@ function Locked({ vault, onToast, retryAfter }: { vault: VaultState; onToast: Pr
 
         {remaining > 0 ? <p className="vault-warn" role="status">{T.vault.retry(remaining)}</p> : null}
 
-        <Btn variant="primary" icon="unlock" disabled={!pass || busy || remaining > 0} spinning={busy} onClick={unlock}>
+        <Btn variant={vault.biometricAvailable && vault.biometricReady ? 'default' : 'primary'} icon="unlock" disabled={!pass || !!busy || remaining > 0} spinning={busy === 'password'} onClick={unlock}>
           {T.vault.unlock}
         </Btn>
-        {vault.biometricAvailable && vault.biometricEnabled ? (
-          <Btn variant="ghost" icon="unlock" disabled={busy} spinning={busy} onClick={unlockBiometric}>Touch ID ile aç</Btn>
-        ) : null}
       </div>
     </div>
   )
@@ -208,18 +215,12 @@ function Contents({
           <Btn size="sm" variant="ghost" icon="pencil" onClick={() => setChanging(true)}>
             {T.vault.changeTitle}
           </Btn>
-          {vault.biometricAvailable ? (
-            <Btn size="sm" variant="ghost" icon="unlock" disabled={busy || !!vault.upgrading} onClick={async () => {
-              setBusy(true)
-              const res = await api.vaultSetBiometric(!vault.biometricEnabled)
-              setBusy(false)
-              if (res) onToast(res.biometricEnabled ? 'Touch ID etkinleştirildi.' : 'Touch ID kapatıldı.', 'ok')
-            }}>{vault.biometricEnabled ? 'Touch ID’yi kapat' : 'Touch ID’yi etkinleştir'}</Btn>
-          ) : null}
           <Btn size="sm" icon="lock" onClick={() => api.vaultLock()}>
             {T.vault.lock}
           </Btn>
         </div>
+
+        <TouchIDPanel vault={vault} disabled={busy} onToast={onToast} />
 
         {vault.upgrading ? (
           <div className="banner" style={{ marginBottom: 10 }}>
@@ -364,6 +365,98 @@ function Contents({
         </Modal>
       ) : null}
     </>
+  )
+}
+
+/* A visible path through setup, readiness and recovery, even when macOS cannot
+ * currently authenticate. Hiding this section made the feature undiscoverable. */
+function TouchIDPanel({
+  vault,
+  disabled = false,
+  unlocking = false,
+  onUnlock,
+  onToast,
+}: {
+  vault: VaultState
+  disabled?: boolean
+  unlocking?: boolean
+  onUnlock?: () => void
+  onToast?: Props['onToast']
+}) {
+  const [working, setWorking] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const available = !!vault.biometricAvailable
+  const enrolled = !!vault.biometricEnabled
+  const ready = !!vault.biometricReady
+  const checking = vault.biometricStatus === 'checking' || !vault.biometricStatus
+  const inactive = disabled || working || refreshing
+  const label = checking ? 'Denetleniyor' : !available ? 'Kullanılamıyor' : enrolled && ready ? 'Etkin' : enrolled ? 'Yeniden kurulum gerekli' : 'Kurulum gerekli'
+
+  // Returning from System Settings updates enrollment/sensor state without an
+  // authentication prompt. The status IPC broadcasts the refreshed capability.
+  useEffect(() => {
+    const refresh = () => { void api.vaultStatus() }
+    window.addEventListener('focus', refresh)
+    return () => window.removeEventListener('focus', refresh)
+  }, [])
+
+  const refresh = async () => {
+    setRefreshing(true)
+    try { await api.vaultStatus() } finally { setRefreshing(false) }
+  }
+  const setEnrollment = async (enabled: boolean) => {
+    if (inactive) return
+    setWorking(true)
+    try {
+      const res = await api.vaultSetBiometric(enabled)
+      if (res) onToast?.(res.biometricEnabled ? 'Touch ID etkin. Kasa kilitliyken parmak izinle açabilirsin.' : 'Touch ID kapatıldı. Kasanı şifrenle açabilirsin.', 'ok')
+    } finally { setWorking(false) }
+  }
+
+  let description: string
+  if (checking) description = 'Bu Mac’in Touch ID durumu kontrol ediliyor.'
+  else if (!available) description = vault.biometricReason || 'Touch ID şu anda kullanılamıyor. Kasanı şifrenle açabilirsin.'
+  else if (!vault.exists) description = 'Önce kasa şifreni oluştur. Ardından bu bölümden Touch ID’yi etkinleştirip sonraki açılışlarda parmak izini kullanabilirsin.'
+  else if (!vault.unlocked && !enrolled) description = 'İlk kurulum için kasayı aşağıdan şifrenle aç. Ardından burada “Touch ID’yi etkinleştir”i seç; sonraki açılışlarda parmak izini kullan.'
+  else if (!ready && enrolled) description = vault.biometricReason || 'Kasayı şifrenle açıp Touch ID’yi yeniden etkinleştir.'
+  else if (vault.upgrading) description = 'Kasa yükseltmesi tamamlanınca Touch ID’yi etkinleştirebilirsin.'
+  else if (enrolled) description = 'Kasa bu Mac’te parmak izinle açılabilir. Kasa şifreni kurtarma ve yeniden kurulum için sakla.'
+  else description = 'Touch ID’yi bir kez doğrula; kasa kilitliyken parmak izinle aç. Kasa şifren kaydedilmez.'
+
+  return (
+    <section aria-label="Touch ID ile kasa erişimi" style={{ border: '1px solid var(--rule)', borderRadius: 'var(--r)', background: 'var(--panel-2)', padding: 14, marginBottom: vault.unlocked ? 14 : 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 8 }}>
+        <svg width="21" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true" style={{ flex: 'none', color: 'var(--dim)' }}>
+          <path d="M4 10a8 8 0 0 1 16 0M2.5 14v-3M21.5 11v4M7 20c2-3 2-6 2-9a3 3 0 0 1 6 0c0 5-.5 8-2 11M5 16v-5a7 7 0 0 1 .6-2.8M7 6.3A7 7 0 0 1 19 11c0 4-.3 7-1.2 9.2M12 11c0 4-.1 7-1.6 10M4 20l1-2M15 18.5l-.5 2" />
+        </svg>
+        <strong style={{ fontSize: 13 }}>Touch ID · Parmak izi</strong>
+        <span className="vault-status" role="status" style={{ marginLeft: 'auto', textAlign: 'right', color: enrolled && ready && available ? 'var(--text)' : 'var(--dim)' }}>
+          {enrolled && ready && available ? <Icon name="check" size={12} /> : null}{label}
+        </span>
+      </div>
+      <p className="vault-body">{description}</p>
+      {(vault.unlocked || (available && enrolled && ready && onUnlock) || (!available && !checking)) ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginTop: 12 }}>
+          {available && enrolled && ready && !vault.unlocked && onUnlock ? (
+            <Btn variant="primary" disabled={inactive} spinning={unlocking} onClick={onUnlock}>Touch ID ile aç</Btn>
+          ) : null}
+          {vault.unlocked && available && (!enrolled || !ready) ? (
+            <Btn variant="primary" disabled={inactive || !!vault.upgrading} spinning={working} onClick={() => setEnrollment(true)}>
+              {enrolled ? 'Touch ID’yi yeniden etkinleştir' : 'Touch ID’yi etkinleştir'}
+            </Btn>
+          ) : null}
+          {vault.unlocked && enrolled ? (
+            <Btn size="sm" variant="ghost" disabled={inactive} spinning={working} onClick={() => setEnrollment(false)}>Touch ID’yi kapat</Btn>
+          ) : null}
+          {!available && vault.biometricAction === 'system-settings' ? (
+            <Btn size="sm" variant="ghost" icon="external" disabled={inactive} onClick={() => api.openTouchIdSettings()}>Touch ID ayarlarını aç</Btn>
+          ) : null}
+          {!checking && vault.biometricStatus !== 'unsupported-platform' && (!available || (vault.unlocked && !enrolled)) ? (
+            <Btn size="sm" variant="ghost" icon="refresh" disabled={inactive} spinning={refreshing} onClick={refresh}>Yeniden denetle</Btn>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
   )
 }
 

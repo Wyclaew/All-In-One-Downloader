@@ -14,6 +14,8 @@ const proxy = require('./lib/proxy')
 const userscripts = require('./lib/userscripts')
 const player = require('./lib/player')
 const tor = require('./lib/tor')
+const network = require('./lib/network-context')
+const diagnostics = require('./lib/diagnostics')
 const locate = require('./lib/locate')
 const updater = require('./lib/updater')
 const { uid, extractUrls, isProbablyUrl } = require('./lib/util')
@@ -353,10 +355,12 @@ function probeLimit() {
 
 function pumpProbes() {
   while (activeProbes < probeLimit() && probeQueue.length) {
-    const source = probeQueue.shift()
+    const next = probeQueue.shift()
+    const source = store.findSource(next.id)
+    if (!source || source.status !== 'queued') continue
     activeProbes += 1
-    probe
-      .probeUrl(source.url, { sourceId: source.id })
+    const task = next.capture ? probe.captureSource(source.id) : probe.probeUrl(source.url, { sourceId: source.id })
+    task
       .catch((err) => console.error('[probe]', err))
       .finally(() => {
         activeProbes -= 1
@@ -365,9 +369,20 @@ function pumpProbes() {
   }
 }
 
-function queueProbe(source) {
-  probeQueue.push(source)
+function queueProbe(source, capture = false) {
+  if (source.status === 'probing' || probeQueue.some((s) => s.id === source.id)) return
+  store.commit(() => { source.status = 'queued'; source.note = null; source.error = null })
+  probeQueue.push({ id: source.id, capture })
   pumpProbes()
+}
+
+function cancelSource(id) {
+  const source = store.findSource(id)
+  if (!source) return false
+  for (let i = probeQueue.length - 1; i >= 0; i--) if (probeQueue[i].id === id) probeQueue.splice(i, 1)
+  probe.cancelProbe(id)
+  store.commit(() => { source.count = store.itemsOfSource(id).length; source.status = source.count ? 'ready' : 'canceled'; source.stage = null; source.note = 'Çözümleme durduruldu'; source.enriching = 0 })
+  return true
 }
 
 function handle(channel, fn) {
@@ -392,9 +407,6 @@ function registerIpc() {
     const urls = extractUrls(String(input || ''))
     if (!urls.length) throw new Error('Geçerli bir bağlantı bulunamadı.')
     const settings = store.getState().settings
-    if (useProxy && !String(settings.proxyUrl || '').trim()) {
-      throw new Error('Vekil adresi boş. Ayarlar → Erişim bölümünden gir.')
-    }
     const existing = store.getState().sources
     let added = 0
     for (const url of urls) {
@@ -433,29 +445,27 @@ function registerIpc() {
     return tor.getStatus()
   })
   handle('tor:stop', () => {
+    const usesTor = (id) => { const context = network.getContext(id); return context ? context.kind === 'tor' : network.isManagedProxy(store.getState().settings.proxyUrl) }
+    for (const source of store.getState().sources) if (source.useProxy && usesTor(source.id) && (['queued', 'probing'].includes(source.status) || source.enriching)) cancelSource(source.id)
+    for (const download of store.getState().downloads) if (download.useProxy && usesTor(download.sourceId || download.id) && ['running', 'queued'].includes(download.status)) downloader.pause(download.id)
+    network.shutdown()
     tor.stopAndForget()
     return tor.getStatus()
   })
 
   handle('proxy:check', async () => {
-    const url = String(store.getState().settings.proxyUrl || '').trim()
-    if (!url) return { ok: false, message: 'Vekil adresi boş.' }
-    const parsed = proxy.parseProxy(url)
-    if (!parsed) return { ok: false, message: 'Adres anlaşılamadı. Örnek: socks5://127.0.0.1:40000' }
     try {
       const started = Date.now()
+      const url = await network.ensureForSource('__connection-check__', { settings: store.getState().settings })
       const seen = await proxy.checkProxy(url)
-      return {
-        ok: true,
-        message: `Bağlandı (${Date.now() - started} ms). Dışarıya görünen adres: ${seen || 'okunamadı'}`,
-      }
+      return { ok: true, message: `Bağlandı (${Date.now() - started} ms). Dışarıya görünen adres: ${seen || 'okunamadı'}` }
     } catch (err) {
       return { ok: false, message: err.message }
-    }
+    } finally { network.releaseSource('__connection-check__') }
   })
 
   handle('source:remove', (id) => {
-    probe.cancelProbe(id)
+    cancelSource(id)
     // Removing the group has to stop what it started. Leaving a transfer running
     // for a source that no longer exists is how a download becomes impossible to
     // stop: nothing on screen owns it any more.
@@ -468,7 +478,26 @@ function registerIpc() {
       s.sources = s.sources.filter((x) => x.id !== id)
       s.items = s.items.filter((x) => x.sourceId !== id)
     })
+    network.releaseSource(id)
     return true
+  })
+
+  handle('source:cancel', cancelSource)
+  handle('source:cancelAll', () => {
+    const busy = store.getState().sources.filter((s) => ['queued', 'probing'].includes(s.status) || s.enriching)
+    for (const source of busy) cancelSource(source.id)
+    return busy.length
+  })
+  handle('source:retryFailed', () => {
+    const failed = store.getState().sources.filter((s) => ['error', 'canceled'].includes(s.status))
+    for (const source of failed) queueProbe(source)
+    return failed.length
+  })
+  handle('source:metadata', (id) => probe.refreshMetadata(id))
+  handle('source:diagnostics', (id) => {
+    const source = store.findSource(id)
+    if (!source) throw new Error('Kaynak bulunamadı.')
+    return diagnostics.report(source, store.itemsOfSource(id), store.getState().downloads.filter((d) => d.sourceId === id), app.getVersion())
   })
 
   handle('source:toggle', ({ id, collapsed }) => {
@@ -480,17 +509,17 @@ function registerIpc() {
     return true
   })
 
-  handle('source:rescan', async (id) => {
+  handle('source:rescan', (id) => {
     const src = store.findSource(id)
     if (!src) return false
-    await probe.probeUrl(src.url, { sourceId: id })
+    queueProbe(src)
     return true
   })
 
-  handle('source:capture', async (id) => {
+  handle('source:capture', (id) => {
     const src = store.findSource(id)
     if (!src) return false
-    await probe.captureSource(id)
+    queueProbe(src, true)
     return true
   })
 
@@ -810,7 +839,16 @@ function registerIpc() {
    * ever sees them while the vault is unlocked.
    */
 
-  handle('vault:status', () => vaultState())
+  handle('vault:status', async () => {
+    await vault.refreshBiometricStatus()
+    pushVault()
+    return vaultState()
+  })
+  handle('vault:touchIdSettings', async () => {
+    if (!IS_MAC) return false
+    await shell.openExternal('x-apple.systempreferences:com.apple.Touch-ID-Settings.extension')
+    return true
+  })
 
   handle('vault:create', async (passphrase) => {
     await vault.create(passphrase)
@@ -834,14 +872,12 @@ function registerIpc() {
   })
 
   handle('vault:biometric:set', async (enabled) => {
-    await vault.setBiometric(enabled === true)
-    pushVault()
+    try { await vault.setBiometric(enabled === true) } finally { pushVault() }
     return vaultState()
   })
 
   handle('vault:biometric:unlock', async () => {
-    await vault.unlockBiometric()
-    pushVault()
+    try { await vault.unlockBiometric() } finally { pushVault() }
     return vaultState()
   })
 
@@ -1041,6 +1077,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     downloader.killAll()
     probe.killAll()
+    network.shutdown()
     // A background Tor belongs to this app; leaving it running after we quit
     // would be a process the user never started and cannot see.
     tor.stop()

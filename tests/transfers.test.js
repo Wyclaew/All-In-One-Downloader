@@ -14,7 +14,9 @@ let dropped = false
 
 test.before(async () => {
   server = http.createServer((req, res) => {
-    requests.push({ path: req.url, range: req.headers.range })
+    requests.push({ path: req.url, range: req.headers.range, cookie: req.headers.cookie })
+    if (req.url === '/private/start') { res.writeHead(302, { Location: '/public/file' }); res.end(); return }
+    if (req.url === '/master') { res.end('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080\n/denied\n#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720\n/viable\n'); return }
     if (req.url === '/waiting') return
     if (req.url === '/reject') { res.writeHead(429); res.end(); return }
     const range = req.headers.range?.match(/^bytes=(\d+)-(\d*)$/)
@@ -110,4 +112,28 @@ test('single connection resumes only a correct range', async () => {
   fs.writeFileSync(opts.destPath + '.part', payload.subarray(0, 17777))
   await own.fetchFile(opts)
   matches(opts.destPath)
+})
+
+test('file probes and transfers recompute cookie path scope on same-origin redirects', async () => {
+  const jar = path.join(root, 'scoped.txt')
+  fs.writeFileSync(jar, '# Netscape HTTP Cookie File\n127.0.0.1\tFALSE\t/private\tFALSE\t0\tprivate\tyes\n')
+  const before = requests.length
+  const result = await own.probeVia(base + '/private/start', { cookieFile: jar }, '')
+  assert.equal(result.size, payload.length)
+  const seen = requests.slice(before)
+  assert.equal(seen[0].cookie, 'private=yes')
+  assert.equal(seen[1].cookie, undefined)
+})
+test('file metadata probing responds to cancellation while headers are stalled', async () => {
+  const controller = new AbortController()
+  const task = own.probeVia(base + '/waiting', {}, '', controller.signal)
+  setTimeout(() => controller.abort(), 20)
+  await assert.rejects(task, (err) => err.name === 'AbortError' || err.code === 'ABORT_ERR')
+})
+
+test('transfer quality selection skips variants already rejected during verification', async () => {
+  const picked = await own.pickVariant(base + '/master', { rejectedVariantUrls: [base + '/denied'] }, 1080)
+  assert.equal(picked.url, base + '/viable')
+  assert.equal(picked.height, 720)
+  await assert.rejects(own.pickVariant(base + '/master', { rejectedVariantUrls: [base + '/denied', base + '/viable'] }, 1080), /geçerli değil/)
 })

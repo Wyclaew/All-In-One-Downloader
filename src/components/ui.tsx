@@ -615,6 +615,12 @@ export function Empty({
   )
 }
 
+/** Remote posters would use the renderer's direct session. Keep private-route
+ * cards local until a poster has been fetched through that source's tunnel. */
+export function thumbnailForRoute(src: string | null, useProxy?: boolean): string | null {
+  return !useProxy || /^data:image\/(?:jpeg|png|webp|gif);base64,/i.test(src || '') ? src : null
+}
+
 export function Thumb({
   src,
   duration,
@@ -625,6 +631,7 @@ export function Thumb({
   audio?: boolean
 }) {
   const [failed, setFailed] = useState(false)
+  useEffect(() => setFailed(false), [src])
   return (
     <div className="thumb">
       {src && !failed ? (

@@ -16,6 +16,14 @@ test('every injected browser program compiles before it reaches a player', () =>
   const { Script } = require('vm')
   for (const [name, source] of Object.entries(resolver.injectedScripts)) assert.doesNotThrow(() => new Script(source), name)
 })
+test('missing duration is preserved as unknown instead of being classified as an advert', () => {
+  const unknown = { url: 'https://cdn.example.test/unknown', info: { playable: true, duration: null } }
+  const feature = { url: 'https://cdn.example.test/feature', info: { playable: true, duration: 3600 } }
+  const advert = { url: 'https://cdn.example.test/advert', info: { playable: true, duration: 15 } }
+  const result = resolver.dropShortStreams([unknown, advert, feature], 120, 3600)
+  assert.deepEqual(result.kept, [feature, unknown])
+  assert.equal(result.dropped, 1)
+})
 test.before(async () => {
   server = http.createServer((req, res) => {
     seen.push({ url: req.url, cookie: req.headers.cookie })

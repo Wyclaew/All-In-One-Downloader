@@ -77,17 +77,14 @@ function freePath(dir, base, ext) {
 /**
  * How long the file is and whether the server serves pieces of it.
  *
- * Deliberately not the shared helper in mediainfo, which uses fetch and therefore
- * cannot be tunnelled: a probe that goes out directly while the download goes
- * through the proxy tells the origin server exactly who is asking. One request —
- * a one-byte range — answers both questions, and a 206 *is* the proof that ranges
- * work.
+ * Use the same scoped HTTP client, route and cancellation as the transfer. A
+ * one-byte range answers both questions; a 206 is proof that ranges work.
  */
-async function probeVia(url, resolved, proxy) {
+async function probeVia(url, resolved, proxy, signal = null) {
   const res = await openStream(
     url,
     { ...fetchHeaders(url, resolved), Range: 'bytes=0-0' },
-    { proxy }
+    { proxy, signal, resolved }
   )
   const headers = res.headers || {}
   res.request.destroy()
@@ -182,9 +179,11 @@ async function locateStream(download, settings, onNote, signal = null) {
       pageUrl: download.url,
       referer: candidate.referer || download.url,
       origin: candidate.origin || '',
-      userAgent: result.userAgent,
+      userAgent: candidate.userAgent || result.userAgent,
       cookieFile: candidate.cookieFile || null,
       kind: candidate.kind,
+      selectedVariantUrl: candidate.info?.selectedVariantUrl || null,
+      rejectedVariantUrls: candidate.info?.rejectedVariantUrls || [],
     },
   }
 }
@@ -202,8 +201,11 @@ async function pickVariant(url, resolved, quality, onNote, proxy = '', preferred
   // Sorted tallest first. A master playlist can also list a rendition with no
   // RESOLUTION at all — an audio-only one — and that must never be what "best"
   // or a failed cap lands on.
-  const video = hls.variants.filter((v) => v.height)
-  const ranked = video.length ? video : hls.variants
+  const rejected = new Set(resolved.rejectedVariantUrls || [])
+  const viable = hls.variants.filter((v) => !rejected.has(v.url))
+  if (!viable.length) throw new Error('Bu oynatıcının kalite bağlantıları artık geçerli değil. Kaynak yeniden çözümlenmeli.')
+  const video = viable.filter((v) => v.height)
+  const ranked = video.length ? video : viable
   const cap = Number(quality) || 0
 
   let chosen
@@ -269,7 +271,13 @@ function openStream(rawUrl, headers, { redirects = 5, proxy = '', signal = null,
     } catch (err) {
       return reject(err)
     }
-    if (!['http:', 'https:'].includes(target.protocol)) return reject(new Error('Geçersiz akış protokolü.'))
+    if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) return reject(new Error('Geçersiz akış protokolü veya adresi.'))
+    if (resolved) {
+      headers = { ...headers }
+      for (const key of Object.keys(headers)) if (/^cookie$/i.test(key)) delete headers[key]
+      const cookie = fetchHeaders(target.href, resolved).Cookie
+      if (cookie) headers.Cookie = cookie
+    }
     const mod = target.protocol === 'http:' ? http : https
     const tunnel = proxy ? agentsFor(proxy) : null
     if (proxy && !tunnel) return reject(new Error(`Vekil adresi anlaşılamadı: ${proxy}`))
@@ -287,7 +295,6 @@ function openStream(rawUrl, headers, { redirects = 5, proxy = '', signal = null,
         const nextHeaders = { ...headers }
         if (new URL(next).origin !== target.origin) {
           for (const key of Object.keys(nextHeaders)) if (/^(cookie|authorization|origin)$/i.test(key)) delete nextHeaders[key]
-          if (resolved) Object.assign(nextHeaders, fetchHeaders(next, resolved))
         }
         return resolve(openStream(next, nextHeaders, { redirects: redirects - 1, proxy, signal, resolved }))
       }
@@ -858,7 +865,7 @@ async function transfer({
     // Ask what this file is before fetching it: the length gives the meter a
     // target from the first byte, and whether the server serves ranges decides
     // between four connections and one.
-    const probed = await probeVia(url, resolved, proxy).catch(() => ({ size: null, ranges: false }))
+    const probed = await probeVia(url, resolved, proxy, signal).catch(() => ({ size: null, ranges: false }))
     halt()
     if (probed.url) url = probed.url
     if (probed.size) {
@@ -917,6 +924,10 @@ async function transfer({
       onNote?.('Bu HLS türü için alternatif aktarım motoru deneniyor')
     }
   }
+  // FFmpeg cannot enforce Netscape host-only/Secure cookie scope across all
+  // supported versions and redirects. Cookie-bearing HLS uses scoped native
+  // requests above; unsupported remote formats must fail safely.
+  if (resolved.cookieFile) throw new Error('Bu akış oturum çerezleri gerektiriyor ve güvenli yerel aktarım biçimi henüz desteklenmiyor. yt-dlp motorunu etkinleştirerek yeniden deneyebilirsin.')
   let selectedAudioIndex = null
   const preferred = languageCode(download.preferredAudioLanguage || settings.preferredAudioLanguage || 'en')
   if (!audioUrl && preferred !== 'auto') {

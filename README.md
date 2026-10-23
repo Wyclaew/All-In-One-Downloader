@@ -8,6 +8,28 @@ macOS için yazıldı; Windows altyapısı baştan hazır (aşağıya bak).
 
 ---
 
+## 0.14.0 — otomatik Tor, ayrıntılı video bilgisi ve görünür Touch ID
+
+- VPN’li kaynakta uygulamanın Tor seçeneği otomatik hazırlanır. Her kaynak ayrı
+  Tor oturumu alır; çözümleme ve indirme aynı kaynak kimliğini korur. WARP/özel
+  vekil seçimi değişmez. Ayarlar → Erişim’den iki davranış kapatılabilir.
+- HLS/DASH süreleri, kalite bağlantıları, oynatıcı bilgileri ve sınırlı parça
+  başlıkları birlikte değerlendirilir. Kesin/tahmini boyut ayrılır. Bozuk yüksek
+  kalite yerine doğrulanan alt kalite kullanılabilir.
+- Kaynaklarda toplu tekrar deneme/durdurma, eksik bilgileri tekrar tarama ve
+  adres anahtarları/çerezler temizlenmiş hata raporu alma seçenekleri var.
+- Kasa ekranında Touch ID paneli her zaman görünür. Önce şifreyle açıp
+  etkinleştir; hazır değilse sebep, yeniden deneme ve Mac ayarlarına erişim görünür.
+- Altyazılar da Tor üzerinden alınır; uzak metin önce kapsamlı çerez kurallarıyla
+  indirilip yerelde dönüştürülür. İptal, yeniden tarama, uyku/kilit ve yeniden
+  başlatma sırasında kalan etkinlik durumları düzeltildi.
+- Mimari tarama ve 40’tan fazla sonraki geliştirme önerisi:
+  [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md). Uygulananlar ayrıca işaretlidir.
+
+Tor ayrı oturumları daha yüksek hız veya farklı IP garantilemez. Tor uygulaması
+ayrıca kurulu olmalı (`brew install tor` veya Tor Browser). Kaynakta bulunmayan
+bilgi/dil/altyazı üretilemez; gerçek erişim/DRM gereksinimleri atlatılmaz.
+
 ## 0.13.0 — çözümleyici denetimi ve doğrulanan yayın
 
 - Kapak görselinin video sanılması, göreli kaynakların atlanması, ana sayfadaki

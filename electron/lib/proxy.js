@@ -35,12 +35,17 @@ function parseProxy(raw) {
   const protocol = url.protocol.replace(':', '').toLowerCase()
   if (!['http', 'https', 'socks', 'socks5', 'socks5h', 'socks4'].includes(protocol)) return null
   const port = Number(url.port) || (protocol === 'https' ? 443 : protocol === 'http' ? 8080 : 1080)
+  let username, password
+  try {
+    username = decodeURIComponent(url.username || '')
+    password = decodeURIComponent(url.password || '')
+  } catch { return null }
   return {
     protocol: protocol === 'socks' || protocol === 'socks5h' ? 'socks5' : protocol,
-    host: url.hostname,
+    host: url.hostname.replace(/^\[|\]$/g, ''),
     port,
-    username: decodeURIComponent(url.username || ''),
-    password: decodeURIComponent(url.password || ''),
+    username,
+    password,
     href: `${protocol}://${url.host}`,
   }
 }
@@ -78,10 +83,13 @@ function readExactly(socket, length) {
       socket.removeListener('readable', attempt)
       socket.removeListener('error', onError)
       socket.removeListener('end', onEnd)
+      socket.removeListener('close', onEnd)
     }
     socket.on('readable', attempt)
     socket.once('error', onError)
     socket.once('end', onEnd)
+    socket.once('close', onEnd)
+    if (socket.destroyed || socket.readableEnded) return onEnd()
     attempt() // bytes may already be buffered
   })
 }
@@ -93,17 +101,28 @@ function readExactly(socket, length) {
  * a privacy proxy, resolving locally would leak the very lookup the proxy exists
  * to hide, and would break hosts that only resolve on the far side.
  */
-async function socks5Connect(proxy, host, port) {
+async function socks5Connect(proxy, host, port, { signal, timeoutMs = 20000, onSocket } = {}) {
+  if (signal?.aborted) throw Object.assign(new Error('İşlem iptal edildi.'), { code: 'ABORTED' })
   const socket = net.connect({ host: proxy.host, port: proxy.port })
+  onSocket?.(socket)
+  const abort = () => socket.destroy(Object.assign(new Error('İşlem iptal edildi.'), { code: 'ABORTED' }))
+  signal?.addEventListener('abort', abort, { once: true })
+  const timer = setTimeout(() => socket.destroy(Object.assign(new Error('SOCKS bağlantısı zaman aşımına uğradı.'), { code: 'ETIMEDOUT' })), timeoutMs)
+  // Keep an error handler during the tiny gaps between handshake reads.
+  const ignoreError = () => {}
+  socket.on('error', ignoreError)
   socket.setNoDelay(true)
-  await new Promise((resolve, reject) => {
-    socket.once('connect', resolve)
-    socket.once('error', reject)
-  })
-
   try {
-    const wantsAuth = !!proxy.username
-    socket.write(wantsAuth ? Buffer.from([5, 2, 0, 2]) : Buffer.from([5, 1, 0]))
+    await new Promise((resolve, reject) => {
+      const done = (err) => { socket.removeListener('connect', connected); socket.removeListener('error', done); err ? reject(err) : resolve() }
+      const connected = () => done()
+      socket.once('connect', connected)
+      socket.once('error', done)
+    })
+    const wantsAuth = !!(proxy.username || proxy.password)
+    // Authentication also carries Tor's isolation identity. A no-auth fallback
+    // would silently merge identities when the upstream ignores credentials.
+    socket.write(wantsAuth ? Buffer.from([5, 1, 2]) : Buffer.from([5, 1, 0]))
     const greeting = await readExactly(socket, 2)
     if (greeting[0] !== 5) throw new Error('Vekil sunucu SOCKS5 konuşmuyor.')
 
@@ -111,6 +130,7 @@ async function socks5Connect(proxy, host, port) {
       if (!wantsAuth) throw new Error('Vekil sunucu kullanıcı adı/parola istiyor.')
       const user = Buffer.from(proxy.username, 'utf8')
       const pass = Buffer.from(proxy.password, 'utf8')
+      if (user.length > 255 || pass.length > 255) throw new Error('SOCKS kimlik bilgileri çok uzun.')
       socket.write(
         Buffer.concat([
           Buffer.from([1, user.length]),
@@ -120,12 +140,13 @@ async function socks5Connect(proxy, host, port) {
         ])
       )
       const auth = await readExactly(socket, 2)
-      if (auth[1] !== 0) throw new Error('Vekil sunucu kimlik bilgilerini kabul etmedi.')
-    } else if (greeting[1] !== 0) {
+      if (auth[0] !== 1 || auth[1] !== 0) throw new Error('Vekil sunucu kimlik bilgilerini kabul etmedi.')
+    } else if (greeting[1] !== 0 || wantsAuth) {
       throw new Error('Vekil sunucu desteklenen bir kimlik yöntemi sunmadı.')
     }
 
     const name = Buffer.from(host, 'utf8')
+    if (!name.length || name.length > 255) throw new Error('SOCKS hedef adı geçersiz.')
     const request = Buffer.concat([
       Buffer.from([5, 1, 0, 3, name.length]),
       name,
@@ -134,6 +155,7 @@ async function socks5Connect(proxy, host, port) {
     socket.write(request)
 
     const reply = await readExactly(socket, 4)
+    if (reply[0] !== 5 || reply[2] !== 0) throw new Error('Vekil sunucu geçersiz SOCKS yanıtı verdi.')
     if (reply[1] !== 0) {
       const reasons = {
         1: 'genel hata',
@@ -153,11 +175,16 @@ async function socks5Connect(proxy, host, port) {
       const len = await readExactly(socket, 1)
       await readExactly(socket, len[0] + 2)
     } else if (reply[3] === 4) await readExactly(socket, 16 + 2)
+    else throw new Error('Vekil sunucu geçersiz adres türü döndürdü.')
 
     return socket
   } catch (err) {
     socket.destroy()
     throw err
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', abort)
+    socket.removeListener('error', ignoreError)
   }
 }
 
@@ -234,7 +261,7 @@ const cache = new Map()
 function agentsFor(raw) {
   const proxy = parseProxy(raw)
   if (!proxy) return null
-  const key = `${proxy.protocol}://${proxy.username}@${proxy.host}:${proxy.port}`
+  const key = JSON.stringify([proxy.protocol, proxy.host, proxy.port, proxy.username, proxy.password])
   if (!cache.has(key)) {
     cache.set(key, {
       proxy,
@@ -245,12 +272,25 @@ function agentsFor(raw) {
   return cache.get(key)
 }
 
+/** Retire a source's pools along with its local bridge. */
+function releaseAgents(raw) {
+  const proxy = parseProxy(raw)
+  if (!proxy) return
+  const key = JSON.stringify([proxy.protocol, proxy.host, proxy.port, proxy.username, proxy.password])
+  const pair = cache.get(key)
+  if (!pair) return
+  pair['http:'].destroy()
+  pair['https:'].destroy()
+  cache.delete(key)
+}
+
 /** Electron's session takes its own format, and understands socks natively. */
 function electronRules(raw) {
   const proxy = parseProxy(raw)
   if (!proxy) return null
   const scheme = isSocks(proxy) ? 'socks5' : proxy.protocol
-  return `${scheme}://${proxy.host}:${proxy.port}`
+  const host = proxy.host.includes(':') ? `[${proxy.host}]` : proxy.host
+  return `${scheme}://${host}:${proxy.port}`
 }
 
 /**
@@ -261,7 +301,8 @@ function electronRules(raw) {
 function ffmpegEnv(raw) {
   const proxy = parseProxy(raw)
   if (!proxy || isSocks(proxy)) return null
-  const value = `${proxy.protocol}://${proxy.username ? `${proxy.username}:${proxy.password}@` : ''}${proxy.host}:${proxy.port}`
+  const host = proxy.host.includes(':') ? `[${proxy.host}]` : proxy.host
+  const value = `${proxy.protocol}://${proxy.username ? `${encodeURIComponent(proxy.username)}:${encodeURIComponent(proxy.password)}@` : ''}${host}:${proxy.port}`
   return { http_proxy: value, https_proxy: value, HTTP_PROXY: value, HTTPS_PROXY: value }
 }
 
@@ -269,15 +310,12 @@ function ffmpegEnv(raw) {
 /**
  * Where the usual local privacy proxies listen.
  *
- * Cloudflare WARP hides your address from the *site*, and nothing more:
- * Cloudflare itself sees exactly who you are. Tor is the answer when that matters
- * — three relays, none of which knows both ends. It is slower per connection, and
- * that is where this app has an unusual advantage: the multi-part downloader opens
- * several connections, and with circuit isolation each one takes a different route
- * through the network. Parallel parts over Tor add up in a way a single stream
- * never does.
+ * The proxy service and destination decide throughput. Tor isolation prevents
+ * different sources sharing circuits; it does not promise more bandwidth or a
+ * different exit address for every source.
  */
 const PRESETS = [
+  { id: 'tor-managed', label: 'Uygulama Tor', url: 'socks5://127.0.0.1:9061', note: 'Gerektiğinde otomatik başlar' },
   { id: 'tor', label: 'Tor', url: 'socks5://127.0.0.1:9050', note: 'Tor Browser açıkken 9150' },
   { id: 'tor-browser', label: 'Tor Browser', url: 'socks5://127.0.0.1:9150', note: '' },
   { id: 'warp', label: 'Cloudflare WARP', url: 'socks5://127.0.0.1:40000', note: 'warp-cli mode proxy' },
@@ -304,17 +342,12 @@ function probePresets(timeoutMs = 700) {
 }
 
 /**
- * Tor gives each SOCKS username its own circuit (IsolateSOCKSAuth is on by
- * default). Naming each connection differently therefore spreads a multi-part
- * download across several routes instead of queueing it all down one — which is
- * the difference between Tor being unusable here and being merely slow.
- *
- * Only for a credential-free loopback proxy on Tor's own ports: anywhere else an
- * invented username is at best ignored and at worst a rejected login.
+ * Legacy call-site compatibility. Isolation belongs to the source context,
+ * including its resolver and all media requests; changing identity per worker
+ * can invalidate signed, IP-bound media URLs.
  */
-// 9050 is a system tor, 9150 is Tor Browser's, and 9061-9065 is the range the app
-// starts its own on. Missing one of these is not cosmetic: it is what decides
-// whether the parts of a download get their own circuits or share one.
+// Recognized conventional ports are a UI hint; isolation is supplied explicitly
+// by network-context.js and is never inferred for an arbitrary external proxy.
 const TOR_PORTS = new Set([9050, 9150, 9061, 9062, 9063, 9064, 9065])
 
 function looksLikeTor(proxy) {
@@ -324,9 +357,7 @@ function looksLikeTor(proxy) {
 }
 
 function circuitFor(raw, lane) {
-  const proxy = parseProxy(raw)
-  if (!proxy || !looksLikeTor(proxy) || !Number.isFinite(lane)) return raw
-  return `socks5://aio${lane}:x@${proxy.host}:${proxy.port}`
+  return raw
 }
 
 /**
@@ -481,6 +512,9 @@ module.exports = {
   looksLikeTor,
   parseProxy,
   agentsFor,
+  releaseAgents,
+  socks5Connect,
+  readExactly,
   electronRules,
   ffmpegEnv,
   isSocks,
