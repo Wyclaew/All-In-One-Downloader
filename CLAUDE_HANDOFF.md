@@ -1,4 +1,4 @@
-# Claude için devir notu — All in One Downloader 0.14.0
+# Claude için devir notu — All in One Downloader 0.14.1
 
 Son güncelleme: 23 Ekim 2026. Kullanıcının en son istediği genel mimari taraması,
 otomatik Tor/ayrı kaynak oturumları, metadata ve görünür Touch ID geliştirmeleri
@@ -7,13 +7,13 @@ kitaplığı, kasa dosyaları ve tarayıcı çerezleri testlerde kullanılmadı.
 
 - Plan: [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) — 21 uygulanmış geliştirme,
   bütün ana katmanların taraması ve 40’tan fazla öncelikli sonraki iş.
-- Sürüm: `0.14.0`; yayın hedefi
-  [v0.14.0](https://github.com/Wyclaew/All-In-One-Downloader/releases/tag/v0.14.0).
+- Sürüm: `0.14.1`; yayın hedefi
+  [v0.14.1](https://github.com/Wyclaew/All-In-One-Downloader/releases/tag/v0.14.1).
 - Yerel Apple Silicon paket: `release/mac-arm64/All in One Downloader.app`.
 - Eski 0.13.0 yayın/test kaydı bu belgenin altındadır; aşağıdaki yeni sonuçların
   yerine eski 55 test sayısı kullanılmamalı.
 
-## 0.14.0 ağ yaşam döngüsü
+## 0.14.1 ağ yaşam döngüsü
 
 - Yeni `network-context.js`: `ensureForSource(id,{settings,signal,onProgress})`
   etkin vekil adresini verir. `getContext` yalnızca güvenli tür/etiket döndürür;
@@ -107,9 +107,9 @@ kitaplığı, kasa dosyaları ve tarayıcı çerezleri testlerde kullanılmadı.
   atanmaz; epoch kontrolü uyku/kilit sonrası eski şifre işleminin kasayı
   tekrar açmasını önler. Biyometrik key identity/epoch kontrolleri korunur.
 
-## Doğrulama — 0.14.0
+## Doğrulama — 0.14.1
 
-- Son tam yerel tur: **128/128 geçti, 0 skip**, yaklaşık6.1sn. Gerçek araçlarla
+- Son tam yerel tur: **128/128 geçti, 0 skip**, yaklaşık12.6sn. Gerçek araçlarla
   şifreli/plain HLS, byte-range/resume, ses seçimi, kaynak kurtarma ve **Türkçe
   altyazının bitmiş MP4’e gerçekten gömülmesi** test edildi. Önceki ara turlarda
   yeni caption fixture’ın Electron shim/MIME kurulum hataları düzeltildi.
@@ -142,11 +142,20 @@ kitaplığı, kasa dosyaları ve tarayıcı çerezleri testlerde kullanılmadı.
   arm64/x64 derleme/imza ve bu Mac’te **sadece promptsuz available durumu**
   doğrulandı. Gerçek parmak izi kaydet/aç yapılmadı; kullanıcı kasası açılmadı.
 
-## Yerel paket doğrulaması — 0.14.0
+## İlk CI turundaki Windows test düzeltmesi
+
+- `v0.14.0` etiketinin Mac kontrolleri geçti; Windows’ta tek test, simüle edilen
+  native helper yolunu POSIX slash sabitiyle karşılaştırdığı için başarısızdı.
+  Uygulama hatası değildi. Beklenti `path.join` ile platform bağımsız yapıldı.
+- Yarım0.14.0 otomatik yayına açılmadı; etiket zorla taşınmadı. Düzeltme yeni
+  **v0.14.1** etiketiyle iki platformda yeniden doğrulanıyor. Uygulama özellikleri
+  aynı; değişiklik test beklentisi ve sürüm numarasıdır.
+
+## Yerel paket doğrulaması — 0.14.1
 
 - Apple Silicon uygulaması `--publish never` ile üretildi. Deep/strict codesign
   doğrulaması geçti; app.asar içindeki **43 kaynak/arayüz dosyası** çalışma
-  kopyasıyla bayt olarak aynı, paket sürümü0.14.0.
+  kopyasıyla bayt olarak aynı, paket sürümü0.14.1.
 - Paket içindeki native helper’ın promptsuz status çağrısı
   `available=true` döndürdü. Gerçek kasaya erişim veya biyometrik kayıt yapılmadı.
 

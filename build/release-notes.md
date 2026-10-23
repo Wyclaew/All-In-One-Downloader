@@ -1,6 +1,6 @@
 Tor bağlantısı, video bilgileri ve kasa kullanımı güçlendirildi. Kaynakları topluca tekrar deneyebilir, takılan taramayı durdurabilir ve eksik video bilgilerini yeniden inceletebilirsin.
 
-## 0.14.0 ile gelenler
+## 0.14.1 ile gelenler
 
 - **Otomatik Tor:** VPN’li kaynakta uygulamanın Tor seçeneği kullanılıyorsa kendisi bağlanır. Ayrı kaynaklar ayrı Tor oturumları alır; her kaynağın çözümlemesi, indirmesi ve altyazısı aynı kimlikte kalır. Özel vekil ve WARP tercihin korunur. İki davranış ayarlardan yönetilebilir.
 - **Daha ayrıntılı video bilgisi:** HLS/DASH yayın listeleri, oynatıcı verileri, dosya ve sınırlı parça başlıklarından süre/boyut çıkarılır. Tahminler işaretlenir. Bozuk kalite bağlantısının yerine doğrulanmış seçenek seçilebilir.
@@ -16,9 +16,9 @@ Tor için ayrıca `brew install tor` veya Tor Browser kurulumu gerekir. Ayrı To
 
 | Sistem | Dosya |
 |---|---|
-| macOS Apple Silicon | `All-in-One-Downloader-0.14.0-arm64.dmg` |
-| macOS Intel | `All-in-One-Downloader-0.14.0-x64.dmg` |
-| Windows 10/11 64 bit | `All-in-One-Downloader-0.14.0-setup.exe` |
+| macOS Apple Silicon | `All-in-One-Downloader-0.14.1-arm64.dmg` |
+| macOS Intel | `All-in-One-Downloader-0.14.1-x64.dmg` |
+| Windows 10/11 64 bit | `All-in-One-Downloader-0.14.1-setup.exe` |
 
 Uygulama içindeki güncelleme denetimi açıksa yeni sürüm üstte bildirilir. Açılıştan yaklaşık 15 saniye sonra, ardından altı saatte bir kontrol edilir. Hemen kontrol etmek için Ayarlar → Uygulama → Güncellemeleri denetle kullanılabilir. Kurulum kullanıcı düğmeye bastığında başlar.
 

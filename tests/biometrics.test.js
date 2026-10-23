@@ -82,7 +82,7 @@ test('packaged helper path is external to asar and diagnostics guide enrollment 
   setNative({ available: false, status: 'not-enrolled' })
   assert.equal((await biometrics.refresh()).action, 'system-settings')
   assert.match(biometrics.status().reason, /parmak izi ekle/)
-  assert.equal(calls[0].file, '/Applications/Test.app/Contents/Resources/bin/vault-keychain')
+  assert.equal(calls[0].file, path.join('/Applications/Test.app/Contents/Resources', 'bin', 'vault-keychain'))
   setNative({ available: false, status: 'locked-out' })
   assert.equal((await biometrics.refresh()).status, 'locked-out')
   assert.match(biometrics.status().reason, /giriş parolan/)

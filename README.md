@@ -8,7 +8,7 @@ macOS için yazıldı; Windows altyapısı baştan hazır (aşağıya bak).
 
 ---
 
-## 0.14.0 — otomatik Tor, ayrıntılı video bilgisi ve görünür Touch ID
+## 0.14.1 — otomatik Tor, ayrıntılı video bilgisi ve görünür Touch ID
 
 - VPN’li kaynakta uygulamanın Tor seçeneği otomatik hazırlanır. Her kaynak ayrı
   Tor oturumu alır; çözümleme ve indirme aynı kaynak kimliğini korur. WARP/özel

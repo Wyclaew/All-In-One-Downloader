@@ -1,6 +1,6 @@
 # Geliştirme planı — All in One Downloader
 
-23 Ekim 2026 · 0.14.0 çalışması. Kullanıcının isteğiyle uygulamanın bütün ana
+23 Ekim 2026 · 0.14.1 çalışması. Kullanıcının isteğiyle uygulamanın bütün ana
 katmanları tarandı. Bu belge tamamlanan işleri, sonraki işleri ve doğrulama
 ölçütlerini ayırır. Gelecek işler henüz uygulanmış özellik sayılmaz.
 
