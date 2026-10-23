@@ -2,7 +2,7 @@
 
 Son güncelleme: 23 Ekim 2026. Kullanıcının en son istediği genel mimari taraması,
 otomatik Tor/ayrı kaynak oturumları, metadata ve görünür Touch ID geliştirmeleri
-uygulandı. Yayın doğrulama kaydı aşağıda tamamlanır. Kullanıcının gerçek
+uygulandı. **v0.14.1 yayımlandı**, kaynak commit’i `f708cce`. Kullanıcının gerçek
 kitaplığı, kasa dosyaları ve tarayıcı çerezleri testlerde kullanılmadı.
 
 - Plan: [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) — 21 uygulanmış geliştirme,
@@ -12,6 +12,31 @@ kitaplığı, kasa dosyaları ve tarayıcı çerezleri testlerde kullanılmadı.
 - Yerel Apple Silicon paket: `release/mac-arm64/All in One Downloader.app`.
 - Eski 0.13.0 yayın/test kaydı bu belgenin altındadır; aşağıdaki yeni sonuçların
   yerine eski 55 test sayısı kullanılmamalı.
+
+## GitHub yayın ve güncelleme doğrulaması — 0.14.1
+
+- `main` ve annotated `v0.14.1` etiketi GitHub’a gönderildi. Yayın draft veya
+  prerelease değil; Mac arm64/x64 DMG+ZIP, Windows EXE, blockmap ve iki update
+  manifesti hazır.
+- [Release workflow40021560748](https://github.com/Wyclaew/All-In-One-Downloader/actions/runs/40021560748)
+  **success**: Mac, Windows ve Install notes başarılı. İki runner’da da
+  **116 geçti / 0 hata / 12 skip**. FFmpeg/yt-dlp olmayan runner’ların atladığı
+  gerçek araç senaryoları yerelde çalıştı; CI128tam çalıştı denmemeli.
+- Yayındaki Mac arm64 ZIP’i yeniden indirildi: **95.400.475bayt**;
+  `latest-mac.yml` boyutu ve **SHA-512** eşleşti. Açılan paketin deep/strict
+  codesign kontrolü geçti; içindeki **43 kaynak/arayüz dosyası** çalışma
+  kopyasıyla bayt olarak aynı. Paket sürümü0.14.1 ve içindeki native helper’ın
+  promptsuz status sonucu `available=true`. Uygulama/kasa kurulup açılmadı.
+- Bütün7 zorunlu paket/manifest aynı sürümde doğrulanmadan taslak yayımlanmadı.
+  Etiket kaynak commit’i `f708cce`; daha sonraki devir doğrulama kaydı uygulama
+  kodunu değiştirmez.
+- `tests/manual/update-smoke.js 0.13.0 0.14.1`, gerçek updater kodunu ayrı
+  geçici profilde public GitHub’a karşı çalıştırdı: `available`, `latest=0.14.1`,
+  `automatic=true`. Kullanıcının çalışan uygulaması kurulmadı/değiştirilmedi.
+  Bu yeni sürümü bulma ve uygun otomatik hedef seçiminin doğrulamasıdır.
+- Otomatik kontrol açıksa açılışta yaklaşık15sn ve ardından6saatte bir uygulama
+  üst banner’ı gelir. Hemen görmek için Ayarlar → Uygulama → Güncellemeleri
+  denetle. OS bildirimi veya sessiz otomatik kurulum eklendi denmemeli.
 
 ## 0.14.1 ağ yaşam döngüsü
 
@@ -148,7 +173,7 @@ kitaplığı, kasa dosyaları ve tarayıcı çerezleri testlerde kullanılmadı.
   native helper yolunu POSIX slash sabitiyle karşılaştırdığı için başarısızdı.
   Uygulama hatası değildi. Beklenti `path.join` ile platform bağımsız yapıldı.
 - Yarım0.14.0 otomatik yayına açılmadı; etiket zorla taşınmadı. Düzeltme yeni
-  **v0.14.1** etiketiyle iki platformda yeniden doğrulanıyor. Uygulama özellikleri
+  **v0.14.1** etiketiyle iki platformda yeniden doğrulandı. Uygulama özellikleri
   aynı; değişiklik test beklentisi ve sürüm numarasıdır.
 
 ## Yerel paket doğrulaması — 0.14.1
