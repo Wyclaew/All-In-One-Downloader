@@ -11,6 +11,9 @@ Kaynak commit: `9747215`. Mac, Windows ve yayın doğrulama işleri başarılı.
   tamamlandı: Mac arm64/x64 paketleri, Windows paketi ve manifest/paket doğrulaması
   başarılı. CI test adetleri bu turda uzaktan log alınırken ağ zaman aşımına
   uğradığı için yazılmadı; yerel221/221 sayısı CI sayısı diye kullanılmamalı.
+- Yayın public/stable: draft=false, prerelease=false; Mac arm64/x64, Windows
+  ve iki güncelleme manifesti hazır. `tests/manual/update-smoke.js 0.14.1 0.15.0`
+  gerçek updater ile `available`, `latest=0.15.0`, `automatic=true` verdi.
 - Kullanıcı yeni sürümü mevcut uygulamasının üzerine kurmamı açıkça istedi.
   `/Applications/All in One Downloader.app`0.14.1’den **0.15.0’a güncellendi**
   ve başlatıldı; çalışan ana süreç doğrulandı. Kurulumdan önce aktif indirme
