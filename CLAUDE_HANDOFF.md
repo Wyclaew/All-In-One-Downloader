@@ -1,209 +1,204 @@
-## 0.15.0 — son durum / yeni test kaydı
+# Claude için güncel devir notu — 0.15.0
 
-25 Ekim2026. Package/lock0.15.0. Çalışma branch'i
-`codex/resolver-player-accounts`; sürüm commit/tag/push sonuçları bu bölümün
-altına eklenecek. Aşağıdaki WIP kayıtları önceki anlık durumdur.
+25 Ekim 2026. **Önce bu bölümü oku; alttaki 0.14.1 kaydı tarihçedir.**
+Kod tamamlandı, `main` ve annotated `v0.15.0` etiketi GitHub'a gönderildi.
+Kaynak commit: `9747215`. Mac, Windows ve yayın doğrulama işleri başarılı.
+[0.15.0 yayımlandı](https://github.com/Wyclaew/All-In-One-Downloader/releases/tag/v0.15.0).
 
-- Son ortak **221/221 yerel test geçti,0skip**,6.6sn; typecheck+rendererbuild
-  başarılı. `npmtest` son log `/tmp/aio-final-all.log`.
-- GerçekElectron UI: tek dizi3bölüm, Ayarlar'da sitehesapları, ses seçiminin
-  ekrandan çıkıp gelince korunması, Türkçe seçimin kuyrukişine ulaşması,
-  1000pxdüzeni ve0rendererhatası geçti (`/tmp/aio-audio-ui.log`).
-- GerçekmainIPC: kaynak cancel/retry/stop, metadataID, redaction, route değişimi,
-  duplicatecount ve kitaplıkyedeği geçti (`/tmp/aio-final-ipc.log`).
-- Gerçek yerelHTTPS hesap fixture'ı: giriş/kayıtPOST, tanınan hesaplinkleri,
-  exact-origin redirectkoruması, tekdeneme sınırı; CAPTCHA/MFA/koşul/ekkimlik/
-  ödeme/paroladeğiştirme blokları ve0dışistek/rendererhatası geçti
-  (`/tmp/aio-final-accounts.log`). Gerçekhesapoluşturulmadı.
-- Oynatıcı gerçekgeneratedmediasmoke: sesler~441/883Hz, herdosyadaOFF,
-  asyncsubtitle/overlap, remuxkonum/hız/pause, nextOFF ve sentetik eşzamanlı
-  audio/video zamanlamaboşluğunu bulma geçti (`/tmp/aio-player-final.log`).
-- NativeTouchID: arm64+x64derleme/imza; yeniad-hoc SecureEnclaveblobrestore,
-  AES-GCMroundtrip/tamper ve protectedECDH'nin `interactionNotAllowed`
-  bağlamında reddi geçti. **Gerçekinsanparmakiziyle enable/open denenmedi**;
-  kullanıcıkasasına veya kayıtlı Keychainanahtarına dokunulmadı.
+## Yayın ve kullanıcının Mac’ine kurulum
 
-### Son istek: indirme başına ses dili
+- [Release workflow 40202364168](https://github.com/Wyclaew/All-In-One-Downloader/actions/runs/40202364168)
+  tamamlandı: Mac arm64/x64 paketleri, Windows paketi ve manifest/paket doğrulaması
+  başarılı. CI test adetleri bu turda uzaktan log alınırken ağ zaman aşımına
+  uğradığı için yazılmadı; yerel221/221 sayısı CI sayısı diye kullanılmamalı.
+- Kullanıcı yeni sürümü mevcut uygulamasının üzerine kurmamı açıkça istedi.
+  `/Applications/All in One Downloader.app`0.14.1’den **0.15.0’a güncellendi**
+  ve başlatıldı; çalışan ana süreç doğrulandı. Kurulumdan önce aktif indirme
+  yoktu (19tamamlanmış kayıt). Installer yalnız uygulama paketini değiştirdi;
+  kitaplık/kasa/indirme dosyaları taşınmadı veya silinmedi.
+- GitHub ZIP indirmesi bu ağda çok yavaş ilerledi. Kurulum için aynı yayımlanmış
+  `9747215`kaynağından yerelde hazırlanan arm64paket kullanıldı. **52uygulama ve
+  renderer dosyası** kaynak commit/yerel build ile bayt olarak aynı; package
+  identity/version ve deep/strict codesign geçti. Native helper promptsuz
+  `available=true, backend=secure-enclave` döndürdü. Yayımlanmış ZIP'in SHA512'si
+  bu kurulum için doğrulandı denmemeli; o ZIP kurulmadı.
+- Önceki uygulama geri alma için
+  `/Applications/.aio-install-kep3pi57/previous-bundle`konumunda korundu.
+  Kurulum kaydı `/tmp/aio-installed-0150.json`.
+- Mac kilitliydi; CUA arayüz doğrulaması “Mac is locked” ile durdu. Kilit
+  aşılmaya çalışılmadı. Dosya sürümü, imza ve çalışan süreç doğrulandı;
+  **kullanıcının gerçek masaüstündeki son ekran insan kontrolü bekliyor**.
+  İzole Electron arayüz testleri yukarıdaki sürümde başarılıydı.
 
-Sources'ta grup, tekvideo ve topluseçim sesdropdown'u var: Türkçe/İngilizce/
-kaynağınsesi. App'tetutulan seçimnavigate'dekorunur. IPC veenqueue tercihi
-herişekopyalar; globalayarsonradandeğişseişdeğişmez. Bulk skip/duplicate artık
-kalite+sesiseçiminihesabakatıyor; completedvideoyu farklısesleindirilebilir.
-Gerçeksesdili `audioLanguage`, kalıcıuyarı `audioWarning` ve uygunlistediller
-`audioAvailableLanguages` iletaşınır. Manuel seçilen dilindosyadabulunmadığı
-biliniyorsa yanlışdublajdoneolmaz; mevcutgeçerlioutput `pendingFilePath` olarak
-korunur, kullanıcı kaynak/dilseçimini değiştirebilir. Etiketsizses kesin
-İngilizce/Türkçe sayılmaz; bilinmiyoruyarısı görünür. GerçekTR/EN AACpaket
-hashleri remux'unkaynakistenenkanalı koruduğunu doğruladı.
-Kalitefiltresi `[height<=?cap]`: bilinmeyenheightkabul, bilinenovercapret;
-uncappedgeri dönüş yok. Offlinegerçekyt-dlptestive realexpiredHLScasegeçti.
+## Kullanıcının son istekleri ve sonuç
 
-### Dizibox — çözüldüğü doğrulanan güncel hata
+- **İndirme başına ses dili:** Kaynaklar ekranında çözünürlüğün yanında Türkçe,
+  İngilizce ve kaynağın sesi seçiliyor. Tek video, kaynak grubu ve toplu seçim
+  ayrı yönetiliyor. Tercih sayfalar arasında korunuyor, her işe kopyalanıyor;
+  genel ayarın değişmesi başlamış veya sıradaki tercihi değiştirmiyor.
+- **Yanlış dublaj:** Gerçek çıktı dili ve istenen dil ayrı gösteriliyor.
+  `audioWarning` kalıcı. Elle seçilen dilin dosyada olmadığı biliniyorsa farklı
+  dublaj done sayılmıyor; geçerli dosya `pendingFilePath` olarak korunuyor.
+  Etiketsiz ses İngilizce/Türkçe diye uydurulmuyor. Türkçe ve İngilizce remux
+  gerçek AAC paket hashleriyle doğrulandı. Bilinen çözünürlük sınırı aşılmıyor;
+  `[height<=?cap]` yalnız yüksekliği bilinmeyen formatı ayrıca kabul ediyor.
+- **Dizibox:** Statik tarama gereksiz yardımcı betikleri bekleyerek tarayıcı
+  süresini tüketiyordu; ayrıca bütün iframe navigasyonları tek yenileme sayacını
+  dolduruyordu. Belge önceliği, sınırlı statik aşama, asıl oynatıcı iframe'ine
+  öncelik, frame+aynı URL sayacı, çerez eşitleme iframe'lerini alternatif
+  oynatıcı sanmama ve geç manifest için sınırlı ek süre düzeltildi.
+- **E-posta/parola:** Ayarlar → Site hesapları. Profil ve site izinleri yalnız
+  Electron safeStorage ile şifreli `site-accounts.enc` dosyasında tutuluyor;
+  plaintext/basic_text backend reddediliyor. Parola sadece IPC girdisi;
+  kitaplık, durum yanıtı ve tanılama raporunda yok. Tam HTTPS origin başına
+  giriş/kayıt ayrı izinli. Gerçek erişim gereksiniminde standart form veya
+  tanınan hesap bağlantısı işleniyor. CAPTCHA, kod, koşullar, ek kişisel bilgi,
+  ödeme ve parola değiştirme gerektiğinde kullanıcı tamamlıyor. Gerçek hesap
+  oluşturulmadı; sadece yerel fixture hesap bilgileriyle test edildi.
+- **Touch ID etkinleştirme:** Ad-hoc helper, provision edilmiş entitlement
+  gerektiren DP Keychain kaydında -34018 alabiliyordu; sensör kontrolü başarılı
+  olsa da kayıt bozulabiliyordu. Yeni yöntem Secure Enclave P256 ECDH + HKDF +
+  AES-GCM kullanıyor. Yerelde yalnız cihazca şifreli anahtar blob'u ve şifreli
+  envelope var; gerçek özel anahtar işlemi `biometryCurrentSet` ile korunuyor.
+  Şifreyle açıp yeniden etkinleştirme görünür. Mimari ve sınırlar:
+  [BIOMETRIC_STORAGE.md](electron/native/BIOMETRIC_STORAGE.md).
+- **VPN seçimi:** Direct işler için yt-dlp'ye açık boş proxy argümanı veriliyor;
+  yardımcı araçların ortamından proxy/bypass değişkenleri temizleniyor. Native
+  HTTP, HLS, DASH ve host bütçeleri rota bazında ayrı. Kaynak ağını değiştirmek
+  bağlı işleri duraklatıyor ve yeni ağda tekrar çözümlüyor. Tor'u arkada açık
+  tutmak direct işin seçimini değiştirmiyor. Sistem genelindeki VPN'in OS
+  rotasını uygulamanın aşacağı iddia edilmiyor.
+- **Oynatıcı:** Her yeni dosya/bölüm açılışında altyazı OFF. Örtüşen altyazılar,
+  async seçim/OFF yarışı, gecikme sıfırlama, gerçek çoklu ses, ses gecikmesi,
+  konum/hız/pause koruyan remux, klavye/focus/seek ve sonraki bölüm kontrolleri
+  düzeltildi. Tampon/kare istatistikleri, tekrar açma ve açıkça başlatılan paket
+  zamanlama tanısı eklendi.
+- **Aktarım:** Açık sonlu DASH VOD (Template/Timeline/List/range, ayrı ses,
+  uyumlu çok dönem, hash ile devam), sunucu+rota bazında uyarlanan parça sayısı,
+  güçlü partial/range/validator denetimi. FFmpeg parça atlayıp 0 ile çıksa bile
+  eksik dosya başarı sayılmıyor. HTTP CONNECT/abort socket yarışları ve host
+  bütçesinde son bekleyenin iptalinden sonraki kuyruk kilidi giderildi.
+- **Günlük kullanım:** FIFO, sırada öne alma, kalite+ses bazında duplicate
+  kontrolü, doğru bulk adet, disk azlığında partial'ı koruyan duraklama,
+  8 özel kitaplık snapshot'ı/rolling last-good/bozuk orijinali koruyan kurtarma,
+  araçların bulunması ile çalışabilirliğini ayıran sağlık denetimi.
+- **Keşif/metadata:** Typed uzantısız kaynaklar, HTML base/data-setup, Shaka,
+  JSON-LD graph, göreli API yanıtları, sınırlı Packer çözümü; nested HLS leaf'in
+  kalite/ses grubunun probe→recovery→indiricide korunması. IP engeli, üyelik,
+  CAPTCHA, DRM ve sıradan ağ arızası ayrı açıklanıyor. Ek curl backend eklenmedi.
 
-Asılappbugları: staticphase gereksizyardımcıbetikleri bekleyip browserbudget'ı
-tüketiyordu; bütüniframe navigasyonları tekreloadsayacınıdolduruyordu.
-Documents-first/boundedstaticphase, knownplayeriframe önceliği, frame+aynıURL
-bazlıreloadkoruması ve çerezsyncframealternatiflerini eleme uygulandı. Ekcurl
-backend **eklenmedi**; NodeHTTPvegerçektarayıcıyla düzeldi. IPdeny için ayrı
-`network-blocked` açıklamasıvar; kullanıcıyaseçmedendirect↔Tor geçilmez.
+## Doğrulama — 0.15.0
 
-- 3Body1x1 publicpage, hesapsız/VPN'siz20.9snHLSbuldu;2segmentMP4
-  **3.244.677bayt/6.089389sn**.
-- Mentalist1x6 publicpage, hesapsız/VPN'siz16snHLSbuldu; normal45snayarla
-  ikinciörnek **530.192bayt/10.03102sn**,19.7sntoplam. Örnekler silindi.
-- Ara18sn/36sntoplamlimitdenemesi Mentalist'tetimeoutoldu; ağ/sitehâlâ
-  aralıklıgecikebiliyor. Sonsuzgüvenilirlik/herlinkgarantisiverilmez.
-- Mevcut eski Mentalistdosyasındaki42boşlukonarıldıdenmemeli; yeniilk2parça
-  örneği60sncivarındaki eksik12.parçanıngerialınmasını doğrulamaz.
+- Son ortak yerel tur: **221/221 geçti, 0 skip**, yaklaşık 6.6 saniye.
+  Typecheck, renderer build ve whitespace kontrolü geçti.
+- Gerçek Electron UI: tek dizi/3 bölüm; site hesabı ayarları; Türkçe seçimin
+  sayfa değişiminde korunması ve kuyruk işine ulaşması; 1000px kaynak düzeni;
+  0 renderer hatası. Görüntüler `/tmp/aio-ui-smoke-results/`.
+- Gerçek main IPC: kaynak iptal/tekrar/durdur, metadata kimliği, redaction,
+  ağ değişiminde pause, duplicate adet ve yedek dosyası doğrulandı.
+- Gerçek yerel HTTPS hesap testi: giriş ve kayıt POST'ları, tanınan hesap
+  bağlantıları, exact-origin/redirect/tek deneme koruması; 8 ek gereksinim
+  fixture'ında parola doldurmama; 0 dış ağ isteği ve 0 renderer hatası.
+- Gerçek Electron oynatıcı: iki ses yaklaşık 441/883Hz; her açılışta OFF,
+  altyazı overlap/async yarışı, konum/hız/pause koruyan remux, next OFF, küçük
+  pencere ve sentetik eşzamanlı ses/görüntü boşluğunun tanısı geçti.
+- Touch ID: arm64/x64 derleme ve codesign geçti. Bu Mac'te yeni ephemeral
+  Secure Enclave blob'un restore edilmesi, şifreleme turu, değiştirilmiş
+  ciphertext'in reddi ve `interactionNotAllowed` bağlamında korunan ECDH'nin
+  engellenmesi doğrulandı. **İnsan parmak iziyle gerçek etkinleştirme/açma
+  yapılmadı.** Kullanıcının kasası veya kayıtlı Keychain anahtarı okunmadı.
+- Ses: Türkçe ve İngilizce gerçek çift sesli AAC paketleri kaynakla aynı;
+  eksik manuel dilin yanlış dublajla done olmaması test edildi. Gerçek offline
+  yt-dlp, 720 sınırında unknown/720/1080 formatlarını doğru ayırdı.
 
-### Hesaplar / TouchID yeni dosyaları ve sınırlar
+### Güncel canlı Dizibox sonuçları
 
-- `site-accounts.js`: bütünprofil+originizinleri safeStorage ileşifreli
-  `site-accounts.enc`; plaintextbackend/basic_textreddedilir. APIpasswordinput
-  only; status'tapasswordyok. Üyelik şartlarınıotomatikonaylama, ödeme,
-  CAPTCHA/MFA/e-postakoduotomasyonu yok. Güvenilenoriginbaşına açıkizinvardır.
-- `site-account-forms.js`: sadeceactualaccessgate'te navigasyon; tamHTTPSorigin,
-  aynıoriginPOST ve yalnızstandartfields. `result.accountState` güvenlidurum.
-- `electron/native/BIOMETRIC_STORAGE.md`: ad-hochelpergenericDPKeychain'in
-  -34018riskini ve SecureEnclaveECDH/HKDF/AES-GCM modelinianlatır. Keydeviceblob
-  +şifrelienvelope local0600; gerçeközelECDHişlemi biometryCurrentSetilekorunur.
-  Eskiyetkilikayıtgeriokuma ve şifreyleyenidenetkinleştirme vardır.
+Hesap ve VPN kullanılmadan:
 
-Kalan: gerçekcihazTouchIDkullanıcıetkileşimi, eskiMentalist'in eksikCDNparçaları
-alınarak ayrıdosyadayenidenkurulması, kullanıcınınasılYouTubeeşzamanlıhızının
-sürümsonrasıölçümü; gerçekDRM/üyelik/insandoğrulamasıbypassuygulanmadı.
-Plan [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md): önceki21+bu tur39geliştirme
-başlığı; tamamlanmış ve kalan kapsam ayrıanlatılır.
+- `https://www.dizibox.live/3-body-problem-1-sezon-1-bolum-izle/` yaklaşık
+  20.9 saniyede HLS buldu. Kendi motoruyla 2 segment MP4:
+  **3.244.677 bayt / 6.089389 saniye**.
+- `https://www.dizibox.live/the-mentalist-1-sezon-6-bolum-izle/` yaklaşık
+  16 saniyede HLS buldu. Normal 45 saniyelik ayarla 2 segment MP4:
+  **530.192 bayt / 10.03102 saniye**, yaklaşık 19.7 saniye toplam.
+- Örnekler silindi. Bir ara 18/36 saniyelik kısa bütçe denemesi Mentalist'te
+  timeout oldu; site/ağ gecikmesi devam edebilir. Tam bölüm ve her link için
+  koşulsuz başarı iddiası yok.
 
----
+## Mentalist'teki takılma — bulunan neden, onarılmayan dosya
 
-# Güncel çalışma devri — 25 Ekim 2026
-
-**Önce bu bölümü oku. Aşağıdaki 0.14.1 yayın kaydı tarihçedir.** Son yayımlanmış
-sürüm hâlâ0.14.1, HEAD `afcac29`. Bu turdaki geniş geliştirmeler çalışma
-kopyasında; henüz yeni commit, tag, paket veya GitHub yayını yapılmadı. Package
-version0.14.1 bırakıldı. Yeni sürüm bildirimi bu WIP için henüz gelmez.
-
-## Son kullanıcı istekleri ve öncelik
-
-- Dizibox şu anda çözümlenmiyor; canlı yeniden üretim ve düzeltme sürüyor.
-- VPN seçmeden çözümlenen kaynak, arkada Tor açık olsa da doğrudan indirilmeli.
-- Mentalist'te aralıklı donma: dosyadaki eksik zaman dilimleri saptandı; gerçek
-  dosya henüz onarılmadı veya değiştirilmedi.
-- Oynatıcıda altyazılar **her yeni dosya/bölüm açıldığında kapalı** olacak.
-- Ayarlara e-posta/parola ve site bazında otomatik giriş/kayıt tercihi isteniyor.
-  Yeni özellik geliştirme halinde; henüz gerçek hesap oluşturulmadı.
-- Kullanıcı Touch ID'yi etkinleştiremiyor. Sensörün available olması kayıt
-  işleminin çalıştığı anlamına gelmiyor; native kayıt kök nedeni inceleniyor.
-- Önceki GitHub push/tag/yayın isteği geçerli; ancak bütün yeni kodun son ortak
-  testi ve paket doğrulaması tamamlanmadan yayın yapma.
-
-## Çalışma kopyasında bulunan geliştirmeler
-
-- Native açık DASH VOD: SegmentTemplate Number/Time, finite Timeline,
-  SegmentList/ranges, inherited BaseURL, video+tercih edilen ses, uyumlu çoklu
-  Period, cache/hash ile devam. DRM/live/karmaşık unsupported durumlar sınırdır.
-- HLS/DASH/file parça izinleri sunucu+rota bazında paylaşılır;429/ağ hatasında
-  eşzamanlılık azaltılır, başarılı isteklerle kademeli geri gelir.
-- HTTP CONNECT soketinin paused bırakılması düzeltildi; son parça abort'unda
-  pooled socket'a enjekte edilen AbortError yarışı giderildi.
-- File resume prefix/hash/resource/validator ve Content-Range kontrolleri
-  güçlendirildi. FFmpeg0 ile çıksa bile atlanan/bozuk segment uyarısı
-  `MEDIA_INCOMPLETE` sayılır; eksik dosya tamamlandı diye yeniden adlandırılmaz.
-- Typed/uzantısız kaynaklar, HTML base/data-setup, Shaka manifestUri,
-  JSON-LD graph, göreli POST/JSON cevapları ve bounded Packer çözümü genişletildi.
-- Nested HLS master depth/cycle kontrolü; doğrulanmış `preparedVariants`
-  leaf URL'si, yüksekliği ve o dala ait ses grubu probe/recovery/types boyunca
-  taşınır. Yanlış DRM pozitifleri azaltıldı.
-- FIFO kuyruk, sırada öne alma, aktif aynı kalite/ses işini çoğaltmama,
-  bulk IPC'de gerçek eklenen adet. Disk preflight/watchdog ile alan azsa
-  partial'ı koruyarak paused;1500işte reentrant pump stack taşması engellendi.
-- Özel kitaplık yedekleri (8snapshot), rolling last-good, bozuk orijinali
-  koruyarak kurtarma, Ayarlar'dan elle yedekleme. Kasa yedeği değildir.
-- Araç sağlık kontrolü var: dosyası var ama çalışmıyor ayrı gösterilir;
-  FFprobe sürümü, ortak concurrent scan, doğru updater hata sonucu.
-- Kaynağı direct/proxy arasında değiştirme düğmesi bağlı işleri duraklatır,
-  yeni rota ile tekrar çözümler. Global proxy environment toolEnv'den
-  temizlendi, yt-dlp'ye direct işler için bile açık `--proxy ''` veriliyor.
-- Cookie export paylaşılırken tek bekleyenin abort'u diğer bekleyeni kesmez.
-- Oynatıcı: her açılışta altyazıOFF, async subtitle seçim yarışı, örtüşen cues,
-  konum/hız/pause koruyan remux, native ses kanalları, ses gecikmesi,
-  klavye/focus/scrub düzeltmeleri, sonraki bölüm kontrolü ve oynatma tanısı.
-  Explicit paket zamanlama taraması `electron/player/timing.js` içindedir.
-
-## Mentalist — kanıt ve tamamlanmayan onarım
-
-Kullanıcının izin verdiği salt-okunur inceleme:
+Kullanıcı isteğiyle salt okunur incelenen dosya:
 `~/Downloads/Everything Downloader/The Mentalist 1.Sezon 6.Bölüm.mp4`
-(diskte UnicodeNFD ad olabilir).723.799.695bayt,2630.008sn,1080p H264/AAC,
-video58017frame, İngilizce AAC. **42 adet eşzamanlı video/ses boşluğu** var:
-video sample duration5.046711sn(normal~0.0417), AAC5.016–5.039sn.
-İlkler60.018,110.068,185.143,235.193sn; son2612.568sn.
-Yaklaşık210sn içerik yok. DTS görünürde bitişik: mux aradaki süreyi önceki
-sample'a yazdığı için yalnız `nextDTS-prevEnd` kontrolü bunu kaçırır.
-Tam FFmpeg decode0exit/0warning verdi; decode başarısı eksik parçayı kanıtlamaz.
+(diskte Unicode NFD ad olabilir). 723.799.695 bayt, 2630.008 saniye,
+1080p H264/AAC, 58.017 video karesi, İngilizce AAC.
 
-Public bölüm sayfası önceECONNRESET ile başarısızdı; doğrudan public embed
-`https://dbx.molystream.org/embed/sheila/31275-6ab461053d660456859e002e`
-çözüldü:526parça/~5.005sn. Manifest çok sayıda CDN hostuna dönüşümlü gider.
-Parça0..11 alınabiliyor;12'nin hostu `db4.77777846.xyz` TLS ECONNRESET ile
-tekrar tekrar başarısız(1connection ile de). Bu ilk eski boşlukla eşleşiyor.
-FFmpeg'in eski remote HLS davranışının başarısız parçaları atlayıp0exit
-vermesi güçlü açıklama; eski indirme logu yok, kesin tarihsel kanıt sayma.
-Başka manifestte ilan edilen CDN hostunda aynı12yolunu deneme HTTP200başlık
-verdi ama3.117.228bayttan yalnız77.784bayt/20sn geldi; **ayna doğrulanmadı**,
-genel host-değiştirme veya onarım kodu eklenmedi. Orijinali koru; önce sınırlı
-örnekte tam parça+zamanlama kanıtı al, sonra yeni ayrı dosya oluştur.
+**42 eşzamanlı ses/görüntü boşluğu** saptandı: normal video örneği yaklaşık
+0.0417 saniyeyken bu örnekler 5.046711 saniye; AAC 5.016–5.039 saniye.
+İlkleri 60.018, 110.068, 185.143, 235.193; sonuncu 2612.568 saniyede.
+Yaklaşık 210 saniye medya eksik. DTS görünürde bitişik; mux boşluğu önceki
+sample süresine yazmış. Tam FFmpeg decode 0 exit/0 warning verdi: decode
+başarısı eksik içerik olmadığını kanıtlamıyor.
 
-Geçici yerel araştırma: `/tmp/aio-mentalist-source.cjs`,
-`/tmp/aio-mentalist-{source,embed,retry}.log`,
-`/tmp/aio-mentalist-decode.log`. Geçici `aio-mentalist-investigation-*`
-klasöründeki `source-private.json` çalışma token/jar yolları içerebilir:
-Git'e veya paylaşılabilir rapora koyma. Gerçek kasa/tarayıcı çerezi okunmadı.
-Gerçek kitaplıktan yalnız ilgili indirme/etkin ağ tercihleri salt-okunur alındı.
+Public Molystream manifesti 526 adet yaklaşık 5.005 saniyelik parça içeriyor.
+Parça 0..11 alınabiliyor; 12'nin ilan edilen CDN hostu `db4.77777846.xyz`
+1 bağlantıyla da tekrarlı TLS ECONNRESET verdi. Bu ilk eski boşlukla eşleşiyor.
+Eski remote FFmpeg'in erişilemeyen parçayı atlayıp başarı vermesi güçlü
+kök neden açıklaması; eski aktarım logu yok, kesin tarihsel kanıt denmemeli.
+Başka ilan edilmiş CDN hostunda aynı yolu deneme HTTP200 başlığı verdi ama
+20 saniyede 3.117.228 bayttan yalnız 77.784 bayt geldi; ayna doğrulanmadı.
+**Mevcut kullanıcı dosyası onarılmadı/değiştirilmedi.** Yeni ilk 2 segment
+örneği, eski 12. parçanın alındığını da kanıtlamaz. Eksik içeriği yalnız zaman
+çizelgesini kısaltarak onarılmış gibi gösterme. Güvenilir alternatif kaynaktan
+veya doğrulanmış tüm parçalardan ayrı yeni dosya oluşturmak sonraki iş.
 
-## VPN / hız — doğrulanan ile açık kalan
+Geçici araştırma: `/tmp/aio-mentalist-source.cjs`,
+`/tmp/aio-mentalist-{source,embed,retry}.log`, `/tmp/aio-mentalist-decode.log`.
+`aio-mentalist-investigation-*` içindeki `source-private.json` çalışma token/
+çerez dosyası yolları içerebilir; Git'e veya paylaşılabilir rapora koyma.
 
-Canlı kullanıcının dört indirmesi useProxy=false, rateLimit boş, concurrency6,
-connections6; hızlar~30–85KB/s idi. Çalışan yt-dlp süreçlerinde explicit proxy
-argümanı yoktu. Bağlantı örneğinde15TCP/0loopback proxy/0Tor portu görüldü:
-**yavaşlık Tor'a gidiyor diye doğrulanmadı**. macOS proxy durumunda WPAD/PAC
-otomatik keşif açık. Yeni kod environment ve OS otomatik proxy seçimini
-kapatıyor; sistem genelinde VPN'in OS rotasını aşma garantisi yok.
-Kontrollü aktif proxy yanında iki direct transfer byte-exact bitti, proxyye
-ilave veri0. Kullanıcıdaki hız artışı henüz ölçülmedi. yt-dlp2026.08.19,
-Deno ve Node kurulu. Aynı YouTube public URL'de direct metadata0exit,
-55format ve uyarısız çıktı verdi; JS runtime eksikliği bu örnekte bulunmadı.
+## Hız sorunu — doğrulanan sınır
 
-## Son doğrulama durumu
+Kullanıcının etkin 4 işinde useProxy=false, rateLimit boş, concurrency=6,
+connections=6; gözlenen hızlar yaklaşık 30–85KB/s idi. Süreçlerde explicit
+proxy argümanı yoktu. TCP örneğinde 15 bağlantı, 0 loopback proxy ve 0 Tor
+portu görüldü. **Yavaşlığın Tor'a gitmekten kaynaklandığı doğrulanmadı.**
+macOS'te WPAD/PAC keşfi açıktı; yeni explicit direct tercihi yardımcı araçların
+bu otomatik seçimini kapatıyor. Kontrollü çalışan proxy yanında iki doğrudan
+transfer byte-exact bitti ve proxyye ilave veri 0 oldu. Kullanıcının gerçek
+YouTube hızında sürüm sonrası artış henüz ölçülmedi. yt-dlp2026.08.19, Deno ve
+Node vardı; aynı public YouTube URL'sinde direct metadata uyarısız/0 exit,
+55 format verdi. Bu örnekte JS runtime eksikliği bulunmadı.
 
-- Önceki0.14.1:128/128yerel başarılı (aşağıda tarihçe).
-- Bu WIP ilk toplu turda yalnız2DASH testi başarısızdı; ilgili socket/proxy
-  düzeltmelerinden sonra engine odaklı25/25geçti, ek integrity testleri var.
-- Root storage/queue/browser/health odaklı19/19geçti. Son route testinde
-  tool-health yalnız testin eski PATHfixturebeklentisiyle düştü; beklenti
-  gerçekkorunanPATHbileşenlerine düzeltildi. Tüm son sonuç yeniden çalıştırılmalı.
-- Typecheck ve renderer build geçti; sonradan yeni değişiklikler oldu.
-- Gerçek main IPC `tests/manual/source-lifecycle.js`: cancel/retry/stop,
-  metadataID, redaction, route switchpauses, duplicatecount, backup geçti.
-- Gerçek Electron player synthetic smoke: subtitleOFF/overlap/race, iki gerçek
-  ses kanalı~445/879Hz, delay, konum koruyan remux, nextOFF,480px,0renderer ve
-  ağ isteği;16pureplayer/timingtest raporlandı. Son ortak turda tekrar çalıştır.
-- Tam güncel test logu: `/tmp/aio-resume-tests.log` (sonuç aşağıdaki ek notta).
+## Kalan işler / devam
 
-## Devam sırası
+1. Bu cihazda yeni sürümle insan parmak izi kullanarak kasayı şifreyle aç →
+   Touch ID'yi yeniden etkinleştir → kilitle → Touch ID ile aç kabul testi.
+2. Mentalist'in eksik CDN parçalarını doğrulanan bir yoldan alıp ayrı dosyada
+   yeniden oluşturma; mevcut dosyayı koruma.
+3. Kullanıcının asıl çoklu YouTube indirmelerinde toplam hız/CDN yanıtlarını
+   ölçme; native direct testini gerçek internet hız artışı diye sunmama.
+4. Referanslı çerez temizliği, canlı kayıt, büyük kitaplık ve diğer yol haritası
+   işleri [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) içinde. Önceki 21 + bu tur
+   39 iyileştirme başlığı var; ayrı 60 büyük özellik iddiası değildir.
+5. Gerçek üyelik/DRM/insan doğrulaması atlatılmadı. Genel çözümleyici, izinli
+   hesap oturumu ve açık yayın desteği geliştirildi; koşulsuz her site garantisi yok.
 
-1. Dizibox güncel403/IPblock sınıflamasını ve site hesap özelliğini bitir;
-   IPengeli gerçeküyelikformu gibi ele alma. Herlink/DRMbypass garantisi verme.
-2. TouchID native enable hatasını düzelt; gerçekparmakizi testi yapılmadıysa belirt.
-3. npmtest/typecheck/build + isolated Electron source/player/resolver smokes.
-4. Yeni README/release notes ve DEVELOPMENT_PLAN'da biten backlogları güncelle.
-5. İncele, sürümü artır, commit/push/tag; Mac+Windows CI/paket/manifest
-   doğrulaması ve0.14.1→yeni updater smoke; başarısız tag'i zorla taşıma.
+## Tekrarlanabilir kontroller ve günlükler
+
+`npm test`, `npm run typecheck`, `npm run build`.
+Electron: `tests/manual/resolver-fixtures.js`, `source-lifecycle.js`,
+`site-accounts-smoke.js`, `player-smoke.js`, `ui-smoke.js`.
+Günlükler: `/tmp/aio-final-all.log`, `/tmp/aio-final-ipc.log`,
+`/tmp/aio-final-accounts.log`, `/tmp/aio-player-final.log`, `/tmp/aio-audio-ui.log`,
+`/tmp/aio-dizibox-tests.log`, `/tmp/aio-dizibox-fixtures.log`,
+`/tmp/aio-dizibox-mentalist-default.log`.
+Testler ayrı geçici profil kullanır. Gerçek tarayıcı çerezi/kasa açılmaz; bu tur
+kullanıcı izniyle yalnız ilgili gerçek video ve kitaplıktaki ilgili indirme/ağ
+tercihleri salt okunur incelendi. Ürün verisi veya çalışan indirmeler değiştirilmedi.
 
 ---
 
-# Tarihçe: yayımlanmış0.14.1
+# Tarihçe: yayımlanmış 0.14.1
 
 # Claude için devir notu — All in One Downloader 0.14.1
 
