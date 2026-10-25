@@ -218,7 +218,6 @@ function httpConnect(proxy, host, port) {
       // Anything the proxy sent along with the 200 belongs to the tunnelled
       // conversation; dropping it would lose the first bytes of the response.
       if (head && head.length) socket.unshift(head)
-      socket.pause()
       resolve(socket)
     })
     req.once('error', reject)

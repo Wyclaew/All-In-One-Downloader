@@ -1,24 +1,25 @@
-Tor bağlantısı, video bilgileri ve kasa kullanımı güçlendirildi. Kaynakları topluca tekrar deneyebilir, takılan taramayı durdurabilir ve eksik video bilgilerini yeniden inceletebilirsin.
+Ses dilini her indirme için seçebilir, site hesaplarını güvenli biçimde tanımlayabilir ve oynatma sorunlarını daha açık inceleyebilirsin.
 
-## 0.14.1 ile gelenler
+## 0.15.0 ile gelenler
 
-- **Otomatik Tor:** VPN’li kaynakta uygulamanın Tor seçeneği kullanılıyorsa kendisi bağlanır. Ayrı kaynaklar ayrı Tor oturumları alır; her kaynağın çözümlemesi, indirmesi ve altyazısı aynı kimlikte kalır. Özel vekil ve WARP tercihin korunur. İki davranış ayarlardan yönetilebilir.
-- **Daha ayrıntılı video bilgisi:** HLS/DASH yayın listeleri, oynatıcı verileri, dosya ve sınırlı parça başlıklarından süre/boyut çıkarılır. Tahminler işaretlenir. Bozuk kalite bağlantısının yerine doğrulanmış seçenek seçilebilir.
-- **Kaynak araçları:** toplu tekrar dene/durdur, kaynak başına durdur, eksik bilgileri yeniden tara ve temizlenmiş hata raporunu kopyala.
-- **Görünür Touch ID:** kasa kilitliyken de kurulum/durum paneli görünür. Önce kasayı şifreyle açıp Touch ID’yi etkinleştir. Parmak izi/Keychain sorunu varsa açıklama ve güvenli yeniden kayıt yolu gösterilir; şifreyle erişim devam eder.
-- **Daha güvenilir işlemler:** iptal edilmiş eski metadata işi yeni taramayı engellemez. Uyku/kilit sırasında bekleyen şifre işlemi kasayı tekrar açamaz. Yeniden başlatmada eski ağ ve yükleniyor durumları temizlenir.
-- **Özel ağ tercihi korunur:** VPN’li kaynakların uzak kapakları doğrudan yüklenmez; tarayıcı oturumu internete örnek istek göndermeden aktarılır. Son işlemler sürdürülürken de kaynak bağlantısı hazırlanır.
-- **Tor üzerinden altyazı:** WebVTT/SRT ve desteklenen parçalı WebVTT önce seçili ağdan alınır, yerelde dönüştürülür. Yönlendirmelerde çerez kapsamı korunur.
+- **İndirme başına ses dili:** çözünürlüğün yanında Türkçe, İngilizce veya kaynağın sesini seç. Video/kaynak/toplu seçimler ve gerçek ses dili ayrı gösterilir. Bilinen yanlış dublaj başarı sayılmaz; etiketsiz ses doğrulanamadı diye belirtilir.
+- **Dizibox çözümlemesi:** reklam çerçeveleri ve statik kodlar gerçek oynatıcının süresini tüketmez. Asıl oynatıcıya öncelik verilir; IP engeli, üyelik ve doğrulama farklı açıklanır.
+- **Site hesapları:** Ayarlar'da e-posta/parolayı güvenli sakla; HTTPS sitesi başına giriş/kayıt izni ver. Standart formlar denenir. Kod/CAPTCHA/koşullar/ek bilgi gereken yerde tarayıcıda tamamla.
+- **Touch ID etkinleştirme düzeltmesi:** kasayı şifreyle açıp yeniden etkinleştir. Yeni kayıtlar Secure Enclave'in biyometrik korumasını kullanır; şifreyle açma korunur.
+- **Gelişmiş oynatıcı:** altyazılar her açılışta kapalı; çoklu ses, ses gecikmesi, konum koruyan uyumluluk işlemi, kare/tampon bilgisi ve isteğe bağlı dosya zamanlama tanısı.
+- **Aktarım bütünlüğü:** açık sonlu DASH, uyarlanan parça sayısı, daha güçlü devam/range kontrolü. FFmpeg eksik parça atlayıp başarılı çıksa bile eksik dosya tamamlandı sayılmaz.
+- **Ağ tercihi:** doğrudan seçilen işler arkada uygulama Tor'u açıkken doğrudan kalır. Kaynağın ağ yolunu değiştirip yeniden tarayabilirsin.
+- **Günlük kullanım:** kitaplık yedeği/kurtarma, disk azlığında güvenli duraklama, FIFO/öncelik ve aynı ses/kalitede çift kayıt kontrolü.
 
-Tor için ayrıca `brew install tor` veya Tor Browser kurulumu gerekir. Ayrı Tor oturumları farklı IP/hız garantilemez. Gerçek üyelik, insan doğrulaması ve DRM gereksinimleri atlatılmaz; kaynağın sunmadığı ses/altyazı üretilemez.
+Kaynakta bulunmayan ses/altyazı üretilemez; bütün siteler, gerçek üyelik veya DRM için koşulsuz çözüm garantisi verilmez. Gerçek parmak iziyle etkileşim cihazında denenmelidir.
 
 ## İndir
 
 | Sistem | Dosya |
 |---|---|
-| macOS Apple Silicon | `All-in-One-Downloader-0.14.1-arm64.dmg` |
-| macOS Intel | `All-in-One-Downloader-0.14.1-x64.dmg` |
-| Windows 10/11 64 bit | `All-in-One-Downloader-0.14.1-setup.exe` |
+| macOS Apple Silicon | `All-in-One-Downloader-0.15.0-arm64.dmg` |
+| macOS Intel | `All-in-One-Downloader-0.15.0-x64.dmg` |
+| Windows 10/11 64 bit | `All-in-One-Downloader-0.15.0-setup.exe` |
 
 Uygulama içindeki güncelleme denetimi açıksa yeni sürüm üstte bildirilir. Açılıştan yaklaşık 15 saniye sonra, ardından altı saatte bir kontrol edilir. Hemen kontrol etmek için Ayarlar → Uygulama → Güncellemeleri denetle kullanılabilir. Kurulum kullanıcı düğmeye bastığında başlar.
 

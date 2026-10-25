@@ -68,7 +68,7 @@ export default function Library({
     })
   }, [downloads, query, category, categoryById])
 
-  const active = filtered.filter((d) => ACTIVE.has(d.status))
+  const active = filtered.filter((d) => ACTIVE.has(d.status)).sort((a, b) => { const order = { running: 0, queued: 1, paused: 2 } as Record<string, number>; return order[a.status] - order[b.status] || (a.queueOrder ?? a.createdAt) - (b.queueOrder ?? b.createdAt) })
   const missingCount = filtered.filter((d) => d.status === 'done' && d.missing).length
   const done = filtered.filter((d) => d.status === 'done')
   const problems = filtered.filter((d) => PROBLEM.has(d.status))
@@ -439,6 +439,12 @@ function Row({
           ) : null}
           <span>{describe(d.quality, d.audioOnly)}</span>
           <span className="sep" />
+          <span title={`İstenen ses: ${fmt.audioLanguage(d.preferredAudioLanguage || 'auto')}`}>
+            {d.status === 'done' ? `Ses: ${fmt.audioLanguage(d.audioLanguage)}` : `İstenen ses: ${fmt.audioLanguage(d.preferredAudioLanguage || 'auto')}`}
+          </span>
+          <span className="sep" />
+          <span title="Bu indirme için seçilen ağ yolu">{d.useProxy ? 'VPN / vekil' : 'Doğrudan'}</span>
+          <span className="sep" />
           <span title={sizeIsEstimate ? T.library.sizeEstimate : undefined}>
             {sizeIsEstimate ? '~' : ''}
             {fmt.bytes(shownSize)}
@@ -486,6 +492,7 @@ function Row({
           </>
         ) : null}
 
+        {d.audioWarning ? <div className="dl-error" role="status">{d.audioWarning}</div> : null}
         {d.status === 'done' && d.missing ? (
           <span className="dl-missing">
             <Icon name="alert" size={12} />
@@ -515,6 +522,7 @@ function Row({
           </span>
         ) : null}
 
+        {paused && d.note ? <span className="dl-error" role="status">{d.note}</span> : null}
         {d.error ? <span className="dl-error">{d.error}</span> : null}
       </div>
 
@@ -552,6 +560,7 @@ function Row({
         <Menu title={T.common.more}>
           {(close) => (
             <>
+              {queued ? <MenuItem icon="chevron" onClick={() => { api.prioritizeDownload(d.id); close() }}>Sırada öne al</MenuItem> : null}
               <div className="menu-label label">{T.library.setCategory}</div>
               <MenuItem
                 icon={d.categoryId ? undefined : 'check'}

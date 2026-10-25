@@ -18,7 +18,7 @@
       </header>
 
       <div id="stage">
-        <video id="video" playsinline crossorigin="anonymous"></video>
+        <video id="video" playsinline crossorigin="anonymous" aria-label="Video"></video>
         <!-- A second, silent decoder for the scrub-bar preview: seeking it never
              disturbs the one you are watching. -->
         <video id="probe" muted preload="metadata" crossorigin="anonymous" hidden></video>
@@ -27,7 +27,13 @@
         <div id="pulse" aria-hidden="true"></div>
         <div id="spinner" aria-hidden="true"></div>
 
-        <div id="resume" hidden>
+        <div id="recovery" role="status" hidden>
+          <span id="recovery-text"></span>
+          <button type="button" id="recovery-retry">Aynı konumdan dene</button>
+          <button type="button" id="recovery-dismiss" aria-label="Takılma bildirimini kapat">Kapat</button>
+        </div>
+
+        <div id="resume" role="status" hidden>
           <span id="resume-text"></span>
           <button type="button" id="resume-restart">Baştan başlat</button>
         </div>
@@ -43,17 +49,18 @@
           </div>
         </div>
 
-        <div id="fault" hidden>
+        <div id="fault" role="alertdialog" aria-label="Oynatma hatası" aria-describedby="fault-text" hidden>
           <strong>Bu dosya oynatılamadı</strong>
           <p id="fault-text"></p>
           <div class="fault-actions">
+            <button type="button" id="fault-retry">Yeniden dene</button>
             <button type="button" id="fault-remux">Hızlı dönüştür ve dene</button>
             <button type="button" id="fault-external">Sistem oynatıcısında aç</button>
           </div>
         </div>
 
         <div id="controls">
-          <div id="seek" role="slider" aria-label="Konum" tabindex="0">
+          <div id="seek" role="slider" aria-label="Konum" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-disabled="true" tabindex="0">
             <div id="seek-track">
               <div id="seek-buffer"></div>
               <div id="seek-played"></div>
@@ -82,11 +89,11 @@
             <span id="chapter-name" class="chapter-name"></span>
             <span class="spacer"></span>
 
-            <button type="button" id="rate" class="pill" title="Oynatma hızı (&lt; &gt;)">1×</button>
-            <button type="button" id="audio" class="pill" title="Ses dili (A)" hidden>Ses</button>
+            <button type="button" id="rate" class="pill" title="Oynatma hızı (&lt; &gt;)" aria-controls="quick" aria-expanded="false">1×</button>
+            <button type="button" id="audio" class="pill" title="Ses dili (A)" aria-controls="audio-menu" aria-expanded="false" hidden>Ses</button>
             <button type="button" id="next" class="ico" title="Sonraki bölüm (N)" hidden></button>
-            <button type="button" id="gear" class="ico" title="Ayarlar"></button>
-            <button type="button" id="cc" class="ico" title="Altyazı (V açar/kapatır)"></button>
+            <button type="button" id="gear" class="ico" title="Ayarlar" aria-controls="quick" aria-expanded="false"></button>
+            <button type="button" id="cc" class="ico" title="Altyazı (V açar/kapatır)" aria-controls="panel" aria-expanded="false" aria-pressed="false"></button>
             <button type="button" id="pip" class="ico" title="Küçük pencere"></button>
             <button type="button" id="full" class="ico" title="Tam ekran (F)"></button>
           </div>
@@ -96,6 +103,7 @@
       <div id="audio-menu" class="popover" hidden>
         <div class="panel-label">Ses dili</div>
         <div id="audio-list"></div>
+        <p id="audio-note" class="note" hidden></p>
       </div>
 
       <div id="quick" class="popover" hidden>
@@ -126,6 +134,11 @@
             <button type="button" data-style="outline">Kenarlıklı</button>
           </div>
         </div>
+        <div class="quick-row">
+          <label for="q-audio-delay">Ses gecikmesi · <span id="audio-delay-value" class="mono">0,00 sn</span></label>
+          <input id="q-audio-delay" type="range" min="0" max="2" step="0.05" value="0" />
+          <div class="sync-note"><span>Ses görüntüden önce geliyorsa artır. Bu açılış için.</span><button id="audio-delay-reset" type="button">Sıfırla</button></div>
+        </div>
         <label class="quick-toggle" id="q-autonext-row">
           <input type="checkbox" id="q-autonext" />
           <span>Bitince sonraki bölüme geç</span>
@@ -135,9 +148,17 @@
           <span>Her zaman üstte (T)</span>
         </label>
         <button type="button" id="q-shot" class="quick-action">Ekran görüntüsü al (S)</button>
+        <details id="diagnostics">
+          <summary>Oynatma bilgisi ve dosya kontrolü</summary>
+          <p id="media-info" class="note"></p>
+          <p id="playback-info" class="note mono"></p>
+          <button type="button" id="timing-check" class="text-action">Dosya zamanlamasını kontrol et</button>
+          <p id="timing-result" class="note" role="status">Takılma tekrarlanıyorsa dosyadaki uzun kareleri ve ses aralıklarını kontrol edebilirsin. Kontrol sırasında dosya değiştirilmez.</p>
+          <button type="button" id="diagnostics-copy" class="text-action">Tanı bilgisini kopyala</button>
+        </details>
       </div>
 
-      <aside id="panel" hidden>
+      <aside id="panel" aria-label="Altyazı ayarları" hidden>
         <div class="panel-head">
           <strong>Altyazı</strong>
           <button type="button" id="panel-close" class="ico small" title="Kapat"></button>
@@ -145,8 +166,10 @@
 
         <div class="panel-body">
           <section>
-            <div class="panel-label">Şu an</div>
+            <div class="panel-label">Altyazı parçası</div>
+            <p id="subtitle-state" class="note" role="status">Altyazı kapalı · her video kapalı başlar</p>
             <div id="track-list"></div>
+            <button id="tracks-refresh" type="button" class="text-action">Altyazı listesini yenile</button>
           </section>
 
           <section>
@@ -162,11 +185,11 @@
           <section id="timing-section">
             <div class="panel-label">Zamanlama</div>
             <div class="delay-row">
-              <button type="button" id="delay-down" title="Altyazıyı geciktir (G)">−0,5 sn</button>
+              <button type="button" id="delay-down" title="Altyazıyı 0,5 sn öne al (G)">−0,5 sn</button>
               <span id="delay-value" class="mono">0,0 sn</span>
-              <button type="button" id="delay-up" title="Altyazıyı öne al (H)">+0,5 sn</button>
+              <button type="button" id="delay-up" title="Altyazıyı 0,5 sn geciktir (H)">+0,5 sn</button>
             </div>
-            <p class="note">Konuşmadan sonra geliyorsa −, önce geliyorsa +.</p>
+            <div class="sync-note"><span>Geç geliyorsa −, erken geliyorsa +. Shift + G / H: 0,1 sn.</span><button id="delay-reset" type="button">Sıfırla</button></div>
           </section>
 
           <section>
@@ -181,7 +204,7 @@
         </div>
       </aside>
 
-      <div id="help" hidden>
+      <div id="help" role="dialog" aria-modal="true" aria-label="Oynatıcı kısayolları" hidden>
         <div class="help-card">
           <strong>Kısayollar</strong>
           <ul id="help-list"></ul>
@@ -189,9 +212,10 @@
         </div>
       </div>
 
-      <div id="flash" hidden></div>
+      <div id="flash" role="status" aria-live="polite" hidden></div>
     </div>
 
+    <script src="core.js"></script>
     <script src="player.js"></script>
   </body>
 </html>

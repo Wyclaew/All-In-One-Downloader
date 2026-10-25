@@ -1049,6 +1049,7 @@ a {
 
 .group-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 11px;
   padding: 10px 10px 10px 8px;
@@ -1120,6 +1121,8 @@ a {
 /* Visible but quiet: a source's actions are its point, so they shouldn't hide. */
 .group-actions {
   display: flex;
+  flex-wrap: wrap;
+  max-width: 100%;
   align-items: center;
   gap: 2px;
   flex: none;

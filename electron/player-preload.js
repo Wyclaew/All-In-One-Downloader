@@ -11,7 +11,7 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('aioPlayer', {
-  /** Title, media address, resume point, and the subtitle tracks we could find. */
+  /** Title, media address, resume point and available tracks; subtitles start off. */
   boot: () => ipcRenderer.invoke('player:boot'),
 
   /** Re-scan for subtitle files that appeared beside the video since we opened. */
@@ -47,6 +47,12 @@ contextBridge.exposeInMainWorld('aioPlayer', {
 
   /** Rewrap a container Chromium cannot open, without re-encoding anything. */
   remux: () => ipcRenderer.invoke('player:remux'),
+
+  /** Inspect local packet timing only when requested; closing cancels the scan. */
+  timing: () => ipcRenderer.invoke('player:timing'),
+
+  /** Copy a bounded report without filenames, media tokens or subtitle text. */
+  copyDiagnostics: (stats) => ipcRenderer.invoke('player:copyDiagnostics', stats),
 
   /** Hand the file to the system player instead. */
   openExternally: () => ipcRenderer.invoke('player:openExternally'),

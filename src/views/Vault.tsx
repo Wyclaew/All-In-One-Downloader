@@ -440,8 +440,8 @@ function TouchIDPanel({
           {available && enrolled && ready && !vault.unlocked && onUnlock ? (
             <Btn variant="primary" disabled={inactive} spinning={unlocking} onClick={onUnlock}>Touch ID ile aç</Btn>
           ) : null}
-          {vault.unlocked && available && (!enrolled || !ready) ? (
-            <Btn variant="primary" disabled={inactive || !!vault.upgrading} spinning={working} onClick={() => setEnrollment(true)}>
+          {vault.unlocked && available ? (
+            <Btn variant={enrolled && ready ? 'default' : 'primary'} disabled={inactive || !!vault.upgrading} spinning={working} onClick={() => setEnrollment(true)}>
               {enrolled ? 'Touch ID’yi yeniden etkinleştir' : 'Touch ID’yi etkinleştir'}
             </Btn>
           ) : null}

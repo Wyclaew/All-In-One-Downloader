@@ -18,6 +18,7 @@ const network = require('./lib/network-context')
 const diagnostics = require('./lib/diagnostics')
 const locate = require('./lib/locate')
 const updater = require('./lib/updater')
+const siteAccounts = require('./lib/site-accounts')
 const { uid, extractUrls, isProbablyUrl } = require('./lib/util')
 
 // The player streams the file over a private scheme, and a scheme has to claim
@@ -482,6 +483,21 @@ function registerIpc() {
     return true
   })
 
+  handle('source:proxy', ({ id, useProxy }) => {
+    const source = store.findSource(id)
+    if (!source) return false
+    cancelSource(id)
+    for (const download of store.getState().downloads.filter((d) => d.sourceId === id)) {
+      if (['running', 'queued'].includes(download.status)) downloader.pause(download.id)
+      download.useProxy = !!useProxy
+      if (download.resolved?.pageUrl) download.refreshPending = true
+    }
+    network.releaseSource(id)
+    store.commit(() => { source.useProxy = !!useProxy; delete source.network })
+    queueProbe(source)
+    return true
+  })
+
   handle('source:cancel', cancelSource)
   handle('source:cancelAll', () => {
     const busy = store.getState().sources.filter((s) => ['queued', 'probing'].includes(s.status) || s.enriching)
@@ -529,20 +545,23 @@ function registerIpc() {
     return true
   })
 
-  handle('source:downloadAll', ({ sourceId, quality, audioOnly, categoryId, skipDownloaded = true }) => {
+  handle('source:downloadAll', ({ sourceId, quality, audioOnly, categoryId, preferredAudioLanguage, skipDownloaded = true }) => {
     const items = store.itemsOfSource(sourceId)
     // Match on URL, not item id: ids change on rescan, the link doesn't.
+    const chosenLanguage = preferredAudioLanguage ?? store.getState().settings.preferredAudioLanguage ?? 'en'
+    const chosenQuality = quality === undefined ? store.getState().settings.defaultQuality : Number(quality) || 0
     const taken = new Set(
       store
         .getState()
-        .downloads.filter((d) => d.status !== 'canceled' && d.status !== 'error')
+        .downloads.filter((d) => d.status !== 'canceled' && d.status !== 'error' && d.quality === chosenQuality && !!d.audioOnly === !!audioOnly && (d.preferredAudioLanguage || 'en') === chosenLanguage)
         .map((d) => d.url)
     )
     let count = 0
     for (const item of items) {
       if (skipDownloaded && taken.has(item.url)) continue
-      downloader.enqueue({ item, quality, audioOnly, categoryId })
-      count += 1
+      const before = store.getState().downloads.length
+      downloader.enqueue({ item, quality, audioOnly, categoryId, preferredAudioLanguage })
+      count += Math.max(0, store.getState().downloads.length - before)
     }
     if (!count) store.toast('Sıraya eklenecek yeni öğe yok.', 'warn')
     return { count }
@@ -564,25 +583,28 @@ function registerIpc() {
     return true
   })
 
-  handle('dl:add', ({ itemIds, url, quality, audioOnly, categoryId }) => {
+  handle('dl:add', ({ itemIds, url, quality, audioOnly, categoryId, preferredAudioLanguage }) => {
     const ids = Array.isArray(itemIds) ? itemIds : itemIds ? [itemIds] : []
     if (ids.length) {
       let count = 0
       for (const id of ids) {
         const item = store.findItem(id)
         if (!item) continue
-        downloader.enqueue({ item, quality, audioOnly, categoryId })
-        count += 1
+        const before = store.getState().downloads.length
+        downloader.enqueue({ item, quality, audioOnly, categoryId, preferredAudioLanguage })
+        count += Math.max(0, store.getState().downloads.length - before)
       }
       return { count }
     }
     if (isProbablyUrl(url)) {
-      downloader.enqueue({ url, title: url, quality, audioOnly, categoryId })
-      return { count: 1 }
+      const before = store.getState().downloads.length
+      downloader.enqueue({ url, title: url, quality, audioOnly, categoryId, preferredAudioLanguage })
+      return { count: Math.max(0, store.getState().downloads.length - before) }
     }
     throw new Error('İndirilecek bir şey belirtilmedi.')
   })
 
+  handle('dl:prioritize', (id) => downloader.prioritize(id))
   handle('dl:pause', (id) => downloader.pause(id))
   handle('dl:resume', (id) => downloader.resume(id))
   handle('dl:cancel', (id) => downloader.cancel(id))
@@ -693,6 +715,14 @@ function registerIpc() {
     downloader.pumpQueue()
     return store.getState().settings
   })
+
+  handle('settings:backup', () => { const file = store.backup(); shell.showItemInFolder(file); return { path: file } })
+
+  handle('accounts:status', () => siteAccounts.getStatus())
+  handle('accounts:profile:set', (profile) => siteAccounts.setProfile(profile))
+  handle('accounts:profile:clear', () => siteAccounts.clearProfile())
+  handle('accounts:site:set', (policy) => siteAccounts.setSitePolicy(policy))
+  handle('accounts:site:remove', (origin) => siteAccounts.removeSitePolicy(origin))
 
   handle('settings:reset', () => {
     store.commit((s) => {
@@ -1052,6 +1082,7 @@ if (!app.requestSingleInstanceLock()) {
     registerIpc()
     buildMenu()
     createWindow()
+    if (store.recoveryNotice()) setTimeout(() => store.toast(store.recoveryNotice(), 'warn'), 1500)
     await binaries.detectTools()
     store.send('state', store.getState())
     downloader.verifyFiles()
@@ -1068,7 +1099,7 @@ if (!app.requestSingleInstanceLock()) {
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
-  })
+  }).catch((err) => { dialog.showErrorBox('Uygulama başlatılamadı', err.message || 'Kitaplık açılamadı.'); app.quit() })
 
   app.on('window-all-closed', () => {
     if (!IS_MAC) app.quit()

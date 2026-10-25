@@ -8,6 +8,36 @@ macOS için yazıldı; Windows altyapısı baştan hazır (aşağıya bak).
 
 ---
 
+## 0.15.0 — ses seçimi, güvenilir oynatma ve site hesapları
+
+- Kaynaklarda çözünürlüğün yanında **Türkçe ses / İngilizce ses / Kaynağın sesi**
+  seçilir. Video, kaynak ve toplu seçim ayrı yönetilir. Tercih her indirmede
+  saklanır; genel ayarı sonradan değiştirmek sıradaki işi değiştirmez. Kaynakta
+  etiketli dil yoksa doğrulanamadığı belirtilir; elle seçilen dilin yerine
+  bulunduğu bilinen başka dublaj başarı diye gösterilmez.
+- Oynatıcıda altyazı **her yeni açılışta kapalıdır**. Ses kanalı, ses/altyazı
+  gecikmesi, konum koruyan uyumluluk işlemi, kare/tampon bilgisi ve isteğe bağlı
+  dosya zamanlama kontrolü vardır. Eksik video içeriği zaman damgası silinerek
+  onarılmış gibi gösterilmez.
+- Dizibox için statik tarama/tarayıcı süreleri ve iframe seçimleri düzeltildi.
+  Site IP engeliyle üyelik gereksinimi ayrı açıklanır. Açık DASH VOD native
+  motorla, seçilen ağ yolunda indirilebilir; parça/range bütünlüğü doğrulanır.
+- VPN seçilmemiş işler için doğrudan bağlantı açıkça uygulanır; arkada uygulama
+  Tor'unun çalışması bunu değiştirmez. Sunucu sorununda parça sayısı uyarlanır.
+- **Ayarlar → Site hesapları:** e-posta/parolayı kaydet, kullanmasına izin
+  verdiğin HTTPS sitesini ekle; kayıt iznini ayrıca aç. Bilgiler sistem
+  anahtarlığıyla şifrelenir, parola kitaplık veya durum yanıtına konmaz.
+  Standart formlar/tanınan bağlantılar işlenir. CAPTCHA, kod, koşullar, ek bilgi
+  veya ödeme gereken noktada tarayıcıda tamamlamak gerekir.
+- **Touch ID:** kasayı şifreyle açıp Touch ID'yi yeniden etkinleştir. Yeni kayıt,
+  ad-hoc dağıtımda başarısız olabilen Keychain yönteminin yerine Secure Enclave
+  biyometri korumasını kullanır. Kasa şifresi kurtarma yöntemi olarak kalır.
+- Kitaplık yedeği/kurtarma, disk alanı korunarak duraklama, FIFO/öncelik,
+  tekrar indirme denetimi ve araç sağlık kontrolü eklendi.
+
+Bütün site/hesap/DRM türleri için koşulsuz çözüm garantisi yoktur. Son canlı
+sonuçlar, testler ve yayın durumu [devir notundadır](CLAUDE_HANDOFF.md).
+
 ## 0.14.1 — otomatik Tor, ayrıntılı video bilgisi ve görünür Touch ID
 
 - VPN’li kaynakta uygulamanın Tor seçeneği otomatik hazırlanır. Her kaynak ayrı

@@ -21,6 +21,7 @@ const fsp = require('fs/promises')
 const http = require('http')
 const https = require('https')
 const path = require('path')
+const crypto = require('crypto')
 const { spawn } = require('child_process')
 const { Transform } = require('stream')
 const { pipeline } = require('stream/promises')
@@ -43,6 +44,7 @@ const AUDIO_CODECS = {
 /** Thrown when the transfer was stopped on purpose; the caller knows why. */
 function abortError() {
   const err = new Error('Aktarım durduruldu.')
+  err.name = 'AbortError'
   err.code = 'ABORTED'
   return err
 }
@@ -142,7 +144,7 @@ async function locateStream(download, settings, onNote, signal = null) {
   onNote?.('sayfa çözümleniyor')
   let browserCookieJar = null
   if (settings.cookiesBrowser) {
-    browserCookieJar = await exportCookieJar(settings.cookiesBrowser).catch(() => null)
+    browserCookieJar = await exportCookieJar(settings.cookiesBrowser, { signal }).catch(() => null)
   }
 
   const result = await resolvePage(download.url, {
@@ -184,6 +186,7 @@ async function locateStream(download, settings, onNote, signal = null) {
       kind: candidate.kind,
       selectedVariantUrl: candidate.info?.selectedVariantUrl || null,
       rejectedVariantUrls: candidate.info?.rejectedVariantUrls || [],
+      preparedVariants: candidate.info?.preparedVariants || [],
     },
   }
 }
@@ -192,37 +195,51 @@ async function locateStream(download, settings, onNote, signal = null) {
  * Swap a master playlist for the rendition the user asked for. Falls back to the
  * playlist itself when there is nothing to choose between.
  */
-async function pickVariant(url, resolved, quality, onNote, proxy = '', preferred = 'en', signal = null) {
-  const { text, finalUrl } = await fetchTextVia(url, resolved, proxy, 2 * 1024 * 1024, signal)
-  if (!text || !/#EXTM3U/i.test(text)) return { url, height: null }
-  const hls = parseHls(text, finalUrl)
-  if (!hls.variants.length) return { url, height: null }
-
-  // Sorted tallest first. A master playlist can also list a rendition with no
-  // RESOLUTION at all — an audio-only one — and that must never be what "best"
-  // or a failed cap lands on.
-  const rejected = new Set(resolved.rejectedVariantUrls || [])
-  const viable = hls.variants.filter((v) => !rejected.has(v.url))
-  if (!viable.length) throw new Error('Bu oynatıcının kalite bağlantıları artık geçerli değil. Kaynak yeniden çözümlenmeli.')
-  const video = viable.filter((v) => v.height)
-  const ranked = video.length ? video : viable
+async function pickVariant(url, resolved = {}, quality, onNote, proxy = '', preferred = 'en', signal = null) {
+  if (signal?.aborted) throw abortError()
+  const rejected = new Set(resolved?.rejectedVariantUrls || [])
   const cap = Number(quality) || 0
-
-  let chosen
-  if (!cap) {
-    chosen = ranked[0]
-  } else {
-    chosen = ranked.find((v) => (v.height || 0) <= cap) || ranked[ranked.length - 1]
-  }
-
-  if (chosen.height && chosen.height !== ranked[0].height) {
-    onNote?.(`${chosen.height}p akış seçildi`)
-  }
-  const tracks = (hls.audioTracks || []).filter((t) => !chosen.audioGroup || t.group === chosen.audioGroup)
   const lang = languageCode(preferred)
-  const audio = tracks.find((t) => languageCode(t.lang) === lang) || tracks.find((t) => t.default) || tracks[0]
-  if (lang !== 'auto' && audio?.lang && languageCode(audio.lang) !== lang) onNote?.(`İstenen ses dili yok; ${audio.lang} ses mevcut`)
-  return { url: chosen.url || url, height: chosen.height || null, audioUrl: audio?.url || null, audioLanguage: audio?.lang || null }
+  const prepared = (Array.isArray(resolved.preparedVariants) ? resolved.preparedVariants : []).slice(0, 8)
+    .filter((variant) => variant.mediaUrl && !rejected.has(variant.url) && !rejected.has(variant.mediaUrl)
+      && (!cap || variant.height > 0 && variant.height <= cap))
+    .sort((a, b) => (b.height || 0) - (a.height || 0) || (b.bandwidth || 0) - (a.bandwidth || 0))
+  if (prepared.length) {
+    const chosen = prepared[0]
+    const tracks = chosen.audioTracks || []
+    const audio = tracks.find((track) => languageCode(track.lang) === lang) || tracks.find((track) => track.default) || tracks[0]
+    return { url: chosen.mediaUrl, height: chosen.height || null,
+      audioUrl: audio?.url || chosen.audioUrl || null, audioLanguage: audio?.lang || chosen.audioLanguage || null }
+  }
+  async function descend(current, depth, ancestors) {
+    if (depth > 3 || ancestors.has(current)) throw new Error('HLS ana listesi döngü içeriyor veya iç içe liste sınırını aştı.')
+    const seen = new Set(ancestors); seen.add(current)
+    const { text, finalUrl } = await fetchTextVia(current, resolved, proxy, 2 * 1024 * 1024, signal)
+    if (finalUrl !== current && seen.has(finalUrl)) throw new Error('HLS ana listesi döngü içeriyor.')
+    seen.add(finalUrl)
+    if (!text || !/#EXTM3U/i.test(text)) return { url: finalUrl || current, height: null }
+    const hls = parseHls(text, finalUrl)
+    if (!hls.variants.length) return { url: finalUrl || current, height: null }
+    const viable = hls.variants.filter((v) => !rejected.has(v.url))
+    if (!viable.length) throw new Error('Bu oynatıcının kalite bağlantıları artık geçerli değil. Kaynak yeniden çözümlenmeli.')
+    const video = viable.filter((v) => v.height)
+    const ranked = video.length ? video : viable
+    const chosen = cap ? ranked.find((v) => (v.height || 0) <= cap) : ranked[0]
+    if (!chosen) throw new Error('HLS listesinde seçilen kalite sınırına uygun akış yok.')
+    if (chosen.height && chosen.height !== ranked[0].height) onNote?.(`${chosen.height}p akış seçildi`)
+    const tracks = (hls.audioTracks || []).filter((t) => !chosen.audioGroup || t.group === chosen.audioGroup)
+    const audio = tracks.find((t) => languageCode(t.lang) === lang) || tracks.find((t) => t.default) || tracks[0]
+    if (lang !== 'auto' && audio?.lang && languageCode(audio.lang) !== lang) onNote?.(`İstenen ses dili yok; ${audio.lang} ses mevcut`)
+    const child = await descend(chosen.url || current, depth + 1, seen)
+    return { ...child, height: child.height || chosen.height || null,
+      audioUrl: child.audioUrl || audio?.url || null, audioLanguage: child.audioLanguage || audio?.lang || null }
+  }
+  const selected = await descend(url, 0, new Set())
+  if (selected.audioUrl) {
+    const audio = await descend(selected.audioUrl, 0, new Set())
+    selected.audioUrl = audio.url
+  }
+  return selected
 }
 
 function rateLimiter(value, signal = null) {
@@ -283,7 +300,14 @@ function openStream(rawUrl, headers, { redirects = 5, proxy = '', signal = null,
     if (proxy && !tunnel) return reject(new Error(`Vekil adresi anlaşılamadı: ${proxy}`))
     const agent = tunnel ? tunnel[target.protocol] : AGENTS[target.protocol]
 
-    const req = mod.request(target, { headers, agent, signal, autoSelectFamily: !proxy }, (res) => {
+    if (signal?.aborted) return reject(abortError())
+    // Destroy without injecting an AbortError into a pooled socket: an abort
+    // from a progress callback can race the final body bytes and Agent cleanup,
+    // leaving that socket temporarily without an error listener.
+    const cleanupAbort = () => signal?.removeEventListener('abort', cancel)
+    const cancel = () => { req.destroy(); reject(abortError()) }
+    const req = mod.request(target, { headers, agent, autoSelectFamily: !proxy }, (res) => {
+      res.once('end', cleanupAbort)
       // An abort may arrive between response delivery and the caller attaching
       // its iterator. Keep that interval from emitting an unhandled error.
       res.on('error', () => {})
@@ -301,6 +325,9 @@ function openStream(rawUrl, headers, { redirects = 5, proxy = '', signal = null,
       resolve({ status: res.statusCode, headers: res.headers, stream: res, request: req, finalUrl: target.href })
     })
     req.on('error', reject)
+    req.once('close', cleanupAbort)
+    signal?.addEventListener('abort', cancel, { once: true })
+    if (signal?.aborted) cancel()
     req.setTimeout(15000, () => req.destroy(Object.assign(new Error('Sunucu yanıt vermedi.'), { code: 'ETIMEDOUT' })))
     req.end()
   })
@@ -324,7 +351,7 @@ function planPathFor(partPath) {
   return `${partPath}.parts`
 }
 
-function makePlan(size, connections, validator = null) {
+function makePlan(size, connections, validator = null, resource = null) {
   // Small tasks shared by all workers: a fast connection immediately takes the
   // next task, instead of waiting for a slow lane's quarter of a whole film.
   const chunk = Math.max(1024 * 1024, Math.min(4 * 1024 * 1024, Math.ceil(size / (connections * 8))))
@@ -332,13 +359,14 @@ function makePlan(size, connections, validator = null) {
   for (let start = 0; start < size; start += chunk) {
     parts.push({ start, end: Math.min(start + chunk, size) - 1, done: 0 })
   }
-  return { version: 2, size, validator, parts }
+  return { version: 3, size, validator, resource: resource ? crypto.createHash('sha256').update(resource).digest('hex') : null, parts }
 }
 
-function readPlan(planPath, size, validator = null) {
+function readPlan(planPath, size, validator = null, resource = null) {
   try {
     const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'))
     if (!plan || plan.size !== size || plan.validator !== validator || !Array.isArray(plan.parts) || !plan.parts.length) return null
+    if (resource && plan.resource !== crypto.createHash('sha256').update(resource).digest('hex')) return null
     let next = 0
     for (const p of plan.parts) {
       if (![p.start, p.end, p.done].every(Number.isSafeInteger)) return null
@@ -351,7 +379,21 @@ function readPlan(planPath, size, validator = null) {
 
 function savePlan(planPath, plan) {
   // Runtime state is deliberately excluded from the resume journal.
-  atomicWrite(planPath, JSON.stringify({ ...plan, parts: plan.parts.map(({ start, end, done }) => ({ start, end, done })) }))
+  atomicWrite(planPath, JSON.stringify({ ...plan, parts: plan.parts.map(({ start, end, done, hash }) => ({ start, end, done, hash: hash || null })) }))
+}
+
+function hashRange(file, start, length) {
+  const fd = fs.openSync(file, 'r')
+  const hash = crypto.createHash('sha256'), buffer = Buffer.alloc(Math.min(65536, length))
+  try {
+    let offset = 0
+    while (offset < length) {
+      const read = fs.readSync(fd, buffer, 0, Math.min(buffer.length, length - offset), start + offset)
+      if (!read) throw new Error('Kaydedilen dosya parçası eksik.')
+      hash.update(buffer.subarray(0, read)); offset += read
+    }
+    return hash.digest('hex')
+  } finally { fs.closeSync(fd) }
 }
 
 async function fetchFileParallel({
@@ -370,12 +412,20 @@ async function fetchFileParallel({
   const partPath = `${destPath}.part`
   const planPath = planPathFor(partPath)
 
-  let plan = readPlan(planPath, size, validator)
+  connections = Math.max(1, Math.min(16, Math.floor(Number(connections) || 8)))
+  if (!Number.isSafeInteger(size) || size <= 0) throw new Error('Dosya boyutu geçersiz.')
+  // Local hashes prove saved bytes have not changed; a server validator is also
+  // needed to prove that a later response is still the same remote resource.
+  let plan = validator ? readPlan(planPath, size, validator, url) : null
   let resumed = false
   if (plan && fs.existsSync(partPath) && fs.statSync(partPath).size === size) {
+    for (const part of plan.parts) if (part.done > 0) {
+      try { if (!part.hash || hashRange(partPath, part.start, part.done) !== part.hash) { part.done = 0; part.hash = null } }
+      catch { part.done = 0; part.hash = null }
+    }
     resumed = plan.parts.some((p) => p.done > 0)
   } else {
-    plan = makePlan(size, connections, validator)
+    plan = makePlan(size, connections, validator, url)
     // Preallocate so every connection can write at its own offset from the start.
     const fd = fs.openSync(partPath, 'w')
     try {
@@ -415,8 +465,9 @@ async function fetchFileParallel({
     while (part.done < capacity) {
       if (controller.signal.aborted) throw abortError()
       const from = part.start + part.done
-      let res = null
+      let res = null, permit = null, failure = null
       try {
+        permit = await require('./host-budget').acquire(url, { proxy, maximum: connections, signal: controller.signal })
         res = await openStream(url, {
           ...fetchHeaders(url, resolved), 'Accept-Encoding': 'identity',
           Range: `bytes=${from}-${part.end}`, ...(validator ? { 'If-Range': validator } : {}),
@@ -431,13 +482,19 @@ async function fetchFileParallel({
         if (!range || Number(range[1]) !== from || Number(range[2]) !== part.end || Number(range[3]) !== size) {
           throw Object.assign(new Error('Sunucu yanlış bayt aralığı döndürdü.'), { code: 'NO_RANGE' })
         }
+        const declared = res.headers['content-length']
+        if (res.headers['content-encoding'] && res.headers['content-encoding'] !== 'identity' || declared !== undefined && Number(declared) !== part.end - from + 1
+          || validator?.startsWith('\"') && res.headers.etag && res.headers.etag !== validator) {
+          throw Object.assign(new Error('Sunucu parça boyutunu veya sürümünü değiştirdi.'), { code: 'NO_RANGE' })
+        }
         const handle = await fsp.open(partPath, 'r+')
         try {
           for await (const chunk of res.stream) {
             if (controller.signal.aborted) throw abortError()
             const room = capacity - part.done
-            if (room <= 0) break
-            const slice = chunk.subarray(0, room)
+            if (chunk.length > room) throw Object.assign(new Error('Sunucu istenenden fazla bayt döndürdü.'), { code: 'NO_RANGE' })
+            const slice = chunk
+            part.hash = null
             if (limit) await limit(slice.length)
             let written = 0
             while (written < slice.length) {
@@ -451,14 +508,17 @@ async function fetchFileParallel({
           }
         } finally { await handle.close() }
         if (part.done < capacity) throw Object.assign(new Error('Parça eksik indi.'), { code: 'ECONNRESET' })
+        part.hash = hashRange(partPath, part.start, part.done)
       } catch (err) {
+        failure = err
+        permit?.release(err); permit = null
         if (controller.signal.aborted) throw abortError()
         res?.request.destroy()
         const kind = failureKind(err)
         if (!['network', 'busy'].includes(kind) || attempts >= 4) throw err
         onNote?.(`bağlantı yenileniyor; alınan parçalar korunuyor (${attempts + 1}/4)`)
         await sleep(retryDelay(attempts++, kind, err.retryAfter), controller.signal)
-      } finally { res?.request.destroy() }
+      } finally { res?.request.destroy(); permit?.release(failure) }
     }
   }
 
@@ -477,6 +537,11 @@ async function fetchFileParallel({
     })))
   } finally {
     clearInterval(ticker)
+    // Writers are closed before the final journal is hashed. A crash journal
+    // without a matching prefix hash is safely re-fetched on the next run.
+    for (const part of plan.parts) if (part.done > 0 && !part.hash) {
+      try { part.hash = hashRange(partPath, part.start, part.done) } catch { part.done = 0; part.hash = null }
+    }
     savePlan(planPath, plan)
   }
   // Wait for every writer to close BEFORE falling back, deleting or renaming.
@@ -509,8 +574,15 @@ async function fetchFile({ url, resolved, destPath, validator = null, limit = nu
   const journal = `${partPath}.single`
   let previous = null
   try { previous = JSON.parse(fs.readFileSync(journal, 'utf8')) } catch {}
-  if (already && (!previous || previous.validator !== validator || (!validator && previous.url !== url))) already = 0
-  atomicWrite(journal, JSON.stringify({ url, validator }))
+  const resource = crypto.createHash('sha256').update(url).digest('hex')
+  if (already) {
+    try {
+      if (!validator || previous?.resource !== resource || previous.validator !== validator
+        || previous.size !== already || previous.hash !== hashRange(partPath, 0, already)) already = 0
+    } catch { already = 0 }
+  }
+  atomicWrite(journal, JSON.stringify({ version: 2, resource, validator, size: already,
+    hash: already ? previous.hash : null }))
 
   let stopped = false
   let request = null
@@ -529,7 +601,7 @@ async function fetchFile({ url, resolved, destPath, validator = null, limit = nu
     },
   })
 
-  const headers = { ...fetchHeaders(url, resolved) }
+  const headers = { ...fetchHeaders(url, resolved), 'Accept-Encoding': 'identity' }
   if (already > 0) { headers.Range = `bytes=${already}-`; if (validator) headers['If-Range'] = validator }
 
   // Same client as the parallel path: one place that knows about redirects,
@@ -556,7 +628,14 @@ async function fetchFile({ url, resolved, destPath, validator = null, limit = nu
   // A server that ignores Range restarts the file; keeping the old bytes would
   // corrupt it, so start over rather than append.
   let resuming = already > 0 && res.status === 206
-  if (res.status === 206 && Number((String(res.headers['content-range'] || '').match(/^bytes (\d+)-/i) || [])[1]) !== already) {
+  const returnedRange = String(res.headers['content-range'] || '').match(/^bytes (\d+)-(\d+)\/(\d+)$/i)
+  const declaredLength = res.headers['content-length']
+  if (res.headers['content-encoding'] && res.headers['content-encoding'] !== 'identity'
+    || res.status === 206 && (!returnedRange || Number(returnedRange[1]) !== already
+      || !Number.isSafeInteger(Number(returnedRange[3])) || Number(returnedRange[2]) + 1 !== Number(returnedRange[3])
+      || Number(returnedRange[2]) < already
+      || declaredLength !== undefined && Number(declaredLength) !== Number(returnedRange[2]) - already + 1
+      || validator?.startsWith('"') && res.headers.etag && res.headers.etag !== validator)) {
     request.destroy()
     fs.rmSync(partPath, { force: true })
     throw Object.assign(new Error('Sürdürme aralığı geçersiz.'), { code: 'ECONNRESET' })
@@ -608,16 +687,20 @@ async function fetchFile({ url, resolved, destPath, validator = null, limit = nu
 
   try {
     await pipeline(res.stream, meter, out)
+    if (stopped) throw abortError()
+    if (total && downloaded !== total) throw Object.assign(new Error('Dosya eksik indi.'), { code: 'ECONNRESET' })
+    fs.renameSync(partPath, destPath)
+    fs.rmSync(journal, { force: true })
+    return destPath
   } catch (err) {
+    // pipeline has closed its writer before a pause/error journal is hashed.
+    try {
+      const size = fs.statSync(partPath).size
+      atomicWrite(journal, JSON.stringify({ version: 2, resource, validator, size, hash: size ? hashRange(partPath, 0, size) : null }))
+    } catch {}
     if (stopped) throw abortError()
     throw err
   }
-
-  if (stopped) throw abortError()
-  if (total && downloaded !== total) throw Object.assign(new Error('Dosya eksik indi.'), { code: 'ECONNRESET' })
-  fs.renameSync(partPath, destPath)
-  fs.rmSync(journal, { force: true })
-  return destPath
 }
 
 /* -------------------------------------------------------------------------- */
@@ -647,7 +730,7 @@ function ffmpegArgs({ url, resolved, audioUrl = null, selectedAudioIndex = null,
   const args = [
     '-hide_banner',
     '-loglevel',
-    'error',
+    'warning',
     '-nostdin',
     '-y',
     '-progress',
@@ -679,6 +762,13 @@ function ffmpegArgs({ url, resolved, audioUrl = null, selectedAudioIndex = null,
   if (ext === 'mp4') args.push('-movflags', '+faststart')
   args.push('-f', MUXERS[ext] || 'mp4', workPath)
   return args
+}
+
+/** FFmpeg can finish successfully after dropping input segments or packets. */
+function muxIntegrityIssue(text) {
+  return /(?:Failed to open segment|Segment\s+\d+[^\n]*(?:skipping|failed too many)|Packet corrupt|corrupt input packet|Error during demuxing|Error submitting packet|Invalid data found when processing input)/i.test(String(text || ''))
+    ? Object.assign(new Error('Video parçaları eksik indi veya bozuk paket saptandı; eksik içerik tamamlanmış sayılmadı.'), { code: 'MEDIA_INCOMPLETE' })
+    : null
 }
 
 function runFfmpeg({
@@ -725,6 +815,7 @@ function runFfmpeg({
     const duration = Number(download.duration) || 0
     let buffer = ''
     let stderr = ''
+    let integrityError = null
     let fields = {}
     const stats = new TransferStats()
 
@@ -768,11 +859,12 @@ function runFfmpeg({
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk) => {
       stderr = (stderr + chunk).slice(-8000)
+      integrityError ||= muxIntegrityIssue(stderr)
     })
 
     child.on('error', reject)
     child.on('close', (code) => {
-      if (code === 0) {
+      if (code === 0 && !integrityError) {
         try {
           fs.renameSync(workPath, destPath)
         } catch (err) {
@@ -792,7 +884,7 @@ function runFfmpeg({
         .map((l) => l.trim())
         .filter(Boolean)
         .pop()
-      const err = new Error(line || `ffmpeg ${code} koduyla çıktı.`)
+      const err = integrityError || new Error(line || `ffmpeg ${code} koduyla çıktı.`)
       err.exitCode = code
       reject(err)
     })
@@ -822,7 +914,7 @@ async function transfer({
   // there is no process to kill — so pause and cancel are checked at each phase
   // boundary instead of being silently ignored until the first byte moves.
   const halt = () => {
-    if (isStopped && isStopped()) throw abortError()
+    if (signal?.aborted || isStopped && isStopped()) throw abortError()
   }
 
   const proxy = download.useProxy ? String(settings.proxyUrl || '').trim() : ''
@@ -924,6 +1016,17 @@ async function transfer({
       onNote?.('Bu HLS türü için alternatif aktarım motoru deneniyor')
     }
   }
+  if (kind === 'dash' && settings.nativeDash !== false) {
+    try {
+      return await require('./dash-native').transferDash({ url, resolved, destPath, download,
+        settings: { ...settings, connections: download.recoveryConnections || settings.connections },
+        proxy, signal, onProgress, onHandle, onNote, onStage, limit })
+    } catch (err) {
+      halt()
+      if (err.code !== 'DASH_UNSUPPORTED') throw err
+      onNote?.('Bu DASH türü için alternatif aktarım motoru deneniyor')
+    }
+  }
   // FFmpeg cannot enforce Netscape host-only/Secure cookie scope across all
   // supported versions and redirects. Cookie-bearing HLS uses scoped native
   // requests above; unsupported remote formats must fail safely.
@@ -949,7 +1052,8 @@ async function transfer({
     onHandle,
   })
   if (kind === 'hls') require('./hls-native').cleanCache(destPath)
+  if (kind === 'dash') require('./dash-native').cleanCache(destPath)
   return { filePath }
 }
 
-module.exports = { transfer, pickVariant, makePlan, readPlan, fetchFileParallel, fetchFile, probeVia, ffmpegArgs, openStream }
+module.exports = { transfer, pickVariant, makePlan, readPlan, fetchFileParallel, fetchFile, probeVia, ffmpegArgs, openStream, muxIntegrityIssue }

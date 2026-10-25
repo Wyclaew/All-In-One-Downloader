@@ -18,8 +18,10 @@ const downloads = [1, 2, 3].map((episode) => {
     filePath, fileSize: 0, quality: 1080, percent: 1, downloaded: 0, total: 0, audioOnly: false,
     createdAt: Date.now(), finishedAt: Date.now(), duration: 3635, attempts: 1 }
 })
-fs.writeFileSync(path.join(profile, 'library.json'), JSON.stringify({ version: 1, downloads, items: [], sources: [], categories: [],
-  settings: { downloadDir: downloadsDir, settingsRev: 3, groupEpisodes: true, autoCheckUpdates: false, autoDetectClipboard: false, embedThumbnail: false } }))
+fs.writeFileSync(path.join(profile, 'library.json'), JSON.stringify({ version: 1, downloads,
+  items: [{ id: 'audio-choice-item', sourceId: 'audio-choice-source', index: 0, url: 'https://example.test/dual.mp4', title: 'Ses seçimi denemesi', duration: 90, height: 1080, filesize: 1000000, site: 'Yerel test' }],
+  sources: [{ id: 'audio-choice-source', url: 'https://example.test/source', title: 'Ses seçimi denemesi', site: 'Yerel test', status: 'ready', count: 1, collapsed: false, useProxy: false }], categories: [],
+  settings: { downloadDir: downloadsDir, autoStartDownloads: false, settingsRev: 3, groupEpisodes: true, autoCheckUpdates: false, autoDetectClipboard: false, embedThumbnail: false } }))
 const errors = []
 app.on('web-contents-created', (_event, contents) => {
   contents.on('console-message', (_e, level, message) => { if (level >= 3) errors.push(message) })
@@ -41,8 +43,31 @@ app.once('browser-window-created', (_event, win) => {
       const settingsText = await win.webContents.executeJavaScript(`document.body.innerText`)
       if (!settingsText.includes('Tercih edilen ses dili') || !settingsText.includes('Otomatik kurtarma')) throw new Error('Missing new settings')
       fs.writeFileSync(path.join(snapshots, 'settings.png'), (await win.webContents.capturePage()).toPNG())
+      if (!await win.webContents.executeJavaScript('document.body.textContent.includes("Site hesapları")')) throw new Error('Missing site accounts settings')
+      win.webContents.send('menu', 'view:sources')
+      await new Promise((r) => setTimeout(r, 300))
+      const selectAudio = async (value) => win.webContents.executeJavaScript(`{
+        const select = document.querySelector('select[aria-label="Bu videonun indirilecek ses dili"]');
+        if (!select) throw Error('Missing per-video audio selector');
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select, ${JSON.stringify(value)});
+        select.dispatchEvent(new Event('change',{bubbles:true}));
+      }`)
+      await selectAudio('tr')
+      win.webContents.send('menu', 'settings'); await new Promise((r) => setTimeout(r, 100))
+      win.webContents.send('menu', 'view:sources'); await new Promise((r) => setTimeout(r, 100))
+      result = await win.webContents.executeJavaScript(`document.querySelector('select[aria-label="Bu videonun indirilecek ses dili"]').value`)
+      if (result !== 'tr') throw new Error('Per-video audio selection was lost after navigation')
+      await win.webContents.executeJavaScript(`document.querySelector('.row-actions button[title="İndir"]').click()`)
+      await new Promise((r) => setTimeout(r, 200))
+      result = await win.webContents.executeJavaScript('window.api.getState()')
+      if (!result.ok || !result.data.downloads.some(d => d.itemId === 'audio-choice-item' && d.preferredAudioLanguage === 'tr' && d.audioSelectionExplicit)) throw new Error('Selected audio did not reach the queued job')
+      win.setSize(1000, 720)
+      await new Promise((r) => setTimeout(r, 100))
+      result = await win.webContents.executeJavaScript('document.documentElement.scrollWidth <= window.innerWidth')
+      if (!result) throw new Error('Source controls overflow at 1000px')
+      fs.writeFileSync(path.join(snapshots, 'sources-audio.png'), (await win.webContents.capturePage()).toPNG())
       if (errors.length) throw new Error(errors.join('\n'))
-      console.log(JSON.stringify({ ok: true, snapshots, collectionCount: 1, episodes: 3, rendererErrors: errors }))
+      console.log(JSON.stringify({ ok: true, snapshots, collectionCount: 1, episodes: 3, audioChoicePersisted: true, audioChoiceQueued: true, sourceLayoutFits: true, rendererErrors: errors }))
     } catch (err) { console.error(err); process.exitCode = 1 }
     finally { app.quit() }
   })

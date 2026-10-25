@@ -120,6 +120,9 @@ function ffprobeMedia(url, resolved) {
       // Don't let a stalled CDN hold the queue open.
       '-rw_timeout',
       '15000000',
+      // A remote manifest may reference more protocols than its own URL. Keep
+      // optional metadata probing from opening local files or device inputs.
+      ...(/^https?:/i.test(url) ? ['-protocol_whitelist', 'http,https,tcp,tls,crypto,data'] : []),
       ...ffprobeHeaderArgs(url, resolved),
       '-i',
       url,
@@ -218,17 +221,33 @@ async function fetchManifest(url, resolved) {
       retries: 0,
       headersFor: (target) => ({ Cookie: cookieHeaderFor(resolved?.cookieFile, target) }),
     })
-    if (res.status && res.status >= 400) return { text: '', finalUrl: url, size: null, status: res.status }
     return {
       text: String(res.text || ''),
       finalUrl: res.finalUrl || url,
       size: num(res.headers && res.headers['content-length']),
       status: res.status,
       contentType: res.headers?.['content-type'] || '',
+      access: accessEvidence(res.status, res.text, res.headers),
     }
-  } catch {
-    return { text: '', finalUrl: url, size: null }
+  } catch (error) {
+    return { text: '', finalUrl: url, size: null, errorKind: resolved?.signal?.aborted ? 'cancelled' : error.code === 'RESPONSE_TOO_LARGE' ? 'response-too-large' : /TIMEDOUT/.test(error.code || '') ? 'timeout' : /ENOTFOUND|EAI_AGAIN|ECONN|ENET|EHOST/.test(error.code || '') ? 'network' : 'unknown' }
   }
+}
+
+/** Evidence of an actual access gate; an HTTP 403 alone does not prove login. */
+function accessEvidence(status, input, headers = {}) {
+  const text = String(input || '').slice(0, 65536)
+  const visible = text.replace(/<!--[\s\S]*?-->|<(?:script|style)\b[^>]*>[\s\S]*?<\/(?:script|style)>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+  // Some hosts return their IP-denial template with HTTP 200. This is neither
+  // a login requirement nor proof that the user's internet is offline.
+  const networkBlocked = (status >= 400 || /<(?:title|h[1-6])\b[^>]*>[^<]*(?:error|forbidden|access denied|erişim engeli)/i.test(text)) &&
+    /(?:vpn\s+veya\s+server\s+ip\s+adresi\s+ile|(?:your\s+)?ip\s+(?:address\s+)?(?:has been\s+|is\s+)?blocked|(?:vpn|proxy)\s+(?:connections?\s+)?(?:are\s+|is\s+)?not\s+(?:allowed|permitted))/i.test(visible)
+  const challengeMarker = /(?:_cf_chl_opt|cf-chl-(?:widget|challenge)|challenges\.cloudflare\.com|g-recaptcha|h-captcha|hcaptcha\.com)/i.test(text)
+  const challengeRequired = !networkBlocked && (/challenge/i.test(String(headers['cf-mitigated'] || '')) || challengeMarker && ([403, 429, 503].includes(status) || /<title[^>]*>[^<]*(?:just a moment|verify|verification|attention required|doğrula)/i.test(text)))
+  const passwordForm = /<input\b[^>]*\btype\s*=\s*["']?password\b/i.test(text)
+  const accessRequired = !networkBlocked && !challengeRequired && (status === 401 || !!headers['www-authenticate'] || passwordForm && /<title[^>]*>[^<]*(?:giriş|üye|sign.?in|log.?in|authentication)/i.test(text))
+  const errorKind = networkBlocked ? 'network-blocked' : challengeRequired ? 'verification' : accessRequired ? 'authentication' : status === 403 ? 'access-denied' : status === 404 ? 'not-found' : status === 410 ? 'expired' : status === 429 ? 'rate-limited' : status >= 500 ? 'server' : null
+  return { accessRequired, challengeRequired, networkBlocked, errorKind }
 }
 
 /**
@@ -322,9 +341,6 @@ async function headSize(url, resolved) {
   return info.size
 }
 
-/** Key systems we will not try to work around. */
-const DRM_HINT = /widevine|playready|fairplay|streamingkeydelivery|clearkey|urn:uuid:edef8ba9|urn:uuid:9a04f079/i
-
 function hlsAttributes(text) {
   const attrs = {}
   for (const match of String(text).matchAll(/(?:^|[:,])([\w-]+)=(?:"([^"]*)"|([^,]*))/g)) attrs[match[1].toUpperCase()] = match[2] ?? match[3]
@@ -359,6 +375,7 @@ function parseHls(text, baseUrl) {
   let partCount = 0
 
   const absolute = (ref) => {
+    if (typeof ref !== 'string' || ref.length > 16000 || /[\u0000-\u001f\u007f]/.test(ref)) return null
     try {
       const url = new URL(ref, baseUrl)
       return /^https?:$/.test(url.protocol) && !url.username && !url.password ? url.href : null
@@ -423,15 +440,20 @@ function parseHls(text, baseUrl) {
     }
 
     if (line.startsWith('#EXT-X-KEY:') || line.startsWith('#EXT-X-SESSION-KEY:')) {
-      const method = (line.match(/METHOD=([A-Z0-9-]+)/i) || [])[1] || ''
-      if (method && method.toUpperCase() !== 'NONE') encrypted = true
-      if (DRM_HINT.test(line) || /SAMPLE-AES/i.test(method)) drm = true
+      const attrs = hlsAttributes(line), method = String(attrs.METHOD || '').toUpperCase()
+      if (method && method !== 'NONE') {
+        encrypted = true
+        // The key system is a format/scheme, not a word in an ordinary CDN
+        // filename such as /keys/clearkey.bin.
+        if (/SAMPLE-AES/i.test(method) || attrs.KEYFORMAT && attrs.KEYFORMAT.toLowerCase() !== 'identity' || /^(?:skd|urn):/i.test(attrs.URI || '')) drm = true
+      }
       continue
     }
 
     if (line.startsWith('#EXT-X-BYTERANGE:')) {
       const range = line.slice('#EXT-X-BYTERANGE:'.length).match(/^(\d+)(?:@(\d+))?$/)
       pendingRange = range && positive(range[1]) ? { length: Number(range[1]), offset: range[2] === undefined ? null : Number(range[2]) } : null
+      if (!pendingRange) invalidMedia = true
       continue
     }
     if (line.startsWith('#EXT-X-PART:')) {
@@ -466,13 +488,14 @@ function parseHls(text, baseUrl) {
       if (url) {
         let range = pendingRange
         if (range && range.offset === null) range = previousRange?.url === url ? { ...range, offset: previousRange.offset + previousRange.length } : null
+        if (pendingRange && !range) invalidMedia = true
         if (range) previousRange = { ...range, url }
         else previousRange = null
         // Keep the duration calculation bounded in memory even for huge VODs.
         if (segments.length < 12000) segments.push({ url, duration: pendingDuration, range, gap })
         duration += pendingDuration
         extinfCount += 1
-      }
+      } else invalidMedia = true
       pendingDuration = null; pendingRange = null; gap = false
     } else invalidMedia = true
   }
@@ -504,25 +527,87 @@ function parseIsoDuration(text) {
   return Number.isFinite(total) ? total : null
 }
 
-// A small bounded XML data reader. No entities, DTDs, remote resources or code
-// are evaluated. Namespace prefixes and either quote style are accepted.
-function dashTree(text) {
-  const root = { name: '', attrs: {}, children: [] }, stack = [root]
-  let count = 0
-  for (const token of String(text).replace(/<!--[\s\S]*?-->/g, '').matchAll(/<[^>]+>/g)) {
-    const tag = token[0]
-    if (/^<[!?]/.test(tag)) continue
-    const close = tag.match(/^<\/([\w:.-]+)\s*>$/)
+/** Decode XML's built-in/numeric entities; custom/remote entities are refused. */
+function decodeXml(value) {
+  let valid = true
+  const text = String(value).replace(/&([^;\s<>&]+);/g, (_token, entity) => {
+    const named = { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>' }
+    if (Object.hasOwn(named, entity)) return named[entity]
+    const number = /^#x[0-9a-f]+$/i.test(entity) ? parseInt(entity.slice(2), 16) : /^#\d+$/.test(entity) ? Number(entity.slice(1)) : NaN
+    if (!Number.isInteger(number) || number <= 0 || number > 0x10ffff || number >= 0xd800 && number <= 0xdfff) { valid = false; return '' }
+    return String.fromCodePoint(number)
+  })
+  // A bare '&' is invalid XML, too; checking the original avoids rejecting the
+  // literal ampersand produced by a legitimate &amp; in a signed BaseURL.
+  if (/&(?!(?:amp|quot|apos|lt|gt|#\d+|#x[0-9a-f]+);)/i.test(String(value))) valid = false
+  return valid ? text : null
+}
+
+// XML is data. This reader deliberately has no DTD/entity/network support.
+// Retaining direct text allows the native DASH engine to resolve inherited
+// BaseURL entries without introducing a second parser with different bounds.
+function dashTree(input) {
+  const text = String(input || '').replace(/^\uFEFF/, '')
+  if (text.length > MAX_MANIFEST) return null
+  const root = { name: '', attrs: {}, children: [], text: '' }, stack = [root]
+  let count = 0, offset = 0
+  const append = (raw, literal = false) => {
+    const value = literal ? raw : decodeXml(raw)
+    if (value === null || stack.length === 1 && value.trim()) return false
+    stack[stack.length - 1].text += value
+    return true
+  }
+  while (offset < text.length) {
+    const start = text.indexOf('<', offset)
+    if (start === -1) { if (!append(text.slice(offset))) return null; break }
+    if (!append(text.slice(offset, start))) return null
+    if (text.startsWith('<!--', start)) {
+      const end = text.indexOf('-->', start + 4)
+      if (end === -1) return null
+      offset = end + 3; continue
+    }
+    if (text.startsWith('<![CDATA[', start)) {
+      const end = text.indexOf(']]>', start + 9)
+      if (end === -1 || stack.length === 1 || !append(text.slice(start + 9, end), true)) return null
+      offset = end + 3; continue
+    }
+    if (text.startsWith('<?', start)) {
+      const end = text.indexOf('?>', start + 2)
+      if (end === -1) return null
+      offset = end + 2; continue
+    }
+    if (text.startsWith('<!', start)) return null
+    let end = start + 1, quote = ''
+    for (; end < text.length; end += 1) {
+      const char = text[end]
+      if (quote) { if (char === quote) quote = '' }
+      else if (char === '"' || char === "'") quote = char
+      else if (char === '>') break
+    }
+    if (end >= text.length || quote) return null
+    const tag = text.slice(start + 1, end)
+    offset = end + 1
+    const close = tag.match(/^\/([A-Za-z_][\w:.-]*)\s*$/)
     if (close) {
       if (stack.length <= 1 || stack[stack.length - 1].xmlName !== close[1]) return null
       stack.pop(); continue
     }
-    const match = tag.match(/^<([\w:.-]+)\b/)
+    const match = tag.match(/^([A-Za-z_][\w:.-]*)/)
     if (!match || ++count > 50000 || stack.length > 48) return null
-    const node = { name: match[1].split(':').pop().toLowerCase(), xmlName: match[1], attrs: {}, children: [] }
-    for (const attr of tag.matchAll(/([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) node.attrs[attr[1].toLowerCase()] = attr[2] ?? attr[3]
+    const node = { name: match[1].split(':').pop().toLowerCase(), xmlName: match[1], attrs: {}, children: [], text: '' }
+    const selfClosing = /\/\s*$/.test(tag)
+    const tail = tag.slice(match[0].length, selfClosing ? tag.lastIndexOf('/') : tag.length)
+    let position = 0
+    while (position < tail.length) {
+      const attr = tail.slice(position).match(/^\s+([A-Za-z_][\w:.-]*)\s*=\s*(?:"([^"<]*)"|'([^'<]*)')/)
+      if (!attr) { if (tail.slice(position).trim()) return null; break }
+      const key = attr[1].toLowerCase(), value = decodeXml(attr[2] ?? attr[3])
+      if (value === null || Object.hasOwn(node.attrs, key)) return null
+      node.attrs[key] = value
+      position += attr[0].length
+    }
     stack[stack.length - 1].children.push(node)
-    if (!/\/\s*>$/.test(tag)) stack.push(node)
+    if (!selfClosing) stack.push(node)
   }
   return stack.length === 1 && root.children.length === 1 && root.children[0].name === 'mpd' ? root.children[0] : null
 }
@@ -565,7 +650,8 @@ function dashTimelineDuration(chain, periodDuration) {
 
 function parseDash(text) {
   const mpd = dashTree(text)
-  const encrypted = /<(?:[\w.-]+:)?ContentProtection\b/i.test(text)
+  const protectedNode = (node) => node.name === 'contentprotection' || node.children.some(protectedNode)
+  const encrypted = mpd ? protectedNode(mpd) : /<(?:[\w.-]+:)?ContentProtection\b/i.test(text)
   const empty = { valid: false, duration: null, height: null, width: null, variants: [], audioTracks: [], periods: [], audioBandwidth: null, drm: encrypted, encrypted, live: null }
   if (!mpd) return empty
   const live = String(mpd.attrs.type || 'static').toLowerCase() === 'dynamic'
@@ -697,7 +783,7 @@ function estimateVariantSizes(info) {
     variant.filesizeSource = 'manifest-bitrate'
     if (variant.height && bytes > (info.sizes[variant.height] || 0)) info.sizes[variant.height] = bytes
   }
-  const top = info.variants.find((v) => v.url === info.selectedVariantUrl) || info.variants[0]
+  const top = info.variants.find((v) => v.url === info.selectedVariantUrl || v.mediaUrl === info.selectedVariantUrl) || info.variants[0]
   if (top?.filesize) {
     info.filesize = top.filesize; info.filesizeEstimated = true; info.filesizeSource = 'manifest-bitrate'
   }
@@ -755,7 +841,8 @@ async function describeStream(url, resolved) {
     const manifest = await fetchManifest(url, resolved)
     const { text, finalUrl } = manifest
     info.finalUrl = finalUrl
-    if (manifest.status >= 400) { info.rejected = true; info.status = manifest.status; return info }
+    if (manifest.errorKind) info.errorKind = manifest.errorKind
+    if (manifest.status >= 400) { Object.assign(info, manifest.access); info.rejected = true; info.status = manifest.status; return info }
     if (/^\s*#EXTM3U/i.test(text)) {
       kind = info.kind = 'hls'
       const hls = parseHls(text, finalUrl)
@@ -763,22 +850,77 @@ async function describeStream(url, resolved) {
       info.encrypted = hls.encrypted; info.drm = hls.drm
       if (!hls.isMaster) mediaPlaylist = hls
       else {
-        // A broken highest-quality child must not hide working lower qualities.
-        for (const variant of hls.variants.slice(0, 3)) {
-          if (resolved?.signal?.aborted || info.drm) break
-          const inner = await fetchManifest(variant.url, resolved)
-          if (/^\s*#EXTM3U/i.test(inner.text)) {
-            const media = parseHls(inner.text, inner.finalUrl)
-            info.drm ||= media.drm; info.encrypted ||= media.encrypted
-            if (!media.isMaster && (media.segmentCount || media.hasParts)) {
-              mediaPlaylist = media; info.selectedVariantUrl = variant.url
-              info.height = variant.height; info.width = variant.width; break
+        let requests = 0
+        let denied = null
+        const visiting = new Set([url.split('#')[0], finalUrl.split('#')[0]])
+        const inspect = async (parent, depth = 0) => {
+          for (const variant of parent.variants.slice(0, 3)) {
+            if (resolved?.signal?.aborted || info.drm || requests >= 6 || depth >= 3) break
+            const key = variant.url.split('#')[0]
+            if (visiting.has(key)) { info.manifestIssue = 'cycle'; continue }
+            visiting.add(key); requests += 1
+            const inner = await fetchManifest(variant.url, resolved)
+            if (inner.status >= 400 || inner.access?.accessRequired || inner.access?.challengeRequired) {
+              const evidence = { ...inner.access, status: inner.status }
+              if (!denied || evidence.challengeRequired || evidence.accessRequired && !denied.challengeRequired) denied = evidence
             }
-          } else if (inner.status >= 400 || /^\s*(?:<!doctype\s+html|<html\b)/i.test(inner.text)) {
-            info.rejectedVariantUrls.push(variant.url)
-            info.variants = info.variants.filter((v) => v !== variant)
+            const redirected = inner.finalUrl.split('#')[0]
+            const redirectCycle = redirected !== key && visiting.has(redirected)
+            if (!redirectCycle) visiting.add(redirected)
+            let chosen = null
+            if (redirectCycle) info.manifestIssue = 'cycle'
+            else if (inner.status < 400 && /^\s*#EXTM3U/i.test(inner.text)) {
+              const media = parseHls(inner.text, inner.finalUrl)
+              info.drm ||= media.drm
+              if (media.isMaster && !media.drm) chosen = await inspect(media, depth + 1)
+              else if (!media.isMaster && (media.segmentCount || media.hasParts)) chosen = {
+                playlist: media, url: variant.url, chain: [], variant,
+                audioTracks: [], audioContext: false, audioGroup: null,
+                subtitles: media.subtitles, encrypted: media.encrypted,
+              }
+            } else if (inner.status >= 400 || /^\s*(?:<!doctype\s+html|<html\b)/i.test(inner.text)) {
+              if (info.rejectedVariantUrls.length < 12) info.rejectedVariantUrls.push(variant.url)
+              if (depth === 0) info.variants = info.variants.filter((v) => v !== variant)
+            }
+            visiting.delete(key)
+            if (!redirectCycle && redirected !== key) visiting.delete(redirected)
+            if (chosen) {
+              const ownAudio = variant.audioGroup ? parent.audioTracks.filter((track) => track.group === variant.audioGroup) : []
+              const useChildAudio = chosen.audioContext
+              return { ...chosen, chain: [variant.url, ...chosen.chain],
+                audioTracks: useChildAudio ? chosen.audioTracks : ownAudio,
+                audioGroup: useChildAudio ? chosen.audioGroup : variant.audioGroup || null,
+                audioContext: useChildAudio || !!variant.audioGroup,
+                subtitles: [...parent.subtitles, ...chosen.subtitles], encrypted: parent.encrypted || chosen.encrypted }
+            }
           }
+          return null
         }
+        const chosen = await inspect(hls)
+        if (chosen) {
+          mediaPlaylist = chosen.playlist
+          info.selectedVariantUrl = chosen.url
+          info.selectedVariantChain = chosen.chain
+          info.height = chosen.variant.height; info.width = chosen.variant.width
+          info.audioTracks = [...new Map(chosen.audioTracks.map((t) => [`${t.group}:${t.url}:${t.lang}`, t])).values()]
+          info.subtitles = [...new Map(chosen.subtitles.map((t) => [t.url, t])).values()]
+          info.encrypted ||= chosen.encrypted
+          const parent = info.variants.find((v) => v.url === chosen.chain[0])
+          if (parent && chosen.chain.length > 1) {
+            parent.mediaUrl = chosen.url
+            parent.height = chosen.variant.height || parent.height
+            parent.width = chosen.variant.width || parent.width
+            parent.bandwidth = chosen.variant.bandwidth || parent.bandwidth
+            parent.audioGroup = chosen.variant.audioGroup || parent.audioGroup
+          }
+          info.height ||= parent?.height; info.width ||= parent?.width
+          info.preparedVariants = [{
+            url: chosen.chain[0], mediaUrl: chosen.url,
+            height: info.height, width: info.width, bandwidth: parent?.bandwidth || chosen.variant.bandwidth || null,
+            audioGroup: chosen.audioGroup,
+            audioTracks: info.audioTracks.slice(0, 40),
+          }]
+        } else if (denied) Object.assign(info, denied)
       }
       if (mediaPlaylist) {
         info.live = mediaPlaylist.live
@@ -793,8 +935,8 @@ async function describeStream(url, resolved) {
         variants: dash.variants, periods: dash.periods, audioBandwidth: dash.audioBandwidth,
         audioTracks: dash.audioTracks, drm: dash.drm, encrypted: dash.encrypted, live: dash.live })
       info.playable = dash.variants.length > 0 || dash.audioTracks.length > 0
-    } else if (/^\s*(?:<!doctype\s+html|<html\b)/i.test(text)) {
-      info.rejected = true; return info
+    } else if (/^\s*(?:<!doctype\s+html|<html\b)/i.test(text) || manifest.access?.accessRequired || manifest.access?.challengeRequired) {
+      Object.assign(info, manifest.access); info.rejected = true; return info
     } else if (/^(?:video|audio)\//i.test(manifest.contentType || '') && manifest.status >= 200 && manifest.status < 300) {
       kind = info.kind = 'file'
     }
@@ -803,7 +945,13 @@ async function describeStream(url, resolved) {
   if (kind === 'file' && !resolved?.signal?.aborted) {
     fileProbe = await probeFile(url, resolved)
     info.finalUrl = fileProbe.url
+    if (!resolved?._contentRetried && /mpegurl|dash\+xml/i.test(fileProbe.contentType || '')) return describeStream(url, { ...resolved, kind: 'unknown', _contentRetried: true })
     if (fileProbe.status >= 400 || /(?:text\/html|application\/(?:json|xml))/i.test(fileProbe.contentType || '')) {
+      Object.assign(info, accessEvidence(fileProbe.status, ''))
+      if (/html/i.test(fileProbe.contentType || '') && !resolved?.signal?.aborted) {
+        const gate = await fetchManifest(fileProbe.url, resolved)
+        Object.assign(info, gate.access || {})
+      }
       info.rejected = true; info.status = fileProbe.status; return info
     }
     if (resolved?.playerMetadata && /^(?:video|audio)\//i.test(fileProbe.contentType || '') && fileProbe.status >= 200 && fileProbe.status < 300) {
@@ -818,6 +966,7 @@ async function describeStream(url, resolved) {
     if (resolved?.cookieFile) info.metadataLimitReason = 'scoped-cookie'
     probed = await ffprobeMedia(url, resolved)
     if (probed) {
+      if (kind === 'file' && !resolved?._contentRetried && /(?:^|,)(?:hls|dash)(?:,|$)/i.test(probed.container || '')) return describeStream(url, { ...resolved, kind: 'unknown', _contentRetried: true })
       if (!info.duration && info.live !== true && probed.duration) { info.duration = probed.duration; info.durationSource = 'probe' }
       info.height ||= probed.height; info.width ||= probed.width
       const stillImage = /_pipe|(?:^|,)image2(?:pipe)?(?:,|$)/i.test(probed.container || '')
@@ -838,11 +987,11 @@ async function describeStream(url, resolved) {
   if (!info.live && !info.drm) {
     estimateVariantSizes(info)
     if (!info.filesize && kind === 'hls' && mediaPlaylist) {
-      const estimate = await estimateHlsSize(mediaPlaylist, resolved)
       // Sampling only the video child would omit separate audio. Master bitrate
       // already includes its audio group, so prefer that whenever available.
-      const selected = info.variants.find((v) => v.url === info.selectedVariantUrl)
+      const selected = info.variants.find((v) => v.url === info.selectedVariantUrl || v.mediaUrl === info.selectedVariantUrl)
       const separateAudio = selected?.audioGroup && info.audioTracks.some((t) => t.group === selected.audioGroup && t.url)
+      const estimate = separateAudio ? null : await estimateHlsSize(mediaPlaylist, resolved)
       if (estimate?.size && !separateAudio) {
         info.filesize = estimate.size; info.filesizeSource = estimate.source; info.filesizeEstimated = true
       }
@@ -955,6 +1104,8 @@ module.exports = {
   audioLanguages,
   normaliseLanguage,
   parseIsoDuration,
+  parseDashTree: dashTree,
+  accessEvidence,
   applyPlayerMetadata,
   estimateVariantSizes,
 }

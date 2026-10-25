@@ -27,3 +27,43 @@ test('relative inline configs, escaped URLs and media MIME overrides are kept', 
   assert.equal(discoverSources({ sources: ['video/main.m3u8'] }, base).sources[0].url, base + 'video/main.m3u8')
   assert.equal(discoverSources("player.setup({file: 'main.m3u8'});", base).sources[0].url, base + 'main.m3u8')
 })
+
+test('typed HTML sources, base URLs and player data attributes retain their protocols', () => {
+  const result = discoverSources(`<head><base href="https://media.example.test/assets/"></head>
+    <video><source src="play.php?id=1&#38;token=two" type="application/dash+xml"></video>
+    <audio data-setup='{&quot;sources&quot;:[{&quot;src&quot;:&quot;audio&quot;,&quot;type&quot;:&quot;audio/mp4&quot;}]}'></audio>
+    <iframe src="about:blank" data-src="player/one"></iframe>`, base)
+  assert.deepEqual(result.sources.map((s) => [s.url, s.kind]), [
+    ['https://media.example.test/assets/play.php?id=1&token=two', 'dash'],
+    ['https://media.example.test/assets/audio', 'file'],
+  ])
+  assert.deepEqual(result.frames, ['https://media.example.test/assets/player/one'])
+})
+test('JSON-LD graph media and common DASH configuration keys expose explicit sources only', () => {
+  const result = discoverSources({ '@graph': [{ '@type': 'VideoObject', contentUrl: '/movie', encodingFormat: 'video/mp4',
+    embedUrl: '/embed/player', author: { url: '/author' }, license: { src: '/license-server' } }],
+    playback: { manifestUri: '/dash/stream', type: 'application/dash+xml' },
+    source: { dash: '/manifest-token', hls: '/hls-token', progressive: [{ url: '/file-token', mimeType: 'video/mp4' }] },
+    menu: { url: '/navigation.mp4' }, ads: { sources: [{ file: '/advert.mp4' }] } }, base)
+  assert.equal(result.sources.find((s) => s.url.endsWith('/movie')).kind, 'file')
+  assert.equal(result.sources.find((s) => s.url.endsWith('/dash/stream')).kind, 'dash')
+  assert.equal(result.sources.find((s) => s.url.endsWith('/manifest-token')).kind, 'dash')
+  assert.equal(result.sources.find((s) => s.url.endsWith('/hls-token')).kind, 'hls')
+  assert.equal(result.sources.find((s) => s.url.endsWith('/file-token')).kind, 'file')
+  assert.equal(result.sources.length, 5)
+  assert.deepEqual(result.frames, ['https://player.example.test/embed/player'])
+})
+test('later typed declarations improve an existing unknown source without duplicate offers', () => {
+  const result = discoverSources({ sources: ['/opaque', { url: '/opaque', type: 'application/dash+xml', language: 'en', label: 'Original' }] }, base)
+  assert.equal(result.sources.length, 1)
+  assert.equal(result.sources[0].kind, 'dash')
+  assert.equal(result.sources[0].language, 'en')
+  assert.equal(result.sources[0].label, 'Original')
+})
+test('discovery refuses non-HTTP protocols, credentials, control characters and unbounded offers', () => {
+  const sources = ['file:///private/movie.mp4', 'javascript:alert(1)', 'https://user:secret@example.test/movie.mp4', 'https://example.test/a\n.mp4', ...Array.from({ length: 500 }, (_, i) => `/video-${i}.mp4`)]
+  const result = discoverSources({ sources }, base)
+  assert.equal(result.sources.length, 120)
+  assert.ok(result.sources.every((s) => !/private|user:|secret|alert|a%0A/.test(s.url)))
+  assert.equal(discoverSources({ file: 'https://example.test/a\\u000A.mp4' }, base).sources.length, 0)
+})

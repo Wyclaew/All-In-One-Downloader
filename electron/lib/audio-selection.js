@@ -2,6 +2,7 @@
 
 const fs = require('fs')
 const path = require('path')
+const crypto = require('crypto')
 const { spawn, execFile } = require('child_process')
 const { ffmpegPath, ffprobePath, toolEnv } = require('./binaries')
 const { languageCode } = require('./media-preferences')
@@ -20,21 +21,30 @@ function inspectAudio(filePath) {
 async function selectAudio(filePath, preferred, { onHandle, isStopped } = {}) {
   const lang = languageCode(preferred)
   const tracks = await inspectAudio(filePath)
-  const selected = tracks.find((t) => languageCode(t.tags?.language) === lang)
+  const selected = lang && lang !== 'auto' ? tracks.find((t) => languageCode(t.tags?.language) === lang) : null
   const known = [...new Set(tracks.map((t) => languageCode(t.tags?.language)).filter((l) => l && l !== 'und'))]
-  const current = selected || tracks.find((t) => t.disposition?.default) || tracks[0]
+  // Until the remux really succeeds, playback still starts with the file's
+  // current default. Finding the desired tag alone must not claim it was set.
+  const current = tracks.find((t) => t.disposition?.default) || tracks[0]
   const currentLanguage = languageCode(current?.tags?.language)
-  const result = { language: currentLanguage && currentLanguage !== 'und' ? currentLanguage : null, warning: null }
+  const result = { language: currentLanguage || null, warning: null,
+    availableLanguages: known, requestedLanguage: lang && lang !== 'auto' ? lang : null }
+  const requestedLabel = ({ en: 'İngilizce', tr: 'Türkçe' })[lang] || lang.toUpperCase()
+  if (isStopped?.()) return result
   if (lang && lang !== 'auto' && !selected) {
     result.warning = known.length
-      ? `İstenen ${lang.toUpperCase()} ses bulunamadı; mevcut ses: ${known.join(', ')}.`
-      : 'Ses dili kaynakta etiketlenmemiş; İngilizce olduğu doğrulanamadı.'
+      ? `İstenen ${requestedLabel} ses bulunamadı; mevcut ses: ${known.join(', ')}.`
+      : `İstenen ${requestedLabel} ses doğrulanamadı; dosyada okunabilir bir ses dili etiketi bulunamadı.`
     return result
   }
   const bin = ffmpegPath()
-  if (!selected || tracks.length < 2 || !bin || isStopped?.()) return result
+  if (!selected || tracks.length < 2) return result
+  if (!bin) {
+    result.warning = `İstenen ${requestedLabel} ses dosyada var ancak ffmpeg bulunamadığı için tek ses olarak seçilemedi. Oynatıcıdan ses kanalını seçebilirsin.`
+    return result
+  }
   const ext = path.extname(filePath)
-  const temp = `${filePath}.audio-${process.pid}${ext}`
+  const temp = `${filePath}.audio-${process.pid}-${crypto.randomBytes(6).toString('hex')}${ext}`
   try {
     await new Promise((resolve, reject) => {
       const child = spawn(bin, ['-v', 'error', '-nostdin', '-y', '-i', filePath,
@@ -46,11 +56,11 @@ async function selectAudio(filePath, preferred, { onHandle, isStopped } = {}) {
     })
     if (isStopped?.()) return result
     fs.renameSync(temp, filePath)
-    return result
+    return { ...result, language: languageCode(selected.tags?.language) || null }
   } catch (err) {
     const fallback = tracks.find((t) => t.disposition?.default) || tracks[0]
     const fallbackLanguage = languageCode(fallback?.tags?.language)
-    return { language: fallbackLanguage && fallbackLanguage !== 'und' ? fallbackLanguage : null, warning: `${err.message} Dosyada tüm sesler korundu.` }
+    return { ...result, language: fallbackLanguage || null, warning: `${err.message} Dosyada tüm sesler korundu.` }
   } finally { fs.rmSync(temp, { force: true }) }
 }
 

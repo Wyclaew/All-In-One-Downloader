@@ -7,7 +7,7 @@ const http = require('http')
 const crypto = require('crypto')
 const { execFileSync } = require('child_process')
 const { root, load } = require('./helpers.cjs')
-load('electron/lib/ownengine.js') // Runtime HTTP dependency uses the Electron shim.
+const own = load('electron/lib/ownengine.js') // Runtime HTTP dependency uses the Electron shim.
 const hls = load('electron/lib/hls-native.js')
 const { ffmpegPath, ffprobePath, toolEnv } = load('electron/lib/binaries.js')
 const bin = ffmpegPath(), probe = ffprobePath()
@@ -33,6 +33,7 @@ test.before(async () => {
     if (name === 'waiting') return
     if (name === 'key') { res.end(key); return }
     if (mode === 'bad' && name.endsWith('.ts')) { res.writeHead(200); res.end('<html>Forbidden</html>'); return }
+    if (mode === 'missing' && name === 'movie1.ts') { res.writeHead(404); res.end(); return }
     let data = files[name]
     if (!data) { res.writeHead(404); res.end(); return }
     if (name === 'movie.m3u8' && mode === 'aes') data = Buffer.from(playlist.replace('#EXT-X-MEDIA-SEQUENCE:0', '#EXT-X-MEDIA-SEQUENCE:7\n#EXT-X-KEY:METHOD=AES-128,URI="key"'))
@@ -106,6 +107,18 @@ test('error HTML is never muxed as a successful video', { skip }, async () => {
   const opts = options('bad', 'bad')
   await assert.rejects(hls.transferHls(opts), (err) => err.status === 403)
   assert.equal(fs.existsSync(opts.destPath), false)
+})
+test('a missing middle segment fails native and remote FFmpeg paths without publishing an incomplete file', { skip }, async () => {
+  const native = options('missing-native', 'missing')
+  await assert.rejects(hls.transferHls(native), (error) => error.status === 404)
+  assert.equal(fs.existsSync(native.destPath), false)
+  let output
+  await assert.rejects(own.transfer({ download: { url: native.url, title: 'missing-remote', duration: 4, resolved: { kind: 'hls' } },
+    settings: { downloadDir: root, container: 'mp4', nativeHls: false, preferredAudioLanguage: 'auto' },
+    onDest(file) { output = file }, onHandle() {}, onProgress() {}, onNote() {},
+  }), { code: 'MEDIA_INCOMPLETE', exitCode: 0 })
+  assert.equal(fs.existsSync(output), false)
+  assert.equal(fs.existsSync(output + '.part'), false)
 })
 test('cancellation interrupts HLS header wait and foreign temporary data stays untouched', { skip }, async () => {
   const opts = { ...options('waiting'), url: base + '/waiting' }

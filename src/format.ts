@@ -80,3 +80,9 @@ export function shortPath(p: string | null | undefined, max = 52): string {
   const file = parts.pop() || ''
   return `…/${file.length > max ? `${file.slice(0, max - 1)}…` : file}`
 }
+/** Human labels for requested and detected audio; unknown is never English. */
+export function audioLanguage(value?: string | null): string {
+  const code = String(value || '').trim().toLowerCase().split(/[-_]/)[0]
+  const names: Record<string, string> = { tr: 'Türkçe', tur: 'Türkçe', en: 'İngilizce', eng: 'İngilizce', auto: 'Kaynağın sesi', und: 'dil doğrulanmadı', '': 'dil doğrulanmadı' }
+  return names[code] || value || 'dil doğrulanmadı'
+}

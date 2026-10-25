@@ -1,6 +1,6 @@
 'use strict'
 // Real main-process IPC + renderer bridge, temporary profile and local fixtures.
-const { app } = require('electron')
+const { app, shell } = require('electron')
 const fs = require('fs'), os = require('os'), path = require('path'), http = require('http')
 const assert = require('assert/strict')
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'aio-source-ipc-'))
@@ -8,9 +8,12 @@ app.setPath('userData', profile)
 fs.writeFileSync(path.join(profile, 'library.json'), JSON.stringify({ settings: {
   settingsRev: 3, autoCheckUpdates: false, autoDetectClipboard: false, useYtdlp: false,
   resolverConcurrency: 1, enrichLimit: 0, minStreamSeconds: 0, resolverTimeout: 8000,
+  autoStartDownloads: false, proxyUrl: 'http://127.0.0.1:9',
 } }))
 let server, base, timeout
 const seen = []
+let shownBackup = null
+shell.showItemInFolder = (file) => { shownBackup = file }
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 async function until(check) {
   for (let n = 0; n < 200; n++) { if (await check()) return; await delay(30) }
@@ -48,7 +51,23 @@ app.once('browser-window-created', (_event, win) => {
       assert.doesNotThrow(() => JSON.parse(report))
       assert.equal(report.includes('fixture-secret'), false)
       assert.equal(report.includes('/master.m3u8'), false)
-      console.log(JSON.stringify({ ok: true, queuedCancel: true, batchRetry: true, batchStop: true, metadataPreservesId: true, reportRedacted: true }))
+      const first = await call('download', { itemIds: [item.id], quality: 720 })
+      assert.equal(first.count, 1)
+      assert.equal((await call('download', { itemIds: [item.id], quality: 720 })).count, 0)
+      assert.equal(await call('setSourceProxy', queued.id, true), true)
+      await call('cancelSource', queued.id)
+      current = await state()
+      assert.equal(current.sources.find((s) => s.id === queued.id).useProxy, true)
+      assert.equal(current.downloads[0].status, 'paused')
+      assert.equal(current.downloads[0].useProxy, true)
+      assert.equal(current.downloads[0].refreshPending, true)
+      assert.equal(await call('setSourceProxy', queued.id, false), true)
+      await until(async () => (await state()).sources.find((s) => s.id === queued.id).status === 'ready')
+      const backup = await call('backupLibrary')
+      assert.equal(backup.path, shownBackup)
+      assert.ok(fs.existsSync(backup.path))
+      assert.ok(backup.path.startsWith(path.join(profile, 'backups')))
+      console.log(JSON.stringify({ ok: true, queuedCancel: true, batchRetry: true, batchStop: true, metadataPreservesId: true, reportRedacted: true, routeSwitchPauses: true, duplicateCount: true, backup: true }))
     } catch (err) { console.error(err); process.exitCode = 1 }
     finally { clearTimeout(timeout); app.quit() }
   })

@@ -29,6 +29,9 @@ export interface Source {
 }
 
 /** A stream our own resolver found, plus what yt-dlp needs to fetch it. */
+export interface SiteAccountPolicy { origin: string; login: boolean; registration: boolean }
+export interface SiteAccountsStatus { available: boolean; reason: string | null; email: string; hasPassword: boolean; sites: SiteAccountPolicy[] }
+
 export interface Resolved {
   pageUrl: string
   referer: string
@@ -39,6 +42,9 @@ export interface Resolved {
   engine?: string
   selectedVariantUrl?: string | null
   rejectedVariantUrls?: string[]
+  selectedVariantChain?: string[]
+  preparedVariants?: Array<{ url: string; mediaUrl: string; height?: number; width?: number; bandwidth?: number; audioGroup?: string; audioTracks?: Array<{ url: string; lang?: string; name?: string; group?: string; default?: boolean }> }>
+  useProxy?: boolean
 }
 
 export interface MediaItem {
@@ -120,8 +126,12 @@ export interface Download {
   phase: number
   phases: number
   attempts: number
+  queueOrder?: number
   recoveryCount?: number
   retryAt?: number | null
+  audioWarning?: string | null
+  audioAvailableLanguages?: string[]
+  audioSelectionExplicit?: boolean
   preferredAudioLanguage?: string
   series?: string | null
   season?: number | null
@@ -176,6 +186,9 @@ export interface Settings {
   useResolver: boolean
   resolverFirst: boolean
   nativeHls: boolean
+  nativeDash: boolean
+  protectDiskSpace: boolean
+  diskReserveMB: number
   useUserScripts: boolean
   resolverTimeout: number
   minStreamSeconds: number
@@ -349,9 +362,9 @@ export interface ProgressEvent {
 }
 
 export interface Tools {
-  ffprobe?: { path: string; version?: string | null } | null
-  ytdlp: { path: string; version: string | null } | null
-  ffmpeg: { path: string; version: string | null } | null
+  ffprobe?: { path: string; version?: string | null; runnable?: boolean; error?: string | null } | null
+  ytdlp: { path: string; version: string | null; runnable?: boolean; error?: string | null } | null
+  ffmpeg: { path: string; version: string | null; runnable?: boolean; error?: string | null } | null
   platform: string
   installHint: string
 }
@@ -363,6 +376,7 @@ export interface Toast {
 }
 
 export interface DownloadRequest {
+  preferredAudioLanguage?: 'en' | 'tr' | 'auto'
   itemIds?: string[]
   url?: string
   quality?: number

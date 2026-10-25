@@ -154,3 +154,20 @@ test('locking during enrollment removes its Keychain key and cannot leave a read
   assert.equal(vault.status().biometricEnabled, false)
   assert.equal(vault.status().biometricReady, false)
 })
+
+test('legacy entitlement errors expose re-enrollment while password access remains available', async () => {
+  await vault.unlock(pass + '-new')
+  await vault.setBiometric(true)
+  vault.lock()
+  getError = Object.assign(new Error('Önceki macOS Anahtar Zinciri izni eksik. Şifrenle açıp Touch ID’yi yeniden etkinleştir.'), { code: 'missing-entitlement' })
+  await assert.rejects(vault.unlockBiometric(), { code: 'missing-entitlement' })
+  assert.equal(vault.status().biometricReady, false)
+  assert.match(vault.status().biometricReason, /izni eksik/)
+  getError = null
+  await vault.unlock(pass + '-new')
+  await vault.setBiometric(true)
+  assert.equal(vault.status().biometricReady, true)
+  vault.lock()
+  await vault.unlockBiometric()
+  assert.equal(vault.isUnlocked(), true)
+})

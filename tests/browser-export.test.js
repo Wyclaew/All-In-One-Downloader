@@ -88,6 +88,23 @@ test('concurrent sources sharing the same resolved browser argument share one ex
   assert.equal(calls.length, 1)
 })
 
+test('one cancelled cookie-export waiter leaves other sources and cached output intact', async (t) => {
+  const { browsers, calls, complete } = fixture(t)
+  const controller = new AbortController()
+  const cancelled = browsers.exportCookieJar('firefox:/synthetic/profile', { signal: controller.signal })
+  const surviving = browsers.exportCookieJar('firefox:/synthetic/profile')
+  const rejected = assert.rejects(cancelled, { code: 'ABORTED' })
+  controller.abort()
+  await rejected
+  assert.equal(calls.length, 1)
+  complete(calls[0])
+  assert.equal(await surviving, outputFile(calls[0]))
+  assert.equal(await browsers.exportCookieJar('firefox:/synthetic/profile'), outputFile(calls[0]))
+  const already = new AbortController(); already.abort()
+  await assert.rejects(browsers.exportCookieJar('firefox:/synthetic/never', { signal: already.signal }), { code: 'ABORTED' })
+  assert.equal(calls.length, 1)
+})
+
 test('different browsers never collide at the same clock time and cache separately', async (t) => {
   const { browsers, calls, complete } = fixture(t)
   const first = browsers.exportCookieJar('firefox:/synthetic/one')

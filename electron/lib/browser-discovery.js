@@ -5,40 +5,48 @@
 function installDiscovery() {
   if (window.__aioDiscoveryV2) return
   window.__aioDiscoveryV2 = true
-  const seen = new Set()
+  const seen = new Map(), watchedMedia = new WeakSet()
   let budget = 12000, reads = 0, walking = false
   const media = /\.(m3u8|mpd|mp4|webm|m4v|mkv|mov|flv|mp3|m4a)([?#]|$)/i
-  const offer = (url, kind) => {
+  const offer = (url, kind, base = document.baseURI || location.href) => {
     try {
-      const abs = new URL(url, location.href).href
-      if (!/^https?:/.test(abs) || seen.has(abs) || seen.size >= 160) return
-      seen.add(abs)
+      if (typeof url !== 'string' || url.length > 16000 || /[\u0000-\u001f\u007f]/.test(url)) return
+      const parsed = new URL(url, base), abs = parsed.href
+      if (!/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password || seen.size >= 160 && !seen.has(abs)) return
+      if (seen.has(abs) && (!kind || seen.get(abs) === kind)) return
+      seen.set(abs, kind || 'unknown')
       const output = window.__aioSeen || (window.__aioSeen = [])
       if (output.length < 200) output.push({ url: abs, kind, from: 'browser-discovery' })
     } catch {}
   }
-  const walk = (value, context = '', depth = 0) => {
+  const walk = (value, context = '', depth = 0, base = document.baseURI || location.href) => {
     if (--budget <= 0 || depth > 10 || !value) return
     if (typeof value === 'string') {
-      if (value.length < 16000 && (media.test(value) || /sources?|file|manifest|playback|hls|dash/i.test(context)) && (/^(https?:|\/|\.\.?\/)/i.test(value) || media.test(value) && !/\s/.test(value))) offer(value)
+      if (value.length < 16000 && (media.test(value) || /(?:^|\.)(?:sources?|file|manifest|playback|hls|dash|mpd|progressive)$/i.test(context)) && !/[<>\s]/.test(value)) offer(value, undefined, base)
       return
     }
-    if (Array.isArray(value)) { value.slice(0, 100).forEach((v) => walk(v, context, depth + 1)); return }
+    if (Array.isArray(value)) { value.slice(0, 100).forEach((v) => walk(v, context, depth + 1, base)); return }
     if (typeof value !== 'object') return
-    const type = String(value.type || value.mimeType || '')
+    const type = String(value.type || value.mimeType || value.mime || value.encodingFormat || value.format || '')
     for (const [key, entry] of Object.entries(value).slice(0, 100)) {
-      if (/^(ads?|advertising|related|recommendations|images?|thumbnails?|poster)$/i.test(key)) continue
-      if (typeof entry === 'string' && /^(file|src|url|hls|dash|manifest)$/i.test(key) && /mpegurl|dash|^video\//i.test(type)) offer(entry, /dash/i.test(type) ? 'dash' : /mpegurl/i.test(type) ? 'hls' : 'file')
-      walk(entry, context + '.' + key, depth + 1)
+      if (/^(ads?|advertising|related|recommendations|images?|thumbnails?|poster|author|publisher|license(?:Url|Server)?|drm|keySystems?|protectionData|embedUrl)$/i.test(key)) continue
+      const sourceKey = /^(file|src|url|uri|contentUrl|hls|dash|mpd|manifest|manifestUri|manifestUrl|hlsManifestUrl|dashManifestUrl)$/i.test(key)
+      const typed = /mpegurl|dash|^(?:video|audio)\//i.test(type)
+      if (typeof entry === 'string' && sourceKey && (typed || !/^(url|uri)$/i.test(key) || /(?:^|\.)(?:sources?|playback|renditions|variants|progressive)$/i.test(context) || media.test(entry))) {
+        const hint = /^(hls|dash|mpd)$/i.test(key) ? key : type
+        offer(entry, /dash|mpd/i.test(hint) ? 'dash' : /mpegurl|hls/i.test(hint) ? 'hls' : /^(?:video|audio)\//i.test(hint) ? 'file' : undefined, base)
+      }
+      walk(entry, context + '.' + key, depth + 1, base)
     }
   }
   const scan = (text, url = '') => {
     if (typeof text !== 'string' || text.length > 2 * 1024 * 1024 || budget <= 0) return
     const clean = text.replace(/\\\//g, '/').replace(/\\u0026/gi, '&')
+    try { walk(originalParse(clean), 'response', 0, url || document.baseURI || location.href); return } catch {}
     if (/^\s*#EXTM3U/.test(clean)) offer(url, 'hls')
     if (/<(?:[\w.-]+:)?MPD(?:\s|>)/.test(clean.slice(0, 1000))) offer(url, 'dash')
-    for (const m of clean.matchAll(/https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mpd|mp4|webm)(?:\?[^\s"'<>\\]*)?/gi)) offer(m[0])
-    for (const m of clean.matchAll(/(?:file|src|hls|dash|manifest)["']?\s*:\s*["']((?:https?:|\/)[^"']+)["']/gi)) offer(m[1])
+    for (const m of clean.matchAll(/https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mpd|mp4|webm)(?:\?[^\s"'<>\\]*)?/gi)) offer(m[0], undefined, url || document.baseURI)
+    for (const m of clean.matchAll(/(?:file|src|hls|dash|mpd|manifest|manifestUri)["']?\s*:\s*["']((?:https?:|\/)[^"']+)["']/gi)) offer(m[1], undefined, url || document.baseURI)
   }
   const originalParse = JSON.parse
   JSON.parse = function () {
@@ -52,11 +60,12 @@ function installDiscovery() {
   if (originalFetch) window.fetch = function () {
     const pending = originalFetch.apply(this, arguments)
     pending.then(async (response) => {
-      if (reads >= 16 || budget <= 0 || Number(response.headers.get('content-length')) > 512 * 1024) return
+      if (reads >= 16 || budget <= 0 || /^(?:video|audio)\//i.test(response.headers.get('content-type') || '') || /\.(?:ts|m4s|aac)(?:[?#]|$)/i.test(response.url) || Number(response.headers.get('content-length')) > 512 * 1024) return
       reads += 1
-      let reader
+      let reader, timer
       try {
         reader = response.clone().body.getReader()
+        timer = setTimeout(() => { try { reader.cancel().catch(() => {}) } catch {} }, 5000)
         const decoder = new TextDecoder()
         let text = '', bytes = 0
         while (bytes <= 512 * 1024) {
@@ -67,9 +76,8 @@ function installDiscovery() {
         }
         if (bytes <= 512 * 1024) {
           scan(text, response.url)
-          try { walk(originalParse(text), 'response') } catch {}
         }
-      } catch {} finally { try { reader?.cancel().catch(() => {}) } catch {} }
+      } catch {} finally { clearTimeout(timer); try { reader?.cancel().catch(() => {}) } catch {} }
     }).catch(() => {})
     return pending
   }
@@ -77,10 +85,9 @@ function installDiscovery() {
   XMLHttpRequest.prototype.open = function () {
     this.addEventListener('load', () => {
       try {
-        if (this.responseType === 'json') walk(this.response, 'response')
-        else if (!this.responseType || this.responseType === 'text') {
+        if (this.responseType === 'json') walk(this.response, 'response', 0, this.responseURL)
+        else if ((!this.responseType || this.responseType === 'text') && this.responseText.length <= 512 * 1024) {
           scan(this.responseText, this.responseURL)
-          try { walk(originalParse(this.responseText), 'response') } catch {}
         }
       } catch {}
     }, { once: true })
@@ -89,9 +96,18 @@ function installDiscovery() {
   try { performance.getEntriesByType('resource').filter((e) => media.test(e.name)).slice(-80).forEach((e) => offer(e.name)) } catch {}
   const sweep = () => {
     try {
-      Array.from(document.querySelectorAll('video,video source,audio')).slice(0, 80).forEach((v) => {
-        if (v.currentSrc && !v.currentSrc.startsWith('blob:')) offer(v.currentSrc)
-        if (v.src && !v.src.startsWith('blob:')) offer(v.src)
+      Array.from(document.querySelectorAll('video,video source,audio,audio source')).slice(0, 80).forEach((v) => {
+        const type = v.getAttribute?.('type') || ''
+        const kind = /dash/i.test(type) ? 'dash' : /mpegurl/i.test(type) ? 'hls' : /^(?:video|audio)\//i.test(type) ? 'file' : undefined
+        if (v.currentSrc && !v.currentSrc.startsWith('blob:')) offer(v.currentSrc, kind)
+        if (v.src && !v.src.startsWith('blob:')) offer(v.src, kind)
+        if (!watchedMedia.has(v) && /^(VIDEO|AUDIO)$/.test(v.tagName)) {
+          watchedMedia.add(v)
+          v.addEventListener('encrypted', (event) => {
+            const output = window.__aioSeen || (window.__aioSeen = [])
+            if (event.isTrusted && output.length < 200) output.push({ drm: true, from: 'encrypted-media-event' })
+          })
+        }
         // Values from a loaded media element supplement an independently
         // verified source. A blob URL itself is never offered as a download.
         if (v.readyState >= 1 && !v.closest('.video-ads,.jw-flag-ads,.vjs-ad-playing,.ad-showing')) {
@@ -106,7 +122,7 @@ function installDiscovery() {
           })
         }
       })
-      document.querySelectorAll('script[type="application/json"],script#__NEXT_DATA__,script#__NUXT_DATA__').forEach((s) => {
+      Array.from(document.querySelectorAll('script[type="application/json"],script[type="application/ld+json"],script#__NEXT_DATA__,script#__NUXT_DATA__')).slice(0, 40).forEach((s) => {
         if (s.textContent.length < 512 * 1024) { try { walk(originalParse(s.textContent), 'state') } catch {} }
       })
     } catch {}

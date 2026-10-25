@@ -8,6 +8,7 @@ const fs = require('fs')
 const { app, BrowserWindow } = require('electron')
 const { atomicWrite, readJson, uid } = require('./util')
 const { detectBrowsers } = require('./browsers')
+const libraryBackup = require('./library-backup')
 
 const STATE_VERSION = 1
 
@@ -68,6 +69,9 @@ function defaultSettings() {
     useResolver: true,
     resolverFirst: true,
     nativeHls: true,
+    nativeDash: true,
+    protectDiskSpace: true,
+    diskReserveMB: 256,
     // Site recipes: user-editable scripts that run inside the page.
     useUserScripts: true,
     // Long enough that a pre-roll can finish and the real stream can start.
@@ -127,6 +131,7 @@ function emptyState() {
 
 let state = emptyState()
 let stateFile = ''
+let recoveryNotice = null
 let saveTimer = null
 let broadcastTimer = null
 
@@ -154,7 +159,10 @@ function migrateLegacyState(target) {
 function init() {
   stateFile = path.join(app.getPath('userData'), 'library.json')
   migrateLegacyState(stateFile)
-  const loaded = readJson(stateFile, null)
+  const recovered = libraryBackup.loadLibrary(stateFile)
+  const loaded = recovered.data
+  recoveryNotice = recovered.notice
+  if (loaded && !recoveryNotice) { try { libraryBackup.snapshot(stateFile, 'startup') } catch (err) { console.error('[store] yedek oluşturulamadı', err.message) } }
   if (loaded && typeof loaded === 'object') {
     state = {
       ...emptyState(),
@@ -253,7 +261,7 @@ function save() {
   saveTimer = setTimeout(() => {
     saveTimer = null
     try {
-      atomicWrite(stateFile, JSON.stringify(state))
+      libraryBackup.writeLibrary(stateFile, state)
     } catch (err) {
       console.error('[store] kaydedilemedi', err)
     }
@@ -266,7 +274,7 @@ function flush() {
     saveTimer = null
   }
   try {
-    atomicWrite(stateFile, JSON.stringify(state))
+    libraryBackup.writeLibrary(stateFile, state)
   } catch (err) {
     console.error('[store] kaydedilemedi', err)
   }
@@ -479,4 +487,6 @@ module.exports = {
   forgetFile,
   moveFileKey,
   defaultSettings,
+  recoveryNotice: () => recoveryNotice,
+  backup: () => { flush(); return libraryBackup.snapshot(stateFile) },
 }

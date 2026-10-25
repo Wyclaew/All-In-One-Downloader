@@ -213,7 +213,7 @@ const jarExports = new Map()
 const JAR_TTL = 5 * 60 * 1000
 const JAR_HEADER = '# Netscape HTTP Cookie File\n'
 
-function exportCookieJar(browserId) {
+function exportSharedCookieJar(browserId) {
   let arg
   try { arg = resolveCookieArg(browserId) } catch { return Promise.resolve(null) }
   if (!arg) return Promise.resolve(null)
@@ -286,6 +286,18 @@ function exportCookieJar(browserId) {
   // Expiration only controls reuse. Older issued jars may still be referenced
   // by an active source/download; their lifecycle must not be guessed here.
   return pending
+}
+
+function exportCookieJar(browserId, { signal } = {}) {
+  if (!signal) return exportSharedCookieJar(browserId)
+  const aborted = () => Object.assign(new Error('Tarayıcı oturumu hazırlığı durduruldu.'), { code: 'ABORTED' })
+  if (signal.aborted) return Promise.reject(aborted())
+  const pending = exportSharedCookieJar(browserId)
+  return new Promise((resolve, reject) => {
+    const abort = () => { signal.removeEventListener('abort', abort); reject(aborted()) }
+    signal.addEventListener('abort', abort, { once: true })
+    pending.then((file) => { signal.removeEventListener('abort', abort); if (!signal.aborted) resolve(file) }, reject)
+  })
 }
 
 module.exports = { detectBrowsers, resolveCookieArg, exportCookieJar }

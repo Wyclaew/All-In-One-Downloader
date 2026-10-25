@@ -32,7 +32,7 @@ test('rolling ETA excludes preexisting resume bytes and ages out stalls', () => 
 })
 test('English audio selectors precede unknown/default dub and respect the quality cap', () => {
   const selector = formatSelector({ quality: 720, audioOnly: false }, { preferredAudioLanguage: 'en' })
-  assert.ok(selector.startsWith('bv[height<=720]+ba[language^=en]/b[height<=720][language^=en]'))
+  assert.ok(selector.startsWith('bv[height<=?720]+ba[language^=en]/b[height<=?720][language^=en]'))
   assert.ok(!formatSelector({ audioOnly: true, preferredAudioLanguage: 'auto' }).includes('language'))
   const args = downloader.buildArgs({ id: 'x', title: 'A', url: 'https://example.test/video', quality: 1080 }, { downloadDir: root, connections: 8, writeSubs: true, subLangs: 'tr' }, '/tmp/aio-print.txt')
   assert.ok(args.includes('--abort-on-unavailable-fragments'))
@@ -81,4 +81,13 @@ test('separate video/audio phases keep cumulative bytes and do not finish on the
   downloader.parseProgressLine('@P@finished|100|100|NA|NA|0|10|10', job, d)
   assert.equal(d.downloaded, 1100)
   assert.equal(d.stage, 'processing')
+})
+
+test('yt-dlp receives an explicit route for direct and proxied jobs while Tor is configured', () => {
+  const settings = { downloadDir: root, proxyUrl: 'socks5://127.0.0.1:9061' }
+  for (const useProxy of [false, true]) {
+    const args = downloader.buildArgs({ id: 'route', title: 'route', url: 'https://example.test/video', useProxy }, settings, '/tmp/aio-print.txt')
+    assert.ok(args.includes('--proxy'))
+    assert.equal(args[args.indexOf('--proxy') + 1], useProxy ? settings.proxyUrl : '')
+  }
 })

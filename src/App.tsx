@@ -30,6 +30,8 @@ export default function App() {
   // Held here so a trip to the library and back does not undo a quality pick.
   const [groupQuality, setGroupQuality] = useState<Record<string, string>>({})
   const [rowQuality, setRowQuality] = useState<Record<string, string>>({})
+  const [groupAudio, setGroupAudio] = useState<Record<string, 'en' | 'tr' | 'auto'>>({})
+  const [rowAudio, setRowAudio] = useState<Record<string, 'en' | 'tr' | 'auto'>>({})
   const [useProxy, setUseProxy] = useState(false)
 
   // The default is a setting, but only until the user touches the switch — after
@@ -424,11 +426,11 @@ export default function App() {
           </div>
 
           <div className="pane-body scroll" style={{ overflowY: 'auto' }}>
-            {tools && !tools.ytdlp ? (
+            {tools && (!tools.ytdlp || tools.ytdlp.runnable === false) ? (
               <div className="banner">
                 <Icon name="alert" size={15} />
                 <span className="grow">
-                  {T.settings.ytdlpMissing}. {T.settings.toolsHint}{' '}
+                  {tools.ytdlp?.error || T.settings.ytdlpMissing}. {T.settings.toolsHint}{' '}
                   <code>{tools.installHint}</code>
                 </span>
                 <Btn size="sm" icon="refresh" onClick={refreshTools}>
@@ -437,11 +439,11 @@ export default function App() {
               </div>
             ) : null}
 
-            {tools && tools.ytdlp && !tools.ffmpeg ? (
+            {tools && tools.ytdlp && (!tools.ffmpeg || tools.ffmpeg.runnable === false) ? (
               <div className="banner" style={{ borderColor: 'var(--signal-deep)', background: 'transparent' }}>
                 <Icon name="alert" size={15} />
                 <span className="grow">
-                  {T.settings.ffmpegMissing}. Birleştirme ve ses dönüştürme çalışmaz.{' '}
+                  {tools.ffmpeg?.error || T.settings.ffmpegMissing}. Birleştirme ve ses dönüştürme çalışmaz.{' '}
                   <code>{tools.installHint}</code>
                 </span>
                 <Btn size="sm" icon="refresh" onClick={refreshTools}>
@@ -459,6 +461,10 @@ export default function App() {
                   row: rowQuality,
                   setGroup: setGroupQuality,
                   setRow: setRowQuality,
+                  audioGroup: groupAudio,
+                  audioRow: rowAudio,
+                  setAudioGroup: setGroupAudio,
+                  setAudioRow: setRowAudio,
                 }}
                 onGoToLibrary={() => goLibrary(ALL)}
                 onToast={pushToast}

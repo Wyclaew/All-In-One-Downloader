@@ -44,6 +44,10 @@ const nativeErrors = {
   'locked-out': 'Touch ID geçici olarak kilitli. Mac oturumunu giriş parolanla aç, sonra yeniden dene. Kasa şifreni de kullanabilirsin.',
   'session-unavailable': 'macOS şu anda Touch ID doğrulamasına izin vermiyor. Mac oturumunu açıp tekrar dene veya kasa şifreni kullan.',
   unavailable: 'Bu oturumda kullanılabilir bir Touch ID sensörü yok. Sistem Ayarları → Touch ID ve Parola bölümünü kontrol et; kasa şifreni kullanabilirsin.',
+  'missing-entitlement': 'Önceki Touch ID bileşeninin macOS Anahtar Zinciri izni eksik. Kasayı şifrenle açıp Touch ID’yi bu sürümde yeniden etkinleştir.',
+  'secure-enclave-error': 'Mac’in güvenli parmak izi anahtarı oluşturulamadı. Oturumunu açıp yeniden dene; kasa şifreni kullanabilirsin.',
+  'storage-error': 'Touch ID kaydı güvenli biçimde kaydedilemedi. Uygulamanın veri klasörüne erişimini ve boş disk alanını kontrol et.',
+  'invalid-key': 'Touch ID kaydı geçersiz veya başka bir Mac’e ait. Kasayı şifrenle açıp Touch ID’yi yeniden etkinleştir.',
 }
 
 function operationError(code, message) {
@@ -55,7 +59,8 @@ function operationError(code, message) {
 function runHelper(operation, secret = null) {
   return new Promise((resolve, reject) => {
     const args = operation === 'status' ? [operation] : [operation, crypto.createHash('sha256').update(app.getPath('userData')).digest('hex')]
-    const child = spawn(helperPath(), args, { stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(helperPath(), args, { stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, AIO_BIOMETRIC_FILE: path.join(app.getPath('userData'), 'vault', 'biometric-envelope.json') } })
     const chunks = []
     let bytes = 0
     let errorText = ''

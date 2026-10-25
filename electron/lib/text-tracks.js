@@ -5,7 +5,7 @@ const { languageCode } = require('./media-preferences')
 function normaliseTrack(track, baseUrl) {
   if (!track || !track.url || /thumb|chapter|metadata/i.test(track.kind || '')) return null
   let url
-  try { url = new URL(track.url, baseUrl).href } catch { return null }
+  try { const parsed = new URL(track.url, baseUrl); if (parsed.username || parsed.password) return null; url = parsed.href } catch { return null }
   if (!/^https?:\/\//i.test(url)) return null
   const label = String(track.name || '')
   let lang = languageCode(track.lang)
@@ -29,17 +29,23 @@ function collectTextTracks(text, baseUrl) {
     const url = attr('file|src|url')
     const kind = attr('kind|type')
     if (!/\.(vtt|srt|ass|ssa)(?:[?#]|$)/i.test(url) && !/^(captions|subtitles)$/i.test(kind)) continue
-    found.push(normaliseTrack({ url, name: attr('label|name'), lang: attr('srclang|language|lang'), kind }, baseUrl))
+    found.push(normaliseTrack({ url, name: attr('label|name'), lang: attr('srclang|language|lang'), kind, forced: /\bforced["']?\s*:\s*true\b/i.test(block[0]) }, baseUrl))
   }
   return mergeTextTracks(found)
 }
 
 function mergeTextTracks(...lists) {
-  const seen = new Set()
-  return lists.flat().filter((t) => {
-    if (!t?.url || seen.has(t.url)) return false
-    seen.add(t.url); return true
-  })
+  const tracks = new Map()
+  for (const track of lists.flat()) {
+    if (!track?.url) continue
+    const previous = tracks.get(track.url)
+    if (!previous) { if (tracks.size < 120) tracks.set(track.url, { ...track }); continue }
+    previous.lang ||= track.lang || ''
+    previous.name ||= track.name || ''
+    previous.referer ||= track.referer
+    previous.forced = previous.forced === true || track.forced === true
+  }
+  return [...tracks.values()]
 }
 
 // Read the player's declared captions, even if the subtitle is never requested

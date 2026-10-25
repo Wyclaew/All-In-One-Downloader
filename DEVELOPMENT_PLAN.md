@@ -1,8 +1,62 @@
 # Geliştirme planı — All in One Downloader
 
-23 Ekim 2026 · 0.14.1 çalışması. Kullanıcının isteğiyle uygulamanın bütün ana
+25 Ekim 2026 · 0.15.0 çalışması (0.14.1 tarihçesi aşağıda). Kullanıcının isteğiyle uygulamanın bütün ana
 katmanları tarandı. Bu belge tamamlanan işleri, sonraki işleri ve doğrulama
 ölçütlerini ayırır. Gelecek işler henüz uygulanmış özellik sayılmaz.
+
+## 25 Ekim 2026 — 0.15.0 çalışmasında tamamlananlar
+
+0.14.1'in üzerine aşağıdaki işler kodlandı. Yayın ve son doğrulama durumu için
+[CLAUDE_HANDOFF.md](CLAUDE_HANDOFF.md) esas alınmalı; eski backlog satırı yeni
+özelliğin hâlâ yok olduğu anlamına gelmez.
+
+1. Sonlu açık DASH VOD için native SegmentTemplate/Timeline/SegmentList motoru.
+2. DASH ayrı ses dili, kalite sınırı, uyumlu çok dönem ve doğrulanmış devam.
+3. Sunucu+rota bazında parça izni;429/ağ sorununda düşürme ve kademeli toparlanma.
+4. Son bekleyen iptalinde başka origin'in kuyruğunu kilitleyen kabul sırası düzeltmesi.
+5. HTTP CONNECT ve pooled socket iptal yarışlarının giderilmesi.
+6. Partial prefix/hash/resource/validator ve tam Content-Range kontrolü.
+7. FFmpeg parça atlayıp0exit verse bile eksik dosyayı başarı saymama.
+8. Disk preflight ve aktarımda alan izleme; partial'ı koruyan duraklama.
+9. FIFO, sırada öne al, aktif aynı kalite/ses tekrarını engelleme.
+10. Binlerce eşzamanlı preflight hatasında reentrant queue taşmasını önleme.
+11. Özel sekiz kitaplık snapshot'ı, rolling last-good ve bozuk orijinali koruyan kurtarma.
+12. Araç dosyasının bulunması ile çalışabilirliğinin ayrı denetlenmesi.
+13. Proxy environment temizliği ve direct yt-dlp için açık boş proxy argümanı.
+14. Kaynak bazında rota değiştirme; doğrudan işin Tor'dan bağımsızlığı ve görünür rota.
+15. Paylaşılan tarayıcı çerezi aktarımında bağımsız iptal.
+16. Typed/uzantısız HTML kaynakları, HTML base/data-setup, Shaka ve JSON-LD graph.
+17. Göreli API yanıt adresleri, bounded Packer token çözümü ve yanlış DRM pozitifleri.
+18. İç içe HLS leaf kalite/ses grubu ilişkisinin probe→indiricide korunması.
+19. Statik taramada belge önceliği ve tarayıcıya ayrılmış gerçek süre bütçesi.
+20. Reklam iframe'lerinin gerçek oynatıcı navigasyon sayacını tüketmemesi.
+21. Çerez eşitleme iframe'lerinin alternatif video oynatıcı sanılmaması.
+22. Bilinen asıl oynatıcı iframe'ini önce açma, geç gelen manifest için sınırlı ek süre.
+23. IP engeli, hesap gereksinimi, CAPTCHA ve sıradan ağ arızasını ayırma.
+24. Site hesap bilgilerini yalnız sistem anahtarlığıyla şifreli saklama.
+25. Exact HTTPS origin başına ayrı otomatik giriş ve kayıt izni.
+26. Standart form ve tanınan hesap bağlantıları için sınırlı otomasyon; ek işlemlerde durma.
+27. Touch ID etkinleştirmesindeki entitlement sorununu Secure Enclave korumalı kayıtla giderme.
+28. Eski kaydın şifreyle yeniden etkinleştirilmesi ve ayrıntılı native hata açıklamaları.
+29. Her dosya/bölüm açılışında altyazının kapalı olması.
+30. Örtüşen altyazılar, async seçim/OFF yarışı ve gecikme sıfırlama düzeltmeleri.
+31. Gerçek çoklu ses kanalı seçimi ve oynatıcıda ses gecikmesi.
+32. Konum/hız/pause durumunu koruyan kapsayıcı uyumluluk işlemi.
+33. Klavye/focus/seek kontrolleri, sonraki bölüm iptali ve küçük pencere düzeni.
+34. Oynatıcı tampon/kare istatistikleri, tekrar açma ve açık paket-zamanlama tanısı.
+35. Video, kaynak ve toplu seçimde çözünürlük yanında Türkçe/İngilizce/kaynak sesi.
+36. Ses tercihinin işte saklanması, genel ayardan bağımsızlığı ve dil bazında duplicate kontrolü.
+37. Gerçek ses dili/kalıcı uyarı; elle seçilen bilinen yanlış dublajın başarı sayılmaması.
+38. Ses seçilemeden seçilmiş diye raporlamama; gerçek AAC paketleriyle TR/EN doğrulaması.
+39. Kalite sınırını aşan sessiz geri dönüşü kaldırıp bilinmeyen yüksekliği ayrı ele alma.
+
+Önceki21maddeyle birlikte toplam60uygulanmış iyileştirme başlığı bulunuyor;
+bunlar ayrı60büyük özellik iddiası değildir. Geriye kalanlar: canlı kayıt modu,
+referanslı çerez temizliği, kaynaklar arası güvenilir CDN alternatifi, toplu dizi
+metadata düzenleyicisi, büyük kitaplık sanallaştırması ve aşağıdaki diğer işler.
+Gerçek parmak iziyle etkileşim, eksik Mentalist dosyasının yeniden oluşturulması,
+her site/DRM/üyelik garantisi tamamlanmış sayılmaz.
+
 
 ## Mimari tarama
 
@@ -18,7 +72,7 @@ katmanları tarandı. Bu belge tamamlanan işleri, sonraki işleri ve doğrulama
 | Arayüz | Home, Sources, Library, Settings, Vault, ortak bileşenler | Mevcut görünüm korunarak kaynak araçları, bilgi kaynağı açıklamaları ve Touch ID paneli eklendi. |
 | Yayın | updater, update-metadata, build, GitHub workflow | Taslak paket doğrulama korunuyor; bu sürüm aynı yayın hattını kullanıyor. |
 
-## Bu sürümde uygulananlar
+## Önceki0.14.1 sürümünde uygulananlar
 
 1. VPN/Tor seçili bir kaynak işlenirken Tor otomatik hazırlanır; bağlantı hazır
    olmadan çözümleme/aktarım başlamaz. Hata halinde doğrudan bağlantıya geçilmez.
@@ -71,10 +125,12 @@ katmanları tarandı. Bu belge tamamlanan işleri, sonraki işleri ve doğrulama
 21. Dosyası zaten inmiş bir işin son işlemleri sürdürülürken de kaynak ağı
     hazırlanır; altyazı alma aşaması Tor’u atlayamaz.
 
-## Öncelikli sonraki işler
+## Yol haritası — önceki öneriler ve kalan kapsam
 
 P1: güvenilirlik/uyumluluk; P2: günlük kullanım ve ölçek; P3: ileri özellik.
-Her madde bağımsız ve test edilebilir bir teslimata bölünmelidir.
+Yukarıda tamamlanan kısımlar tekrar yapılmamalı. Aşağıdaki eski öneriler kısmen
+uygulandı; kapsamı kalan kısım üzerinden değerlendir. Her madde bağımsız ve test
+edilebilir bir teslimata bölünmelidir.
 
 | Öncelik | Öneri | Kullanıcıya faydası / kabul ölçütü |
 |---|---|---|

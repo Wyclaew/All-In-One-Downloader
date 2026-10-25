@@ -14,6 +14,8 @@ import type {
   UserScript,
   VaultEntry,
   VaultState,
+  SiteAccountPolicy,
+  SiteAccountsStatus,
 } from './types'
 
 type Result<T> = { ok: true; data: T } | { ok: false; error: string }
@@ -35,6 +37,7 @@ interface Bridge {
   toggleSource(id: string, collapsed?: boolean): Promise<Result<boolean>>
   rescanSource(id: string): Promise<Result<boolean>>
   captureSource(id: string): Promise<Result<boolean>>
+  setSourceProxy(id: string, useProxy: boolean): Promise<Result<boolean>>
   cancelSource(id: string): Promise<Result<boolean>>
   refreshSourceMetadata(id: string): Promise<Result<boolean>>
   sourceDiagnostics(id: string): Promise<Result<string>>
@@ -46,10 +49,18 @@ interface Bridge {
     quality?: number
     audioOnly?: boolean
     categoryId?: string | null
+    preferredAudioLanguage?: 'en' | 'tr' | 'auto'
   }): Promise<Result<{ count: number }>>
   removeItem(id: string): Promise<Result<boolean>>
   openItem(id: string): Promise<Result<boolean>>
   download(payload: DownloadRequest): Promise<Result<{ count: number }>>
+  prioritizeDownload(id: string): Promise<Result<boolean>>
+  backupLibrary(): Promise<Result<{ path: string }>>
+  siteAccountsStatus(): Promise<Result<SiteAccountsStatus>>
+  saveSiteAccountProfile(profile: { email: string; password: string }): Promise<Result<SiteAccountsStatus>>
+  clearSiteAccountProfile(): Promise<Result<SiteAccountsStatus>>
+  setSiteAccountPolicy(policy: SiteAccountPolicy): Promise<Result<SiteAccountsStatus>>
+  removeSiteAccountPolicy(origin: string): Promise<Result<SiteAccountsStatus>>
   pause(id: string): Promise<Result<unknown>>
   resume(id: string): Promise<Result<unknown>>
   cancel(id: string): Promise<Result<unknown>>
@@ -168,19 +179,27 @@ export const api = {
   toggleSource: (id: string, collapsed?: boolean) => call(bridge.toggleSource(id, collapsed)),
   rescanSource: (id: string) => call(bridge.rescanSource(id)),
   captureSource: (id: string) => call(bridge.captureSource(id)),
+  setSourceProxy: (id: string, useProxy: boolean) => call(bridge.setSourceProxy(id, useProxy)),
   cancelSource: (id: string) => call(bridge.cancelSource(id)),
   refreshSourceMetadata: (id: string) => call(bridge.refreshSourceMetadata(id)),
   sourceDiagnostics: (id: string) => call(bridge.sourceDiagnostics(id)),
   retryFailedSources: () => call(bridge.retryFailedSources()),
   cancelAllSources: () => call(bridge.cancelAllSources()),
   openSource: (id: string) => call(bridge.openSource(id)),
-  downloadSource: (sourceId: string, opts: { quality?: number; audioOnly?: boolean; categoryId?: string | null } = {}) =>
+  downloadSource: (sourceId: string, opts: { quality?: number; audioOnly?: boolean; categoryId?: string | null; preferredAudioLanguage?: 'en' | 'tr' | 'auto' } = {}) =>
     call(bridge.downloadSource({ sourceId, ...opts })),
 
   removeItem: (id: string) => call(bridge.removeItem(id)),
   openItem: (id: string) => call(bridge.openItem(id)),
   download: (payload: DownloadRequest) => call(bridge.download(payload)),
 
+  prioritizeDownload: (id: string) => call(bridge.prioritizeDownload(id)),
+  backupLibrary: () => call(bridge.backupLibrary()),
+  siteAccountsStatus: () => call(bridge.siteAccountsStatus()),
+  saveSiteAccountProfile: (profile: { email: string; password: string }) => call(bridge.saveSiteAccountProfile(profile)),
+  clearSiteAccountProfile: () => call(bridge.clearSiteAccountProfile()),
+  setSiteAccountPolicy: (policy: SiteAccountPolicy) => call(bridge.setSiteAccountPolicy(policy)),
+  removeSiteAccountPolicy: (origin: string) => call(bridge.removeSiteAccountPolicy(origin)),
   pause: (id: string) => call(bridge.pause(id)),
   resume: (id: string) => call(bridge.resume(id)),
   cancel: (id: string) => call(bridge.cancel(id)),

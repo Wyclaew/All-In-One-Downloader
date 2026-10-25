@@ -12,6 +12,7 @@ import type {
 } from '../types'
 import { bridge } from '../api'
 import { Btn, Icon, Info, Toggle } from '../components/ui'
+import SiteAccounts from '../components/SiteAccounts'
 
 interface Props {
   settings: SettingsShape
@@ -148,6 +149,9 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
           </Row>
         ) : null}
 
+        <Row label="Disk dolmadan duraklat" hint="Başlamadan tahmini alanı kontrol eder; aktarım sırasında boş alan azaldığında parçaları koruyarak duraklatır. Yer açtıktan sonra sürdürebilirsin.">
+          <Toggle checked={settings.protectDiskSpace !== false} onChange={(v) => patch({ protectDiskSpace: v })} label="Boş disk alanını koru" />
+        </Row>
         <Row label={T.settings.rateLimit} hint={T.settings.rateLimitHint}>
           <input
             className="input"
@@ -497,6 +501,10 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
           <Toggle checked={settings.nativeHls !== false} onChange={(v) => patch({ nativeHls: v })} label="HLS için uygulamanın aktarım motorunu kullan" />
         </Row>
 
+        <Row label="DASH videolarını parçalarla aktar" hint="Desteklenen açık DASH videolarını ayrı video/ses parçalarıyla alır, kaldığı yerden sürdürür ve yerel olarak birleştirir. DRM korumalı ve canlı yayınlar bu motora dahil değildir.">
+          <Toggle checked={settings.nativeDash !== false} onChange={(v) => patch({ nativeDash: v })} label="DASH için uygulamanın aktarım motorunu kullan" />
+        </Row>
+
         <Row label={T.settings.minStream} hint={T.settings.minStreamHint}>
           <select
             className="select"
@@ -627,6 +635,8 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
         </Row>
       </Section>
 
+      <SiteAccounts onToast={onToast} />
+
       <Section title={T.settings.sectionApp}>
         <Row label={T.settings.theme}>
           <select
@@ -663,6 +673,9 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
           />
         </Row>
 
+        <Row label="Kitaplık yedeği" hint="Kaynakları, indirme kayıtlarını ve ayarları bu cihazda yedekler. Şifreli kasa dosyaları ayrı tutulur; bu yedek onları içermez. Son sekiz yedek korunur.">
+          <Btn size="sm" icon="folder" onClick={async () => { const result = await api.backupLibrary(); if (result) onToast('Kitaplık yedeği oluşturuldu.', 'ok') }}>Şimdi yedekle</Btn>
+        </Row>
         <Row
           label="İndirme klasörü"
           hint="Eski sürümlerden kalan oynat.html dosyalarını kaldırır; videonun yanındaki .vtt/.srt altyazıları videonun içine gömer (ya da uygulamanın kendi klasörüne taşır). Hiçbir altyazı silinip atılmaz."
@@ -676,27 +689,27 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
       <Section title={T.settings.sectionTools}>
         <ToolLine
           name="yt-dlp"
-          ok={!!tools?.ytdlp}
+          ok={!!tools?.ytdlp && tools.ytdlp.runnable !== false}
           version={tools?.ytdlp?.version || null}
           path={tools?.ytdlp?.path || null}
           okLabel={T.settings.ytdlpFound}
-          missingLabel={T.settings.ytdlpMissing}
+          missingLabel={tools?.ytdlp?.error || T.settings.ytdlpMissing}
         />
         <ToolLine
           name="ffmpeg"
-          ok={!!tools?.ffmpeg}
+          ok={!!tools?.ffmpeg && tools.ffmpeg.runnable !== false}
           version={tools?.ffmpeg?.version || null}
           path={tools?.ffmpeg?.path || null}
           okLabel={T.settings.ffmpegFound}
-          missingLabel={T.settings.ffmpegMissing}
+          missingLabel={tools?.ffmpeg?.error || T.settings.ffmpegMissing}
         />
         <ToolLine
           name="ffprobe"
-          ok={!!tools?.ffprobe}
+          ok={!!tools?.ffprobe && tools.ffprobe.runnable !== false}
           version={tools?.ffprobe?.version || null}
           path={tools?.ffprobe?.path || null}
           okLabel="Medya bilgisi aracı hazır"
-          missingLabel="Bulunamadı — bazı videoların süre, boyut ve ses bilgisi eksik kalabilir. FFmpeg ile birlikte kurulur."
+          missingLabel={tools?.ffprobe?.error || "Bulunamadı — bazı videoların süre, boyut ve ses bilgisi eksik kalabilir. FFmpeg ile birlikte kurulur."}
         />
 
         <p className="set-hint" style={{ marginTop: 10 }}>

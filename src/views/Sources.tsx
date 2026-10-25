@@ -29,6 +29,17 @@ export interface QualityMemory {
   row: Record<string, string>
   setGroup: (fn: (prev: Record<string, string>) => Record<string, string>) => void
   setRow: (fn: (prev: Record<string, string>) => Record<string, string>) => void
+  audioGroup: Record<string, AudioChoice>
+  audioRow: Record<string, AudioChoice>
+  setAudioGroup: (fn: (prev: Record<string, AudioChoice>) => Record<string, AudioChoice>) => void
+  setAudioRow: (fn: (prev: Record<string, AudioChoice>) => Record<string, AudioChoice>) => void
+}
+
+type AudioChoice = 'en' | 'tr' | 'auto'
+function AudioSelect({ value, onChange, title = 'İndirilecek ses dili' }: { value: AudioChoice; onChange: (value: AudioChoice) => void; title?: string }) {
+  return <select className="select" value={value} title={title} aria-label={title} onChange={(event) => onChange(event.target.value as AudioChoice)}>
+    <option value="tr">Türkçe ses</option><option value="en">İngilizce ses</option><option value="auto">Kaynağın sesi</option>
+  </select>
 }
 
 interface Props {
@@ -42,7 +53,7 @@ interface Props {
 export default function Sources({
   state,
   downloads,
-  quality: { group: groupQuality, row: rowQuality, setGroup: setGroupQuality, setRow: setRowQuality },
+  quality: { group: groupQuality, row: rowQuality, setGroup: setGroupQuality, setRow: setRowQuality, audioGroup, audioRow, setAudioGroup, setAudioRow },
   onGoToLibrary,
   onToast,
 }: Props) {
@@ -50,6 +61,7 @@ export default function Sources({
   const [rescanning, setRescanning] = useState<Record<string, boolean>>({})
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [batchQuality, setBatchQuality] = useState<string | null>(null)
+  const [batchAudio, setBatchAudio] = useState<AudioChoice | null>(null)
   const [batchAction, setBatchAction] = useState<'retry' | 'stop' | null>(null)
   const [sourceActions, setSourceActions] = useState<Record<string, { stop?: boolean; metadata?: boolean }>>({})
   const [diagnostics, setDiagnostics] = useState<{ sourceId: string; title: string; text: string | null; loading: boolean } | null>(null)
@@ -127,13 +139,14 @@ export default function Sources({
 
   const qualityFor = (item: MediaItem) =>
     rowQuality[item.id] ?? groupQuality[item.sourceId] ?? fallbackQuality
+  const audioFor = (item: MediaItem) => audioRow[item.id] ?? audioGroup[item.sourceId] ?? state.settings.preferredAudioLanguage ?? 'en'
 
   const startDownload = (item: MediaItem) => {
-    api.download({ itemIds: [item.id], ...toRequest(qualityFor(item)) })
+    api.download({ itemIds: [item.id], ...toRequest(qualityFor(item)), preferredAudioLanguage: audioFor(item) })
   }
 
   const downloadAll = (source: Source, value: string) => {
-    api.downloadSource(source.id, toRequest(value)).then((res) => {
+    api.downloadSource(source.id, { ...toRequest(value), preferredAudioLanguage: audioGroup[source.id] ?? state.settings.preferredAudioLanguage ?? 'en' }).then((res) => {
       if (res && res.count) onGoToLibrary()
     })
   }
@@ -305,6 +318,7 @@ export default function Sources({
               </div>
 
               <div className="group-actions" onClick={(e) => e.stopPropagation()}>
+                <IconBtn icon="shield" title={source.useProxy ? 'Doğrudan bağlantıya geç ve yeniden tara (bu kaynağın aktarımları duraklatılır)' : 'VPN / vekil ile yeniden tara (bu kaynağın aktarımları duraklatılır)'} onClick={() => api.setSourceProxy(source.id, !source.useProxy)} />
                 {busy ? (
                   <Btn size="sm" variant="ghost" icon="x" disabled={!!sourceActions[source.id]?.stop} spinning={!!sourceActions[source.id]?.stop} onClick={() => runSourceAction(source, 'stop')}>
                     Durdur
@@ -322,6 +336,7 @@ export default function Sources({
                     </option>
                   ))}
                 </select>
+                <AudioSelect value={audioGroup[source.id] ?? state.settings.preferredAudioLanguage ?? 'en'} onChange={(value) => setAudioGroup((previous) => ({ ...previous, [source.id]: value }))} title="Bu kaynağın indirilecek ses dili" />
                 <Btn
                   size="sm"
                   icon="download"
@@ -399,6 +414,8 @@ export default function Sources({
                     useProxy={source.useProxy}
                     download={downloadByUrl.get(item.url) || null}
                     quality={qualityFor(item)}
+                    audioLanguage={audioFor(item)}
+                    onAudioLanguage={(value) => setAudioRow((previous) => ({ ...previous, [item.id]: value }))}
                     selected={selected.has(item.id)}
                     onToggleSelect={() => toggleOne(item.id)}
                     onQuality={(value) => setRowQuality((prev) => ({ ...prev, [item.id]: value }))}
@@ -430,6 +447,7 @@ export default function Sources({
               </option>
             ))}
           </select>
+          <AudioSelect value={batchAudio ?? state.settings.preferredAudioLanguage ?? 'en'} onChange={setBatchAudio} title="Seçili videoların indirilecek ses dili" />
           <Btn
             size="sm"
             variant="primary"
@@ -439,6 +457,7 @@ export default function Sources({
                 .download({
                   itemIds: [...selected],
                   ...toRequest(batchQuality ?? fallbackQuality),
+                  preferredAudioLanguage: batchAudio ?? state.settings.preferredAudioLanguage ?? 'en',
                 })
                 .then((res) => {
                   setSelected(new Set())
@@ -513,6 +532,8 @@ function Row({
   useProxy,
   download,
   quality,
+  audioLanguage,
+  onAudioLanguage,
   selected,
   onToggleSelect,
   onQuality,
@@ -524,6 +545,8 @@ function Row({
   useProxy?: boolean
   download: Download | null
   quality: string
+  audioLanguage: AudioChoice
+  onAudioLanguage: (value: AudioChoice) => void
   selected: boolean
   onToggleSelect: () => void
   onQuality: (value: string) => void
@@ -567,6 +590,7 @@ function Row({
           ) : null}
           {size ? <span className="sep" /> : null}
           <span>{item.site}</span>
+          {download ? <><span className="sep" /><span>{download.status === 'done' ? `Ses: ${fmt.audioLanguage(download.audioLanguage)}` : `İstenen ses: ${fmt.audioLanguage(download.preferredAudioLanguage || 'auto')}`}</span></> : null}
           {!item.duration && !item.isLive ? <span className="sep" /> : null}
           {!item.duration && !item.isLive ? <span>{T.item.unknownDuration}</span> : null}
           {!size && !item.isLive ? <span className="sep" /> : null}
@@ -600,7 +624,7 @@ function Row({
         {status === 'done' && download?.missing ? <Chip tone="bad">{T.item.missing}</Chip> : null}
         {status === 'error' ? <Chip tone="bad">{T.item.failed}</Chip> : null}
 
-        {idle ? (
+        {idle || status === 'done' || status === 'error' ? (
           <>
             <select
               className="select"
@@ -614,6 +638,7 @@ function Row({
                 </option>
               ))}
             </select>
+            <AudioSelect value={audioLanguage} onChange={onAudioLanguage} title="Bu videonun indirilecek ses dili" />
             <IconBtn icon="download" title={T.item.download} onClick={onDownload} />
           </>
         ) : null}

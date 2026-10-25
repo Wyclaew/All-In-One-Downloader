@@ -10,6 +10,17 @@ const { root, load } = require('./helpers.cjs')
 const media = load('electron/lib/mediainfo.js', { './binaries': { ffprobePath: () => null, toolEnv: () => ({}) } })
 let server, base
 const requests = []
+test('IP/VPN denial templates are distinct from login and human verification even with HTTP 200', () => {
+  const template = '<title>DiziBOX</title><h1>DiziBOX - 500 ERROR</h1><p>VPN veya Server ip adresi ile giriş yapmayınız</p><script>window.__CF$cv$params={};</script>'
+  for (const status of [200, 403]) {
+    const evidence = media.accessEvidence(status, template)
+    assert.equal(evidence.networkBlocked, true)
+    assert.equal(evidence.errorKind, 'network-blocked')
+    assert.equal(evidence.accessRequired, false)
+    assert.equal(evidence.challengeRequired, false)
+  }
+  assert.equal(media.accessEvidence(200, '<title>Article about VPNs</title><script>' + template + '</script>').networkBlocked, false)
+})
 test.before(async () => {
   server = http.createServer((req, res) => {
     requests.push({ url: req.url, method: req.method, range: req.headers.range, cookie: req.headers.cookie })
@@ -22,6 +33,15 @@ test.before(async () => {
     }
     if (req.url === '/ignored-range') { res.writeHead(req.method === 'HEAD' ? 405 : 200, { 'Content-Type': 'video/mp4', 'Content-Length': '123456789' }); res.flushHeaders(); return }
     res.setHeader('Content-Type', 'application/vnd.apple.mpegurl')
+    if (req.url === '/nested-master') { res.end('#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="outer",LANGUAGE="tr",URI="outer.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080,AUDIO="outer"\n/inner-master\n'); return }
+    if (req.url === '/inner-master') { res.end('#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="inner",LANGUAGE="en",URI="en.m3u8"\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="unused",LANGUAGE="tr",URI="wrong.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720,AUDIO="inner"\n/vod\n'); return }
+    if (req.url === '/nested-unrated') { res.end('#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=1920x1080\n/unrated-inner\n'); return }
+    if (req.url === '/unrated-inner') { res.end('#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="inner",LANGUAGE="en",URI="en.m3u8"\n#EXT-X-STREAM-INF:RESOLUTION=1280x720,AUDIO="inner"\n/vod\n'); return }
+    if (req.url === '/cycle-master') { res.end('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720\n/cycle-master\n'); return }
+    if (req.url === '/file-hint') { res.setHeader('Content-Type', 'application/dash+xml'); res.end('<MPD mediaPresentationDuration="PT3S"><Period><AdaptationSet contentType="video"><Representation height="96" bandwidth="400000"/></AdaptationSet></Period></MPD>'); return }
+    if (req.url === '/error-master') { res.end('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720\n/error-playlist\n'); return }
+    if (req.url === '/error-playlist') { res.writeHead(404); res.end('#EXTM3U\n#EXTINF:100,\n/forbidden.ts\n#EXT-X-ENDLIST'); return }
+    if (req.url === '/gate-prefix') { res.setHeader('Content-Type', 'text/html'); res.end('<!-- gate --><div><title>Sign in</title><input type="password"></div>'); return }
     if (req.url === '/invalid-part') { res.end('#EXTM3U\n#EXT-X-PART:garbage\n#EXT-X-ENDLIST\n'); return }
     if (req.url === '/truncated-dash') { res.end('<MPD mediaPresentationDuration="PT10S"><Period><AdaptationSet contentType="video"><Representation height="720" bandwidth="800000"/>'); return }
     if (req.url === '/master') { res.end('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=4000000,AVERAGE-BANDWIDTH=2400000,RESOLUTION=1920x1080\n/denied\n#EXT-X-STREAM-INF:BANDWIDTH=1600000,AVERAGE-BANDWIDTH=800000,RESOLUTION=1280x720\n/vod\n'); return }
@@ -69,6 +89,54 @@ test('HLS validates a lower rendition after the highest child fails', async () =
   assert.equal(info.filesizeEstimated, true)
   assert.equal(info.filesizeSource, 'manifest-bitrate')
 })
+test('nested HLS masters reach a validated leaf with truthful quality and bitrate', async () => {
+  const info = await media.describeStream(base + '/nested-master', { kind: 'hls' })
+  assert.equal(info.playable, true)
+  assert.equal(info.duration, 10)
+  assert.equal(info.height, 720)
+  assert.equal(info.filesize, 1000000)
+  assert.equal(info.selectedVariantUrl, base + '/vod')
+  assert.deepEqual(info.selectedVariantChain, [base + '/inner-master', base + '/vod'])
+  assert.equal(info.preparedVariants[0].url, base + '/inner-master')
+  assert.equal(info.preparedVariants[0].mediaUrl, base + '/vod')
+  assert.equal(info.preparedVariants[0].height, 720)
+  assert.equal(info.preparedVariants[0].audioGroup, 'inner')
+  assert.deepEqual(info.preparedVariants[0].audioTracks.map((track) => track.lang), ['en'])
+})
+test('nested separate audio without bitrate keeps total size unknown instead of sampling video alone', async () => {
+  const before = requests.length
+  const info = await media.describeStream(base + '/nested-unrated', { kind: 'hls' })
+  assert.equal(info.playable, true)
+  assert.equal(info.height, 720)
+  assert.equal(info.filesize, null)
+  assert.equal(info.preparedVariants[0].audioTracks[0].lang, 'en')
+  assert.equal(requests.length - before, 3)
+})
+test('cyclic HLS masters terminate without metadata or repeated network requests', async () => {
+  const before = requests.length
+  const info = await media.describeStream(base + '/cycle-master', { kind: 'hls' })
+  assert.equal(info.playable, false)
+  assert.equal(info.duration, null)
+  assert.equal(info.manifestIssue, 'cycle')
+  assert.equal(requests.length - before, 1)
+})
+test('a child error response containing a playlist still cannot validate as playable HLS', async () => {
+  const info = await media.describeStream(base + '/error-master', { kind: 'hls' })
+  assert.equal(info.playable, false)
+  assert.equal(info.duration, null)
+  assert.equal(info.status, 404)
+})
+test('actual login markup remains classified even after a comment/nonstandard HTML wrapper', async () => {
+  const info = await media.describeStream(base + '/gate-prefix', { kind: 'unknown' })
+  assert.equal(info.rejected, true)
+  assert.equal(info.accessRequired, true)
+})
+test('manifest response MIME corrects an inaccurate progressive-file source hint', async () => {
+  const info = await media.describeStream(base + '/file-hint', { kind: 'file' })
+  assert.equal(info.kind, 'dash')
+  assert.equal(info.duration, 3)
+  assert.equal(info.playable, true)
+})
 test('media HLS without bitrate estimates size from at most three response headers', async () => {
   const before = requests.length
   const info = await media.describeStream(base + '/vod', { kind: 'hls' })
@@ -88,6 +156,13 @@ test('HLS complete byte ranges produce an honest payload estimate without sampli
   assert.equal(info.filesizeSource, 'byte-ranges')
   assert.equal(info.filesizeEstimated, true) // A remuxed output can differ.
   assert.equal(requests.length - before, 1)
+})
+test('malformed range or forbidden segment URI prevents a claimed complete HLS duration', () => {
+  for (const segment of ['#EXT-X-BYTERANGE:500\nfile.mp4', '#EXT-X-BYTERANGE:bad\nfile.mp4', 'file:///private/movie.ts']) {
+    const info = media.parseHls('#EXTM3U\n#EXTINF:10,\nvalid.ts\n#EXTINF:20,\n' + segment + '\n#EXT-X-ENDLIST', base)
+    assert.equal(info.duration, null)
+    assert.equal(info.complete, false)
+  }
 })
 test('a live HLS window has no finite total duration or filesize', async () => {
   const before = requests.length
@@ -144,8 +219,33 @@ test('DASH requires a balanced document and a single MPD root before accepting m
   assert.equal(info.duration, null)
   assert.equal(media.parseDash('<MPD/><MPD/>').valid, false)
 })
+test('shared DASH tree preserves BaseURL text, entities, CDATA and quoted greater-than attributes', () => {
+  const tree = media.parseDashTree('<?xml version="1.0"?><d:MPD xmlns:d="urn:mpeg:dash:schema:mpd:2011"><!-- safe --><d:BaseURL serviceLocation="edge&gt;one">https://cdn.example.test/a&#47;b?x=1&amp;y=2</d:BaseURL><d:Period><d:BaseURL><![CDATA[more/?signed=a&b=c]]></d:BaseURL></d:Period></d:MPD>')
+  assert.equal(tree.children[0].text, 'https://cdn.example.test/a/b?x=1&y=2')
+  assert.equal(tree.children[0].attrs.servicelocation, 'edge>one')
+  assert.equal(tree.children[1].children[0].text, 'more/?signed=a&b=c')
+  assert.ok(media.parseDashTree('<MPD label="a>b"/>'))
+  for (const xml of ['<!DOCTYPE MPD SYSTEM "https://invalid.example/private"><MPD/>', '<MPD><BaseURL>&custom;</BaseURL></MPD>', '<MPD><BaseURL>bad&token</BaseURL></MPD>', '<MPD attr=no-quotes/>', '<MPD attr="one"attr="two"/>']) assert.equal(media.parseDashTree(xml), null)
+})
+test('access classification distinguishes login, verification, denied and public playback pages', () => {
+  assert.equal(media.accessEvidence(403, '<html>Denied</html>').accessRequired, false)
+  assert.equal(media.accessEvidence(403, '').errorKind, 'access-denied')
+  assert.equal(media.accessEvidence(401, '').accessRequired, true)
+  assert.equal(media.accessEvidence(503, '<title>Just a moment</title><script>_cf_chl_opt={}</script>').challengeRequired, true)
+  assert.equal(media.accessEvidence(200, '<title>Sign in</title><input type="password">').accessRequired, true)
+  assert.equal(media.accessEvidence(200, '<title>Public movie</title><video></video><input type="password">').accessRequired, false)
+})
 test('DASH generic CENC protection cannot be mistaken for clear media', () => {
   assert.equal(media.parseDash('<MPD><Period><AdaptationSet><ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc"/><Representation height="720" bandwidth="800000"/></AdaptationSet></Period></MPD>').drm, true)
+})
+test('DASH protection examples inside comments are not actual protected media', () => {
+  assert.equal(media.parseDash('<MPD><!-- <ContentProtection schemeIdUri="widevine"/> --><Period><AdaptationSet contentType="video"><Representation height="720" bandwidth="800000"/></AdaptationSet></Period></MPD>').drm, false)
+})
+test('HLS DRM classification uses the key format rather than words in filenames', () => {
+  const playlist = (key) => '#EXTM3U\n' + key + '\n#EXTINF:3,\nsegment.ts\n#EXT-X-ENDLIST'
+  assert.equal(media.parseHls(playlist('#EXT-X-KEY:METHOD=AES-128,KEYFORMAT="identity",URI="https://cdn.example.test/keys/clearkey-widevine.bin"'), base).drm, false)
+  assert.equal(media.parseHls(playlist('#EXT-X-KEY:METHOD=AES-128,KEYFORMAT="com.example.protected",URI="https://cdn.example.test/key"'), base).drm, true)
+  assert.equal(media.parseHls(playlist('#EXT-X-KEY:METHOD=SAMPLE-AES,URI="skd://license"'), base).drm, true)
 })
 test('unknown DASH protection stays protected even when its XML is malformed', () => {
   const xml = '<MPD><Period><AdaptationSet><ContentProtection schemeIdUri="urn:uuid:unknown-key-system"/><Representation height="720" bandwidth="800000"/></AdaptationSet></Period></MPD>'

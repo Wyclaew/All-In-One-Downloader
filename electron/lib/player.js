@@ -26,8 +26,9 @@ const path = require('path')
 const crypto = require('crypto')
 const { Readable } = require('stream')
 const { spawn, execFile } = require('child_process')
-const { BrowserWindow, ipcMain, protocol, shell } = require('electron')
+const { BrowserWindow, ipcMain, protocol, shell, clipboard } = require('electron')
 const { ffmpegPath, ffprobePath, toolEnv } = require('./binaries')
+const { createTimingAnalyzer } = require('../player/timing')
 const store = require('./store')
 
 const SCHEME = 'aiomedia'
@@ -99,8 +100,10 @@ function vaultSource(src) {
 
 /** Parse a Range header against `size`: [start, end] inclusive, or null, or 'bad'. */
 function rangeOf(header, size) {
-  const match = /bytes=(\d*)-(\d*)/i.exec(String(header || ''))
-  if (!match) return null
+  if (header === null || header === undefined || header === '') return null
+  if (!Number.isSafeInteger(size) || size < 0) return 'bad'
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(String(header).trim())
+  if (!match || (!match[1] && !match[2])) return 'bad'
   let start = match[1] ? Number(match[1]) : 0
   let end = match[2] ? Number(match[2]) : size - 1
   // A suffix range ("bytes=-65536") asks for the tail, which is where an MP4
@@ -109,8 +112,8 @@ function rangeOf(header, size) {
     start = Math.max(0, size - Number(match[2]))
     end = size - 1
   }
-  if (!Number.isFinite(start) || start < 0 || start >= size) return 'bad'
-  end = Math.min(Number.isFinite(end) ? end : size - 1, size - 1)
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= size) return 'bad'
+  end = Math.min(end, size - 1)
   if (end < start) return 'bad'
   return [start, end]
 }
@@ -159,7 +162,8 @@ function registerProtocol() {
     } catch {
       return new Response('kötü adres', { status: 400 })
     }
-    const source = served.get(decodeURIComponent(token))
+    if (!/^[a-f0-9]{32}$/.test(token)) return new Response('kötü adres', { status: 400 })
+    const source = served.get(token)
     if (!source) return new Response('yetki yok', { status: 403 })
     return serve(source, request.headers.get('range'))
   })
@@ -184,6 +188,7 @@ function tokenFor(source) {
  */
 let toolServer = null
 let toolPort = 0
+let toolStarting = null
 const toolServed = new Map()
 
 function toolUrlFor(source) {
@@ -193,8 +198,9 @@ function toolUrlFor(source) {
 }
 
 function startToolServer() {
-  if (toolServer) return Promise.resolve()
-  return new Promise((resolve, reject) => {
+  if (toolStarting) return toolStarting
+  if (toolServer?.listening) return Promise.resolve()
+  toolStarting = new Promise((resolve, reject) => {
     const http = require('http')
     toolServer = http.createServer((req, res) => {
       const token = String(req.url || '').replace(/^\/+/, '').split(/[/?]/)[0]
@@ -228,12 +234,16 @@ function startToolServer() {
       res.on('close', () => stream.destroy())
       stream.pipe(res)
     })
-    toolServer.on('error', reject)
+    toolServer.on('error', (err) => { toolServer = null; toolPort = 0; reject(err) })
     toolServer.listen(0, '127.0.0.1', () => {
       toolPort = toolServer.address().port
+      toolServer.unref()
       resolve()
     })
   })
+  const pending = toolStarting
+  pending.then(() => { toolStarting = null }, () => { toolStarting = null })
+  return pending
 }
 
 /** What ffmpeg should be given as `-i`: the path for a file, the loopback URL for a vault entry. */
@@ -257,13 +267,14 @@ function decodeText(buffer) {
 
 function parseTimestamp(text) {
   // 00:01:02,500 and 00:01:02.500 both appear, and the hour is often dropped.
-  const m = /(?:(\d+):)?(\d{1,2}):(\d{1,2})[.,](\d{1,3})/.exec(text)
+  const m = /^\s*(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})(?:\s|$)/.exec(text)
   if (!m) return null
   const hours = Number(m[1] || 0)
   const minutes = Number(m[2])
   const seconds = Number(m[3])
   const millis = Number(m[4].padEnd(3, '0'))
-  return hours * 3600 + minutes * 60 + seconds + millis / 1000
+  const total = hours * 3600 + minutes * 60 + seconds + millis / 1000
+  return minutes < 60 && seconds < 60 && Number.isFinite(total) ? total : null
 }
 
 /**
@@ -274,8 +285,9 @@ function parseTimestamp(text) {
  */
 function parseCues(text) {
   const cues = []
-  const blocks = String(text).replace(/\r\n?/g, '\n').split(/\n{2,}/)
+  const blocks = String(text).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split(/\n{2,}/)
   for (const block of blocks) {
+    if (/^\s*(?:NOTE(?:\s|$)|STYLE(?:\s|$)|REGION(?:\s|$))/.test(block)) continue
     const lines = block.split('\n')
     const arrowAt = lines.findIndex((l) => l.includes('-->'))
     if (arrowAt < 0) continue
@@ -295,18 +307,26 @@ function parseCues(text) {
 }
 
 /** Anything ffmpeg can read becomes SRT on stdout, which parseCues understands. */
-function cuesViaFfmpeg(args) {
+function cuesViaFfmpeg(args, signal) {
   return new Promise((resolve) => {
     const bin = ffmpegPath()
     if (!bin) return resolve([])
     const child = spawn(bin, ['-hide_banner', '-loglevel', 'error', '-nostdin', ...args, '-f', 'srt', '-'], {
       env: toolEnv(),
       windowsHide: true,
+      signal,
     })
     const chunks = []
-    child.stdout.on('data', (c) => chunks.push(c))
-    child.on('error', () => resolve([]))
-    child.on('close', () => resolve(parseCues(decodeText(Buffer.concat(chunks)))))
+    let bytes = 0, overflow = false
+    const timer = setTimeout(() => { overflow = true; child.kill() }, 60000)
+    child.stdout.on('data', (c) => {
+      bytes += c.length
+      if (bytes > 16 * 1024 * 1024) { overflow = true; child.kill(); return }
+      chunks.push(c)
+    })
+    child.stderr.on('data', () => {})
+    child.on('error', () => { clearTimeout(timer); resolve([]) })
+    child.on('close', (code) => { clearTimeout(timer); resolve(code === 0 && !overflow && !signal?.aborted ? parseCues(decodeText(Buffer.concat(chunks))) : []) })
   })
 }
 
@@ -415,15 +435,15 @@ function storeDirFor(filePath) {
  * the subtitle streams Chromium refuses to surface, the audio streams (so a
  * dual-language episode can switch), and the chapter marks.
  */
-function probeMedia(input) {
+function probeMedia(input, signal) {
   return new Promise((resolve) => {
-    const empty = { subs: [], audio: [], chapters: [] }
+    const empty = { subs: [], audio: [], chapters: [], video: null }
     const bin = ffprobePath()
     if (!bin) return resolve(empty)
     execFile(
       bin,
       ['-v', 'quiet', '-print_format', 'json', '-show_streams', '-show_chapters', input],
-      { env: toolEnv(), timeout: 30000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+      { env: toolEnv(), signal, timeout: 30000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
       (err, stdout) => {
         if (err) return resolve(empty)
         let data = {}
@@ -432,7 +452,7 @@ function probeMedia(input) {
         } catch {
           return resolve(empty)
         }
-        const streams = data.streams || []
+        const streams = Array.isArray(data?.streams) ? data.streams.filter((stream) => stream && typeof stream === 'object') : []
         const subs = streams
           .filter((st) => st.codec_type === 'subtitle')
           // Picture-based subtitles (DVD/Blu-ray bitmaps) cannot become text.
@@ -448,6 +468,7 @@ function probeMedia(input) {
               label: `${languageLabel(lang)}${title} — gömülü`,
               language: lang,
               streamIndex: index,
+              forced: !!st.disposition?.forced,
             }
           })
         const audio = streams
@@ -459,22 +480,107 @@ function probeMedia(input) {
               index,
               language: lang,
               label: `${languageLabel(lang === 'und' ? '' : lang)}${tags.title ? ` (${tags.title})` : ''}`,
+              codec: String(st.codec_name || ''),
+              default: !!st.disposition?.default,
+              streamIndex: Number.isInteger(st.index) ? st.index : null,
+              sampleRate: positiveNumber(st.sample_rate),
             }
           })
-        const chapters = (data.chapters || [])
+        const picture = streams.find((stream) => stream.codec_type === 'video' && !stream.disposition?.attached_pic)
+        const video = picture ? {
+          streamIndex: Number.isInteger(picture.index) ? picture.index : null,
+          codec: String(picture.codec_name || '').slice(0, 60),
+          pixelFormat: String(picture.pix_fmt || '').slice(0, 60),
+          width: positiveNumber(picture.width), height: positiveNumber(picture.height),
+          frameRate: frameRateOf(picture.avg_frame_rate) || frameRateOf(picture.r_frame_rate),
+        } : null
+        const chapters = (Array.isArray(data?.chapters) ? data.chapters : []).filter((chapter) => chapter && typeof chapter === 'object')
           .map((c) => ({
-            start: Number(c.start_time) || 0,
+            start: Number(c.start_time),
             title: String((c.tags && c.tags.title) || '').slice(0, 120),
           }))
-          .filter((c) => Number.isFinite(c.start))
-        resolve({ subs, audio, chapters })
+          .filter((c) => Number.isFinite(c.start) && c.start >= 0)
+          .sort((a, b) => a.start - b.start)
+        resolve({ subs, audio, chapters, video })
       }
     )
   })
 }
 
+function positiveNumber(value) {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? number : null
+}
+
+function frameRateOf(value) {
+  const match = /^(\d+)(?:\/(\d+))?$/.exec(String(value || ''))
+  if (!match) return null
+  const rate = Number(match[1]) / (match[2] ? Number(match[2]) : 1)
+  return rate > 0 && rate <= 1000 ? rate : null
+}
+
+/** Explicit, bounded packet scan. Regular opening/playback never starts it. */
+function probeTiming(session) {
+  if (session.timing) return Promise.resolve(session.timing)
+  if (session.timingPromise) return session.timingPromise
+  const epoch = session.epoch || 0
+  const pending = (async () => {
+    const bin = ffprobePath()
+    if (!bin) throw new Error('Zamanlama kontrolü için ffprobe gerekiyor.')
+    const media = session.media || await probeMedia(inputOf(session), session.controller?.signal)
+    if (session.controller?.signal.aborted || (session.epoch || 0) !== epoch) throw new Error('Kontrol iptal edildi.')
+    if (!media.video && !media.audio.length) throw new Error('Kontrol edilebilen görüntü veya ses akışı bulunamadı.')
+    const analyzer = createTimingAnalyzer(media)
+    const report = await new Promise((resolve, reject) => {
+      let child, timer, buffer = '', bytes = 0, completed = false
+      const finish = (err) => {
+        if (completed) return
+        completed = true; clearTimeout(timer)
+        if (err) { child?.kill(); reject(err) }
+        else {
+          try { if (buffer.trim()) analyzer.push(buffer); resolve(analyzer.finish()) }
+          catch (error) { reject(error) }
+        }
+      }
+      try {
+        child = spawn(bin, ['-v', 'error', '-show_entries', 'packet=stream_index,pts_time,dts_time,duration_time',
+          '-of', 'compact=p=0:nk=0', inputOf(session)], { env: toolEnv(), windowsHide: true, signal: session.controller?.signal })
+        timer = setTimeout(() => finish(new Error('Kontrol iki dakika içinde tamamlanamadı.')), 120000)
+        child.stdout.on('data', (chunk) => {
+          if (completed) return
+          bytes += chunk.length
+          if (bytes > 96 * 1024 * 1024) return finish(new Error('Dosya kontrol sınırını aştı; tarama durduruldu.'))
+          buffer += chunk.toString('utf8')
+          try {
+            let end
+            while ((end = buffer.indexOf('\n')) >= 0) { analyzer.push(buffer.slice(0, end)); buffer = buffer.slice(end + 1) }
+            if (buffer.length > 65536) finish(new Error('Dosya zamanlaması okunamadı.'))
+          } catch (error) { finish(error) }
+        })
+        let readError = false
+        child.stderr.on('data', (chunk) => { if (String(chunk).trim()) readError = true })
+        child.on('error', () => finish(new Error('Zamanlama kontrolü başlatılamadı veya iptal edildi.')))
+        child.on('close', (code) => {
+          if (code !== 0 || readError || session.controller?.signal.aborted || (session.epoch || 0) !== epoch) finish(new Error('Dosya tamamen okunamadı veya kontrol iptal edildi.'))
+          else finish()
+        })
+      } catch { finish(new Error('Zamanlama kontrolü başlatılamadı.')) }
+    })
+    if (session.controller?.signal.aborted || (session.epoch || 0) !== epoch) throw new Error('Kontrol iptal edildi.')
+    if (!report.packetCount) throw new Error('Dosyada kontrol edilebilen paket bulunamadı.')
+    session.timing = report
+    return report
+  })()
+  session.timingPromise = pending
+  const clear = () => { if (session.timingPromise === pending) session.timingPromise = null }
+  pending.then(clear, clear)
+  return pending
+}
+
 async function listTracks(session) {
-  const media = await probeMedia(inputOf(session))
+  const epoch = session.epoch || 0
+  const media = await probeMedia(inputOf(session), session.controller?.signal)
+  if ((session.epoch || 0) !== epoch || session.controller?.signal.aborted) throw new Error('Video değişti veya oynatıcı kapandı.')
   session.media = media
   // A vaulted film has no folder of its own to look in.
   const loose = session.vault ? [] : sidecarTracks(session.file)
@@ -490,19 +596,20 @@ async function cuesFor(session, trackId) {
   if (track.kind === 'file') {
     const ext = path.extname(track.path).toLowerCase()
     if (ext === '.ass' || ext === '.ssa' || ext === '.sub') {
-      cues = await cuesViaFfmpeg(['-i', track.path])
+      cues = await cuesViaFfmpeg(['-i', track.path], session.controller?.signal)
     } else {
       try {
-        cues = parseCues(decodeText(fs.readFileSync(track.path)))
+        if (fs.statSync(track.path).size <= 16 * 1024 * 1024) cues = parseCues(decodeText(fs.readFileSync(track.path)))
       } catch {
         cues = []
       }
     }
   } else if (track.kind === 'embedded') {
-    cues = await cuesViaFfmpeg(['-i', inputOf(session), '-map', `0:s:${track.streamIndex}`])
+    cues = await cuesViaFfmpeg(['-i', inputOf(session), '-map', `0:s:${track.streamIndex}`], session.controller?.signal)
   }
   // A fetched track arrives with its cues already attached and never reaches
   // here, because the cache check above answers it first.
+  if (session.controller?.signal.aborted || !(session.tracks || []).includes(track)) return []
   track.cues = cues
   return cues
 }
@@ -549,18 +656,24 @@ async function searchSubtitles(session, language) {
   }
 
   const wanted = String(language || 'tr').toLowerCase()
+  const epoch = session.epoch || 0
+  const file = session.file, title = session.title
+  const hash = session.vault ? await hashOfSource(session.source) : null
+  if ((session.epoch || 0) !== epoch || session.controller?.signal.aborted) return { ok: false, message: 'Video değişti veya oynatıcı kapandı.' }
   let found
   try {
     found = await subtitles.search({
-      filePath: session.vault ? null : session.file,
-      hash: session.vault ? await hashOfSource(session.source) : null,
-      title: session.title,
+      filePath: session.vault ? null : file,
+      hash,
+      title,
       languages: wanted,
       apiKey: settings.subtitleApiKey,
     })
   } catch (err) {
     return { ok: false, message: err.message || String(err) }
   }
+
+  if ((session.epoch || 0) !== epoch || session.controller?.signal.aborted) return { ok: false, message: 'Video değişti veya oynatıcı kapandı.' }
 
   const hits = found.results.filter((r) => r.language.toLowerCase().startsWith(wanted))
   session.hits = new Map(hits.map((h) => [h.fileId, h]))
@@ -594,18 +707,25 @@ async function takeSubtitle(session, fileId) {
   const settings = store.getState().settings
   const hit = session.hits && session.hits.get(Number(fileId))
   if (!hit) return { ok: false, message: 'Bu altyazı artık listede değil, yeniden ara.' }
+  const epoch = session.epoch || 0
+  const file = session.file, vaulted = session.vault
 
   const outcome = await subtitles.apply({
     // A vaulted file's decrypted copy is temporary and its folder is wiped on
     // lock, so nothing is written beside it — the cues go straight to the player.
-    videoPath: session.vault ? null : session.file,
+    videoPath: vaulted ? null : file,
     fileId: hit.fileId,
     language: hit.language,
     hashMatch: hit.hashMatch,
     apiKey: settings.subtitleApiKey,
-    sync: !session.vault && settings.syncSubtitles && !hit.hashMatch,
+    sync: !vaulted && settings.syncSubtitles && !hit.hashMatch,
     embedTrack: false,
   })
+
+  if ((session.epoch || 0) !== epoch || session.controller?.signal.aborted) {
+    if (vaulted) try { fs.rmSync(outcome.path, { force: true }) } catch { /* best effort */ }
+    return { ok: false, message: 'Video değişti veya oynatıcı kapandı.' }
+  }
 
   let cues = []
   try {
@@ -613,7 +733,7 @@ async function takeSubtitle(session, fileId) {
   } catch {
     cues = []
   }
-  if (session.vault) {
+  if (vaulted) {
     try {
       fs.unlinkSync(outcome.path)
     } catch {
@@ -633,8 +753,8 @@ async function takeSubtitle(session, fileId) {
   session.tracks = [...(session.tracks || []).filter((t) => t.id !== track.id), track]
 
   // The library row should say so too, so the file is not searched again later.
-  if (!session.vault) {
-    const download = store.getState().downloads.find((d) => d.filePath === session.file)
+  if (!vaulted) {
+    const download = store.getState().downloads.find((d) => d.filePath === file)
     if (download) {
       store.commit(() => {
         download.subtitlePath = outcome.path
@@ -655,7 +775,7 @@ async function takeSubtitle(session, fileId) {
   }
 }
 
-const publicTrack = (t) => ({ id: t.id, label: t.label, language: t.language, kind: t.kind })
+const publicTrack = (t) => ({ id: t.id, label: t.label, language: t.language, kind: t.kind, forced: !!t.forced })
 
 /* -------------------------------------------------------------------------- */
 /* neighbouring episodes                                                       */
@@ -694,14 +814,14 @@ function neighbour(session, step) {
   }
 
   const here = parseName(current)
-  if (here.season && here.episode) {
+  if (here.season !== null && here.episode !== null) {
     // Episodes of the same show only — a file of another show in the same
     // folder is not "the one before", however the names happen to sort.
     const { nameKey } = require('./locate')
     const show = nameKey(here.title)
     const episodes = names
       .map((name) => ({ name, info: parseName(name) }))
-      .filter((e) => e.name !== current && e.info.season && e.info.episode && nameKey(e.info.title) === show)
+      .filter((e) => e.name !== current && e.info.season !== null && e.info.episode !== null && nameKey(e.info.title) === show)
     const order = (e) => e.info.season * 10000 + e.info.episode
     const mine = here.season * 10000 + here.episode
     const candidates = episodes
@@ -747,6 +867,7 @@ async function switchTo(win, session, step) {
   session.tracks = []
   session.hits = null
   session.media = null
+  session.controller = new AbortController()
   session.src = `${SCHEME}://media/${token}`
 
   // The page reads everything it needs from `player:boot`, so reloading it is
@@ -757,6 +878,11 @@ async function switchTo(win, session, step) {
 
 /** Drop the tokens and temp files a session holds. */
 function releaseSession(session) {
+  session.epoch = (session.epoch || 0) + 1
+  session.controller?.abort()
+  session.remuxPromise = null
+  session.timingPromise = null
+  session.timing = null
   for (const t of session.tokens || []) served.delete(t)
   for (const t of session.toolTokens || []) toolServed.delete(t)
   for (const temp of session.temps || []) {
@@ -766,9 +892,13 @@ function releaseSession(session) {
       /* already gone */
     }
   }
+  for (const dir of session.tempDirs || []) {
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* already gone */ }
+  }
   session.tokens = []
   session.toolTokens = []
   session.temps = []
+  session.tempDirs = []
 }
 
 /* -------------------------------------------------------------------------- */
@@ -790,34 +920,60 @@ function remux(session) {
       new Error('Kasadaki bu dosya pencere içinde açılamıyor ve kasa düz kopya yazmaz. "Sistem oynatıcısında aç" ile açabilirsin.')
     )
   }
-  return new Promise((resolve, reject) => {
+  if (session.remuxPromise) return session.remuxPromise
+  const epoch = session.epoch || 0
+  const pending = new Promise((resolve, reject) => {
     const bin = ffmpegPath()
     if (!bin) return reject(new Error('Dönüştürme için ffmpeg gerekiyor.'))
-    const out = path.join(os.tmpdir(), `aio-play-${crypto.randomBytes(6).toString('hex')}.mp4`)
-    const child = spawn(
-      bin,
-      [
-        '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
-        '-i', session.file,
-        '-map', '0:v:0?', '-map', '0:a?',
-        '-c', 'copy',
-        '-movflags', '+faststart',
-        out,
-      ],
-      { env: toolEnv(), windowsHide: true }
-    )
-    child.on('error', () => reject(new Error('Dönüştürme başlatılamadı.')))
-    child.on('close', (code) => {
-      if (code !== 0) {
-        fs.rmSync(out, { force: true })
-        return reject(new Error('Bu dosya dönüştürülemedi. Sistem oynatıcısında açmayı dene.'))
-      }
-      session.temps.push(out)
-      const token = tokenFor(out)
-      session.tokens.push(token)
-      resolve({ src: `${SCHEME}://media/${token}` })
-    })
+    let dir, timer
+    const discard = () => {
+      clearTimeout(timer)
+      if (dir) try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ }
+      session.tempDirs = (session.tempDirs || []).filter((item) => item !== dir)
+    }
+    try {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aio-play-'))
+      const out = path.join(dir, 'video.mp4')
+      fs.writeFileSync(out, '', { flag: 'wx', mode: 0o600 })
+      session.tempDirs ||= []
+      session.tempDirs.push(dir)
+      const child = spawn(
+        bin,
+        [
+          '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+          '-i', session.file,
+          '-map', '0:v:0?', '-map', '0:a?',
+          '-c', 'copy',
+          '-movflags', '+faststart',
+          out,
+        ],
+        { env: toolEnv(), windowsHide: true, signal: session.controller?.signal }
+      )
+      timer = setTimeout(() => child.kill(), 10 * 60 * 1000)
+      child.stderr.on('data', () => {})
+      child.stdout.on('data', () => {})
+      child.on('error', () => { discard(); reject(new Error('Dönüştürme başlatılamadı veya iptal edildi.')) })
+      child.on('close', (code) => {
+        clearTimeout(timer)
+        if (code !== 0 || session.controller?.signal.aborted || (session.epoch || 0) !== epoch) {
+          discard()
+          return reject(new Error('Bu dosya dönüştürülemedi. Sistem oynatıcısında açmayı dene.'))
+        }
+        let valid = false
+        try { valid = fs.statSync(out).size > 0 } catch { /* output removed */ }
+        if (!valid) { discard(); return reject(new Error('Dönüştürülmüş dosya boş. Sistem oynatıcısında açmayı dene.')) }
+        session.temps.push(out)
+        const token = tokenFor(out)
+        session.tokens.push(token)
+        session.src = `${SCHEME}://media/${token}`
+        resolve({ src: session.src })
+      })
+    } catch { discard(); reject(new Error('Dönüştürme başlatılamadı.')) }
   })
+  session.remuxPromise = pending
+  const clear = () => { if (session.remuxPromise === pending) session.remuxPromise = null }
+  pending.then(clear, clear)
+  return pending
 }
 
 function makeWindow(vault) {
@@ -834,6 +990,10 @@ function makeWindow(vault) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
+      // Track selection is already implemented by Chromium but its DOM list is
+      // behind this one API flag. No other experimental features are enabled.
+      enableBlinkFeatures: 'AudioVideoTracks',
       spellcheck: false,
       webviewTag: false,
     },
@@ -846,6 +1006,7 @@ function makeWindow(vault) {
 
 async function launch({ session, vault }) {
   await startToolServer()
+  session.controller = new AbortController()
   const win = makeWindow(vault)
   sessions.set(win.webContents.id, session)
   if (vault) vaultWindows.add(win)
@@ -885,7 +1046,7 @@ async function open({ file, title, key }) {
   const session = {
     file,
     title: title || path.basename(file),
-    key,
+    key: key || `file:${file}`,
     vault: false,
     tokens: [token],
     toolTokens: [tool.token],
@@ -980,6 +1141,7 @@ function registerIpc() {
       autoNext: settings.playerAutoNext !== false,
       tracks: session.tracks.map(publicTrack),
       audio: (session.media && session.media.audio) || [],
+      mediaInfo: session.media?.video || null,
       chapters: (session.media && session.media.chapters) || [],
       next: next ? { title: next.title, sure: next.sure } : null,
       prev: prev ? { title: prev.title, sure: prev.sure } : null,
@@ -992,6 +1154,7 @@ function registerIpc() {
       subtitleSize: settings.playerSubtitleSize || 'normal',
       subtitleStyle: ['box', 'outline'].includes(settings.playerSubtitleStyle) ? settings.playerSubtitleStyle : 'box',
       hasKey: !!String(settings.subtitleApiKey || '').trim(),
+      subtitlesEnabled: false,
     }
   })
 
@@ -1011,6 +1174,21 @@ function registerIpc() {
   })
 
   ipcMain.handle('player:cues', async (event, trackId) => cuesFor(sessionOf(event), String(trackId || '')))
+
+  ipcMain.handle('player:timing', async (event) => probeTiming(sessionOf(event)))
+
+  ipcMain.handle('player:copyDiagnostics', (event, input = {}) => {
+    const session = sessionOf(event)
+    const stats = {}
+    for (const key of ['position', 'duration', 'bufferAhead', 'decodedFrames', 'droppedFrames', 'readyState', 'rate']) {
+      if (typeof input?.[key] === 'number' && Number.isFinite(input[key]) && input[key] >= 0 && input[key] < 1e12) stats[key] = input[key]
+    }
+    // Deliberately omit title, absolute paths, private media tokens and cues.
+    clipboard.writeText(JSON.stringify({ video: session.media?.video || null,
+      audio: (session.media?.audio || []).map(({ codec, sampleRate }) => ({ codec, sampleRate })),
+      playback: stats, timing: session.timing || null }, null, 2))
+    return true
+  })
 
   ipcMain.handle('player:searchSubtitles', async (event, language) => {
     try {
@@ -1033,7 +1211,8 @@ function registerIpc() {
     if (session) store.rememberDelay(session.key, Number(seconds))
   })
 
-  ipcMain.on('player:volume', (_event, value) => {
+  ipcMain.on('player:volume', (event, value) => {
+    if (!sessions.has(event.sender.id)) return
     const volume = Math.max(0, Math.min(1, Number(value)))
     if (!Number.isFinite(volume)) return
     store.commit((s) => {
@@ -1042,7 +1221,8 @@ function registerIpc() {
   })
 
   /** Playback preferences that should outlive the window. Validated, never trusted. */
-  ipcMain.on('player:prefs', (_event, prefs = {}) => {
+  ipcMain.on('player:prefs', (event, prefs = {}) => {
+    if (!sessions.has(event.sender.id) || !prefs || typeof prefs !== 'object') return
     const patch = {}
     if (RATES.includes(Number(prefs.rate))) patch.playerRate = Number(prefs.rate)
     if ([1, 1.5, 2].includes(Number(prefs.boost))) patch.playerBoost = Number(prefs.boost)
@@ -1120,6 +1300,7 @@ function registerIpc() {
   })
 
   ipcMain.handle('player:subtitleSize', (event, size) => {
+    sessionOf(event)
     const allowed = ['small', 'normal', 'large', 'huge']
     const value = allowed.includes(size) ? size : 'normal'
     store.commit((s) => {
@@ -1167,4 +1348,6 @@ module.exports = {
   nextEpisode,
   neighbour,
   rangeOf,
+  probeMedia,
+  _internals: { listTracks, releaseSession, remux, probeTiming, frameRateOf },
 }

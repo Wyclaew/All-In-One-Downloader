@@ -27,10 +27,10 @@ const os = require('os')
 const path = require('path')
 const { BrowserWindow, session } = require('electron')
 const { createBlocker } = require('./blocklist')
-const { describeStream, applyPlayerMetadata, estimateVariantSizes } = require('./mediainfo')
+const { describeStream, applyPlayerMetadata, estimateVariantSizes, accessEvidence } = require('./mediainfo')
 const { electronRules: proxyRules, fetchVia } = require('./proxy')
 const userscripts = require('./userscripts')
-const { discoverSources } = require('./source-discovery')
+const { discoverSources, documentBaseOf, htmlAttributes } = require('./source-discovery')
 const { DISCOVERY_SCRIPT, FRAME_SCRIPT, alternativeScript } = require('./browser-discovery')
 const { normaliseTrack, collectTextTracks, mergeTextTracks, PAGE_TEXT_TRACKS } = require('./text-tracks')
 const { uid, hostOf } = require('./util')
@@ -156,27 +156,62 @@ function encodeBase(value, radix) {
  * Reverse `eval(function(p,a,c,k,e,d){...}('payload',radix,count,'a|b|c'.split('|'),0,{}))`
  * — near-universal on self-hosted players. Returns unpacked source, or ''.
  */
-function unpackPacked(source) {
+function unpackPacked(input) {
+  const source = String(input || '').slice(0, 3 * 1024 * 1024)
   const results = []
-  const re =
-    /eval\(function\(p,a,c,k,e,[dr]\)\{.*?\}\(\s*(['"])((?:\\.|(?!\1)[\s\S])*?)\1\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(['"])((?:\\.|(?!\5)[\s\S])*?)\5\s*\.split\('\|'\)/g
-
-  let match
-  while ((match = re.exec(source)) !== null) {
-    const payload = match[2].replace(/\\'/g, "'").replace(/\\"/g, '"').replace(/\\\\/g, '\\')
-    const radix = Number(match[3])
-    const count = Number(match[4])
-    const words = match[6].split('|')
-    if (!payload || !radix || !Number.isFinite(count)) continue
-
-    let out = payload
-    for (let i = count - 1; i >= 0; i -= 1) {
-      const word = words[i]
-      if (!word) continue
-      const token = encodeBase(i, radix)
-      out = out.replace(new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g'), word)
+  let total = 0, attempts = 0
+  const quoted = (start) => {
+    const quote = source[start]
+    if (quote !== "'" && quote !== '"') return null
+    let value = ''
+    for (let i = start + 1; i < source.length && i - start <= 1024 * 1024; i += 1) {
+      let char = source[i]
+      if (char === quote) return { value, end: i + 1 }
+      if (char === '\\') {
+        char = source[++i]
+        if (char === undefined) return null
+        const escapes = { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v' }
+        if (char === 'x' || char === 'u') {
+          const length = char === 'x' ? 2 : 4, hex = source.slice(i + 1, i + 1 + length)
+          if (!new RegExp('^[0-9a-f]{' + length + '}$', 'i').test(hex)) return null
+          value += String.fromCharCode(parseInt(hex, 16)); i += length; continue
+        }
+        if (char === '\n') continue
+        if (char === '\r') { if (source[i + 1] === '\n') i += 1; continue }
+        value += escapes[char] ?? char
+      } else value += char
     }
-    results.push(out)
+    return null
+  }
+  const prefix = /eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,\s*[dr]\s*\)\s*\{/g
+  let match
+  while (attempts < 8 && (match = prefix.exec(source))) {
+    attempts += 1
+    const call = source.slice(prefix.lastIndex, prefix.lastIndex + 8192).match(/\}\s*\(\s*(['"])/)
+    if (!call) continue
+    const payload = quoted(prefix.lastIndex + call.index + call[0].length - 1)
+    if (!payload) continue
+    const numbers = source.slice(payload.end, payload.end + 96).match(/^\s*,\s*(\d{1,3})\s*,\s*(\d{1,6})\s*,\s*/)
+    if (!numbers) continue
+    const radix = Number(numbers[1]), count = Number(numbers[2])
+    if (radix < 2 || radix > 62 || count > 20000) continue
+    const dictionary = quoted(payload.end + numbers[0].length)
+    if (!dictionary || !/^\s*\.\s*split\s*\(\s*(['"])\|\1\s*\)/.test(source.slice(dictionary.end, dictionary.end + 64))) continue
+    const words = dictionary.value.split('|')
+    if (count > words.length) continue
+    const tokens = new Map()
+    for (let i = 0; i < count; i += 1) if (words[i]) tokens.set(encodeBase(i, radix), words[i])
+    let size = payload.value.length, oversized = false
+    // One scan of the payload replaces the former dictionary-times-payload
+    // regex work. Neither a huge count nor inserted token-like words recurse.
+    const unpacked = payload.value.replace(/\b[0-9a-zA-Z]+\b/g, (token) => {
+      const word = tokens.get(token)
+      if (!word) return token
+      const next = size + word.length - token.length
+      if (next + total > 3 * 1024 * 1024) { oversized = true; return token }
+      size = next; return word
+    })
+    if (!oversized && size + total <= 3 * 1024 * 1024) { results.push(unpacked); total += size + 1 }
   }
   return results.join('\n')
 }
@@ -302,10 +337,10 @@ function embedCandidatesFor(url) {
 function decodeReversed(text) {
   if (!/\/\/:s?ptth/.test(text)) return ''
   const out = []
-  const re = /[\w\-./:%?=&#]*\/\/:s?ptth/g
+  const re = /(?:^|[^\w\-./:%?=&#])([\w\-./:%?=&#]{1,16000}\/\/:s?ptth)(?=$|[^\w\-./:%?=&#])/g
   let match
   while ((match = re.exec(text)) !== null) {
-    const forward = match[0].split('').reverse().join('')
+    const forward = match[1].split('').reverse().join('')
     if (isHttp(forward)) out.push(forward)
   }
   return out.join('\n')
@@ -362,40 +397,19 @@ const DATA_ATTR_RE =
  * can hand to yt-dlp. Both are site-agnostic and cost nothing to read.
  */
 function declaredMediaOf(html, baseUrl) {
-  const found = []
-  const push = (value) => {
-    if (!value) return
-    try {
-      const abs = new URL(decodeEntities(String(value)).trim(), baseUrl).href
-      if (isHttp(abs)) found.push(abs)
-    } catch {
-      /* malformed */
-    }
-  }
-
-  const metaKeys =
-    /(og:video(?::secure_url|:url)?|twitter:player:stream|video_src_url|videoUrl)/i
-  for (const match of html.matchAll(
-    /<meta[^>]+(?:property|name|itemprop)=["']([^"']+)["'][^>]+content=["']([^"']+)["']/gi
-  )) {
-    if (metaKeys.test(match[1])) push(match[2])
-  }
-
-  for (const block of html.matchAll(
-    /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
-  )) {
-    for (const key of ['contentUrl', 'embedUrl']) {
-      const re = new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`, 'gi')
-      for (const hit of block[1].matchAll(re)) push(hit[1])
-    }
-  }
-
-  return found
+  const discovered = discoverSources(html, baseUrl)
+  return [...new Set([...discovered.sources.map((s) => s.url), ...discovered.frames])]
 }
 
 function collectFromText(text, baseUrl) {
   const structured = discoverSources(text, baseUrl)
-  const raw = String(text).replace(/data:text\/html(?:;charset=[^;,]+)?;base64,([A-Za-z0-9+/=]+)/gi, (_, value) => Buffer.from(value, 'base64').toString('utf8'))
+  // Structured data has already been walked with explicit media roles. Do not
+  // re-scan its ads/navigation/license fields as unscoped JavaScript configs.
+  let legacy = String(text)
+  try { JSON.parse(legacy); legacy = '' } catch {}
+  legacy = legacy.replace(/<script\b[^>]*type=["']application\/(?:ld\+)?json["'][^>]*>[\s\S]*?<\/script>/gi, '')
+  const raw = legacy.replace(/data:text\/html(?:;charset=[^;,]+)?;base64,([A-Za-z0-9+/=]+)/gi, (_, value) => Buffer.from(value, 'base64').toString('utf8'))
+  const decodedSources = []
   const expanded = [
     normaliseText(decodeEntities(raw)).replace(/\\"/g, '"'),
     normaliseText(unpackPacked(raw)),
@@ -407,12 +421,16 @@ function collectFromText(text, baseUrl) {
     ...structured.documents,
   ]
     .filter(Boolean)
+    .map((part) => {
+      try { decodedSources.push(...discoverSources(JSON.parse(part), structured.documentBase || baseUrl).sources); return '' } catch {}
+      return part.replace(/<script\b[^>]*(?:type=["']application\/(?:ld\+)?json["']|id=["']__(?:NEXT_DATA|NUXT_DATA)__["'])[^>]*>[\s\S]*?<\/script>/gi, '')
+    })
     .join('\n')
 
-  const found = structured.sources.filter((c) => !activeBlocker().shouldBlock(c.url) && !activeBlocker().isAdMedia(c.url)).map((c) => ({ ...c, referer: baseUrl, origin: originOf(baseUrl), via: 'structured' }))
+  const found = [...structured.sources, ...decodedSources].filter((c) => !activeBlocker().shouldBlock(c.url) && !activeBlocker().isAdMedia(c.url)).map((c) => ({ ...c, referer: baseUrl, origin: originOf(baseUrl), via: 'structured' }))
   const push = (url, confident) => {
     let clean = decodeEntities(String(url)).replace(/[",';)\]}]+$/, '').trim()
-    try { clean = new URL(clean, baseUrl).href } catch { return }
+    try { const parsed = new URL(clean, structured.documentBase || baseUrl); if (parsed.username || parsed.password) return; clean = parsed.href } catch { return }
     if (!isHttp(clean) || activeBlocker().shouldBlock(clean)) return
     if (NON_MEDIA_EXT.test(clean)) return
     if (activeBlocker().isAdMedia(clean)) return
@@ -451,8 +469,6 @@ function collectFromText(text, baseUrl) {
 
   DATA_ATTR_RE.lastIndex = 0
   while ((match = DATA_ATTR_RE.exec(expanded)) !== null) push(match[1], true)
-
-  for (const declared of declaredMediaOf(expanded, baseUrl)) push(declared, true)
 
   return { candidates: dedupe(found), expanded }
 }
@@ -610,22 +626,30 @@ function parseDurationValue(raw) {
  * no comparison against other candidates, no per-site rule needed.
  */
 function pageDurationOf(html) {
-  const meta = html.match(
-    /<meta[^>]+(?:property|itemprop|name)=["'](?:og:video:duration|video:duration|duration)["'][^>]+content=["']([^"']+)["']/i
-  )
-  if (meta) {
-    const value = parseDurationValue(meta[1])
-    if (value) return value
-  }
-
-  for (const block of html.matchAll(
-    /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
-  )) {
-    const found = block[1].match(/"duration"\s*:\s*"([^"]+)"/i)
-    if (found) {
-      const value = parseDurationValue(found[1])
-      if (value) return value
+  for (const match of String(html).matchAll(/<meta\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)) {
+    const attrs = htmlAttributes(match[0])
+    if (/^(?:og:video:duration|video:duration|duration)$/i.test(attrs.property || attrs.name || attrs.itemprop || '')) {
+      const duration = parseDurationValue(attrs.content)
+      if (duration) return duration
     }
+  }
+  let nodes = 0
+  const find = (value, depth = 0) => {
+    if (++nodes > 1500 || depth > 10 || !value || typeof value !== 'object') return null
+    if (Array.isArray(value)) { for (const entry of value.slice(0, 100)) { const d = find(entry, depth + 1); if (d) return d } return null }
+    if (/(?:^|[\s,/])(?:VideoObject|AudioObject|TVEpisode|Movie)(?:$|[\s,])/i.test(String(value['@type'] || ''))) {
+      const duration = parseDurationValue(value.duration)
+      if (duration) return duration
+    }
+    for (const [key, entry] of Object.entries(value).slice(0, 100)) {
+      if (/^(?:advertisement|ads|related|recommendations)$/i.test(key)) continue
+      const d = find(entry, depth + 1); if (d) return d
+    }
+    return null
+  }
+  for (const block of String(html).matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    if (block[1].length > 512 * 1024) continue
+    try { const duration = find(JSON.parse(block[1])); if (duration) return duration } catch {}
   }
   return null
 }
@@ -660,6 +684,38 @@ function originOf(url) {
   } catch {
     return ''
   }
+}
+
+function retryableNavigationError(error) {
+  return /\bERR_(?:CONNECTION_(?:CLOSED|RESET|ABORTED)|EMPTY_RESPONSE|TIMED_OUT|NETWORK_CHANGED)\b/.test(String(error?.code || '') + ' ' + String(error?.message || ''))
+}
+
+function createNavigationGuard(now = Date.now) {
+  const frames = new WeakMap(), legacyMain = {}
+  return (event, fallbackUrl = '') => {
+    const frame = event.frame || (event.isMainFrame !== false ? legacyMain : null)
+    if (!frame) return false
+    const at = now(), url = String(event.url || fallbackUrl).split('#')[0]
+    const history = (frames.get(frame) || []).filter((entry) => at - entry.at <= 6000).slice(-31)
+    history.push({ at, url }); frames.set(frame, history)
+    return history.filter((entry) => entry.url === url).length > 4
+  }
+}
+
+function usablePlayerFrame(url, blocker = activeBlocker()) {
+  if (!isHttp(url) || blocker.shouldBlock(url) || blocker.isAdMedia(url)) return false
+  try {
+    const parsed = new URL(url)
+    // These remain available to a player's ad lifecycle, but opening their
+    // hidden sync documents as alternative video players wastes the deadline.
+    return !/^(?:sync|usync|match|pixel)\./i.test(parsed.hostname) && !/^\/(?:cdn-cgi|(?:cookie|user)[-_]?sync|sync|usync|pixel)(?:\/|\.|$)/i.test(parsed.pathname)
+  } catch { return false }
+}
+
+function authenticationGateOf(markup, evidence = {}) {
+  if (evidence.accessRequired) return true
+  const text = String(markup).slice(0, 65536).replace(/<(?:script|style)\b[^>]*>[\s\S]*?<\/(?:script|style)>|<[^>]+>/gi, ' ').replace(/\s+/g, ' ')
+  return /(?:\b(?:login|sign.?in|registration|membership)\s+(?:is\s+)?required\b|(?:you\s+(?:must|need to)\s+(?:sign in|log in|register|create an account)).{0,60}(?:watch|view|continue|video|content)|(?:sign in|log in|register).{0,50}to\s+(?:watch|view|continue)|(?:izlemek|izleyebilmek|görüntülemek|erişmek|bu içerik|bu video).{0,100}(?:giriş yap|üye ol|kayıt ol))/i.test(text)
 }
 
 /**
@@ -697,7 +753,7 @@ function collectIframes(html, baseUrl) {
   const text = normaliseText(decodeEntities([html, ...structured.documents].join('\n'))).replace(/\\"/g, '"').replace(/\\'/g, "'")
   const push = (raw) => {
     try {
-      const abs = new URL(decodeEntities(raw), baseUrl).href
+      const abs = new URL(decodeEntities(raw), structured.documentBase || baseUrl).href
       if (isHttp(abs) && !activeBlocker().shouldBlock(abs) && !urls.includes(abs)) urls.push(abs)
     } catch {
       /* malformed src */
@@ -779,7 +835,13 @@ async function staticScan(
     // is all network latency, so doing them one after another was leaving most
     // of the wait on the table.
     const batch = []
-    for (const job of queue) {
+    // A slow analytics/player helper must not hold a ready iframe document in
+    // the same Promise.all batch. Follow the actual document chain first;
+    // speculative scripts/APIs can use the remaining phase budget afterwards.
+    const documents = queue.filter((job) => job.kind === 'page')
+    const pending = documents.length ? documents : queue
+    const deferred = documents.length ? queue.filter((job) => job.kind !== 'page') : []
+    for (const job of pending) {
       if (fetches + batch.length >= maxFetches) break
       if (visited.has(job.url)) continue
       visited.add(job.url)
@@ -794,12 +856,13 @@ async function staticScan(
       }))
     )
 
-    const next = []
+    const next = deferred
     for (const { job, text, finalUrl, status, error, errorCode, contentType } of fetched) {
       if (job.url === pageUrl) {
-        failure = error ? { message: error, code: errorCode } : status >= 400 ? { status } : null
-        accessRequired = status === 401 || (/<input[^>]+type=["']password["']/i.test(text || '') && /giriş yap|üye girişi|sign in|log ?in/i.test(pageTitleOf(text || '')))
-        challengeRequired = /(?:_cf_chl_opt|cf-chl-widget|challenges\.cloudflare\.com|g-recaptcha)/i.test(text || '') && status === 403
+        const evidence = accessEvidence(status, text)
+        failure = error ? { message: error, code: errorCode } : status >= 400 || evidence.networkBlocked ? { status, errorKind: evidence.errorKind } : null
+        accessRequired = evidence.accessRequired
+        challengeRequired = evidence.challengeRequired
       }
       if (status < 400 && (/^\s*#EXTM3U/.test(text || '') || /<(?:[\w.-]+:)?MPD(?:\s|>)/i.test((text || '').slice(0, 1000)) || /^(?:video|audio)\//i.test(contentType || ''))) {
         candidates.push({ url: finalUrl, kind: /^\s*#EXTM3U/.test(text || '') ? 'hls' : /MPD/.test((text || '').slice(0, 1000)) ? 'dash' : 'file', referer: job.referer || pageUrl, cookieFile: browserCookieJar, via: 'content' })
@@ -856,7 +919,7 @@ async function staticScan(
           }
         }
 
-        for (const script of collectScripts(text, finalUrl).slice(0, 5)) {
+        for (const script of collectScripts(text, documentBaseOf(text, finalUrl)).slice(0, 5)) {
           next.push({ url: script, referer: finalUrl, depth: job.depth, kind: 'script' })
         }
       }
@@ -890,7 +953,7 @@ async function staticScan(
    */
   // Not on the metadata-only peeks (maxFetches: 1), which are called for a title
   // and a runtime and would pay for a second document they never read.
-  if (!candidates.length && maxFetches > 1) {
+  if (!candidates.length && maxFetches > 1 && !signal?.aborted) {
     if (onProgress) onProgress('mobil sürüm deneniyor')
     const { text, finalUrl } = await fetchText(pageUrl, '', { userAgent: MOBILE_UA, proxy, cookieFile: browserCookieJar, signal })
     if (text) {
@@ -1314,6 +1377,10 @@ function browserScan(
     let encrypted = false
     let title = ''
     let loadError = null
+    let documentResponse = { status: null, headers: {} }
+    let documentEvidence = accessEvidence(null, '')
+    let documentFailure = null
+    let accountState = null
     const captureCookieFile = path.join(os.tmpdir(), `edl-cookies-${uid('c')}.txt`)
     // A runtime announced by a user script, used the same way the page's own
     // declared duration is: to tell a short pre-roll from the feature.
@@ -1394,6 +1461,7 @@ function browserScan(
       if (skipped.has(key)) return
       if (hits.has(key)) {
         const hit = hits.get(key)
+        if (hit.kind === 'unknown' && ['hls', 'dash', 'file'].includes(kind)) { hit.kind = kind; hit.needsCheck = false }
         if (hit.invalid && why === 'content-type') { hit.invalid = false; measure(hit) }
         return
       }
@@ -1525,7 +1593,7 @@ function browserScan(
         if (done || status >= 400 || !text) return
         const { candidates } = collectFromText(text, url)
         if (candidates.length) note(`oynatıcı belgesinde ${candidates.length} akış bulundu`)
-        for (const candidate of candidates) record(candidate.url, pageUrl, 'content-type')
+        for (const candidate of candidates) record(candidate.url, pageUrl, 'content-type', candidate.kind)
       } catch {
         /* the document was not readable from here */
       }
@@ -1657,8 +1725,12 @@ function browserScan(
         candidates: dedupe(keepers).map((c) => ({ ...c, cookieFile, subtitles: mergeTextTracks(textTracks) })),
         engine: 'browser',
         frames: [...discoveredFrames.values()],
-        loadError,
+        loadError: keepers.length ? null : loadError,
+        failure: documentFailure,
+        accountState,
         encrypted,
+        accessRequired: documentEvidence.accessRequired || all.some((h) => h.info?.accessRequired),
+        challengeRequired: documentEvidence.challengeRequired || all.some((h) => h.info?.challengeRequired),
         adsSkipped: adCount,
         // Reported so the caller can explain an empty result rather than just
         // saying nothing was found.
@@ -1669,7 +1741,10 @@ function browserScan(
       })
     }
 
-    const hardStop = setTimeout(() => finish(true), timeoutMs)
+    // Close discovery at the deadline, but let an already captured manifest
+    // use the bounded measurement grace in finish(). Aborting it immediately
+    // discarded players that first appeared just before the deadline.
+    const hardStop = setTimeout(() => finish(), timeoutMs)
     if (signal?.aborted) { finish(); return }
     signal?.addEventListener('abort', finish, { once: true })
 
@@ -1695,6 +1770,9 @@ function browserScan(
       })
 
       ses.webRequest.onHeadersReceived({ urls: ['<all_urls>'] }, (details, callback) => {
+        if (details.resourceType === 'mainFrame') {
+          documentResponse = { status: details.statusCode, headers: Object.fromEntries(Object.entries(details.responseHeaders || {}).map(([name, value]) => [name.toLowerCase(), String(value)])) }
+        }
         if (details.statusCode >= 400) {
           const hit = hits.get(details.url.split('#')[0])
           if (hit) hit.invalid = true
@@ -1741,11 +1819,8 @@ function browserScan(
       // Never let the page ask for anything.
       ses.setPermissionRequestHandler((_wc, _permission, cb) => cb(false))
 
-      // The signature of this event differs across Electron majors; read loosely.
-      win.webContents.on('console-message', (...parts) => {
-        const text = parts.map((p) => (p && p.message ? p.message : p)).join(' ')
-        if (/widevine|playready|fairplay|key.?system|\bdrm\b/i.test(String(text))) encrypted = true
-      })
+      // DRM evidence comes from protected manifests or a real media encrypted
+      // event. Player libraries logging "DRM disabled" are not evidence.
 
       /**
        * Keep looking for an advert to get past, in every frame, in both modes.
@@ -1761,9 +1836,9 @@ function browserScan(
             const frames = main ? [main, ...(main.framesInSubtree || [])] : []
             for (const frame of frames) {
               try {
-                if (/^https?:/.test(frame.url) && frame.url !== pageUrl && !browserBlocker.shouldBlock(frame.url)) discoveredFrames.set(frame.url, { url: frame.url, referer: frame.parent?.url || pageUrl, depth: 2 })
+                if (frame.url !== pageUrl && usablePlayerFrame(frame.url, browserBlocker)) discoveredFrames.set(frame.url, { url: frame.url, referer: frame.parent?.url || pageUrl, depth: 2 })
                 frame.executeJavaScript(FRAME_SCRIPT, true).then((urls) => {
-                  for (const url of urls || []) if (!browserBlocker.shouldBlock(url) && url !== pageUrl) discoveredFrames.set(url, { url, referer: frame.url || pageUrl, depth: 2 })
+                  for (const url of urls || []) if (url !== pageUrl && usablePlayerFrame(url, browserBlocker)) discoveredFrames.set(url, { url, referer: frame.url || pageUrl, depth: 2 })
                 }).catch(() => {})
                 const healthy = [...hits.values()].some((h) => h.info?.playable && !h.short && !h.invalid)
                 if (!assisted && !healthy && Date.now() - alternateAt > 6500 && !measuring.size) {
@@ -1845,20 +1920,16 @@ function browserScan(
        * the visible symptom is an error page and "no video found" on a page that
        * plainly has one.
        *
-       * The guard is about the behaviour, not about any particular script. A few
-       * redirects are ordinary; four of them inside six seconds is a page
-       * fighting itself, and at that point we keep the document we already have
-       * and go on watching it for requests.
+       * The guard is about the behaviour, not about any particular script. Only
+       * repeated visits to the same URL in the same frame count. Independent
+       * advert frames and a real login redirect chain must not freeze the player.
        */
-      const navigations = []
+      const repeatedNavigation = createNavigationGuard()
       let navFrozen = false
       let sawFrameEvents = false
-      const guardNavigation = (event) => {
+      const guardNavigation = (event, fallbackUrl) => {
         if (done) return
-        const now = Date.now()
-        while (navigations.length && now - navigations[0] > 6000) navigations.shift()
-        navigations.push(now)
-        if (navigations.length <= 4) return
+        if (!repeatedNavigation(event, fallbackUrl)) return
         if (!navFrozen) {
           navFrozen = true
           note('sayfa kendini yeniliyor — yenilemeler durduruldu')
@@ -1879,8 +1950,8 @@ function browserScan(
         sawFrameEvents = true
         guardNavigation(event)
       })
-      win.webContents.on('will-navigate', (event) => {
-        if (!sawFrameEvents) guardNavigation(event)
+      win.webContents.on('will-navigate', (event, url) => {
+        if (!sawFrameEvents) guardNavigation(event, url)
       })
 
       // Get the hooks in as early as possible: a player that builds its source
@@ -1906,7 +1977,37 @@ function browserScan(
       })
 
       let scheduled = false
-      win.webContents.on('did-finish-load', () => {
+      win.webContents.on('did-finish-load', async () => {
+        // Inspect the document we actually loaded, rather than assuming a
+        // completed navigation is a successful page. HTTP-200 error templates
+        // and browser-only sign-in/CAPTCHA pages otherwise become "no video".
+        try {
+          const markup = await win.webContents.mainFrame.executeJavaScript('document.documentElement.outerHTML.slice(0, 65536)', true)
+          if (done || !win || win.isDestroyed()) return
+          documentEvidence = accessEvidence(documentResponse.status, markup, documentResponse.headers)
+          documentFailure = documentResponse.status >= 400 || documentEvidence.networkBlocked
+            ? { status: documentResponse.status, errorKind: documentEvidence.errorKind } : null
+          if (documentEvidence.networkBlocked && !hits.size) {
+            note('site bu ağın IP adresini kabul etmiyor')
+            finish()
+            return
+          }
+          const hasPasswordForm = /<form\b[\s\S]*?<input\b[^>]*\btype\s*=\s*["']?password\b/i.test(markup)
+          const authGate = authenticationGateOf(markup, documentEvidence)
+          const foundVideo = [...hits.values()].some((hit) => hit.info?.playable && !hit.short && !hit.invalid)
+          if (!foundVideo && !documentEvidence.networkBlocked && !documentEvidence.challengeRequired && (hasPasswordForm || authGate)) {
+            const authentication = await require('./site-account-forms').attemptAuthentication(win, {
+              signal: captureSignal, onProgress: note, allowNavigation: !!authGate, onState: (value) => { accountState = value },
+            })
+            if (done || !win || win.isDestroyed()) return
+            if (authentication.state === 'submitted' || authentication.state === 'navigating') {
+              // The following document is the login result; driving the old
+              // page now would race its form navigation and player discovery.
+              return
+            }
+          }
+        } catch { /* A navigation may replace this frame before inspection. */ }
+        if (done || !win || win.isDestroyed()) return
         startAdSkipping()
         try {
           const main = win.webContents.mainFrame
@@ -1979,9 +2080,22 @@ function browserScan(
         }
         if (done || !win || win.isDestroyed()) return
         note('sayfa açılıyor')
-        win
-          .loadURL(pageUrl, { userAgent: UA, httpReferrer: referer || originOf(pageUrl) })
-          .catch((err) => { loadError = err.message; if (!hits.size) finish() })
+        const navigate = (attempt = 0) => {
+          if (done || !win || win.isDestroyed() || signal?.aborted) return
+          win.loadURL(pageUrl, { userAgent: UA, httpReferrer: referer || originOf(pageUrl) })
+            .then(() => { loadError = null })
+            .catch((err) => {
+              if (done || signal?.aborted) return
+              if (!attempt && !hits.size && retryableNavigationError(err)) {
+                note('sayfa bağlantısı kesildi; aynı ağ yolundan yeniden deneniyor')
+                timers.push(setTimeout(() => navigate(1), 500))
+                return
+              }
+              loadError = err.message
+              if (!hits.size) finish()
+            })
+        }
+        navigate()
       }
       boot().catch((err) => { loadError = err.message; finish() })
     } catch (err) {
@@ -2004,7 +2118,7 @@ function browserScan(
  * we're there. Unverified guesses from player configs live or die here, which is
  * what lets the scan be aggressive without inventing entries.
  */
-async function verifyCandidates(candidates, { limit = 16, concurrency = 3, proxy = '', signal = null } = {}) {
+async function verifyCandidates(candidates, { limit = 16, concurrency = 3, proxy = '', signal = null, onRejected = null } = {}) {
   const shortlist = candidates.slice(0, limit)
   const keep = []
   let cursor = 0
@@ -2039,7 +2153,7 @@ async function verifyCandidates(candidates, { limit = 16, concurrency = 3, proxy
           })
         } else if (info.drm) {
           keep.push({ ...candidate, info })
-        }
+        } else onRejected?.(info)
       } catch { /* An extension alone is not proof of a playable source. */ }
     }
   }
@@ -2122,9 +2236,15 @@ async function resolvePageImpl(
   } = {}
 ) {
   if (!isHttp(pageUrl) || signal?.aborted) return { title: '', candidates: [], engine: 'none' }
+  const evidence = { accessRequired: false, challengeRequired: false, failure: null }
+  const verification = { proxy, signal, onRejected: (info) => {
+    evidence.accessRequired ||= !!info.accessRequired
+    evidence.challengeRequired ||= !!info.challengeRequired
+    if (!evidence.failure && info.status >= 400) evidence.failure = { status: info.status }
+  } }
   if (['hls', 'dash', 'file'].includes(kindOf(pageUrl))) {
-    const candidates = await verifyCandidates([{ url: pageUrl, kind: kindOf(pageUrl), referer: pageUrl, cookieFile: browserCookieJar }], { proxy, signal })
-    return { title: '', candidates, engine: 'static', userAgent: UA }
+    const candidates = await verifyCandidates([{ url: pageUrl, kind: kindOf(pageUrl), referer: pageUrl, cookieFile: browserCookieJar }], verification)
+    return { title: '', candidates, engine: 'static', userAgent: UA, ...evidence }
   }
 
   // A host we've resolved before tells us which engine actually works. Going
@@ -2136,9 +2256,20 @@ async function resolvePageImpl(
   if (onProgress) {
     onProgress(skipStatic ? 'bu site için oynatıcı taraması' : 'sayfa ve oynatıcı kodları taranıyor')
   }
-  const fast = skipStatic
-    ? await staticScan(pageUrl, { maxFetches: 8, maxDepth: 2, proxy, browserCookieJar, signal })
-    : await staticScan(pageUrl, { onProgress, proxy, browserCookieJar, signal })
+  // Reserve time for the real browser. A page with several stalled third-party
+  // scripts used to spend the entire shared deadline in the static crawl,
+  // aborting before its working dynamic player could even be opened.
+  const staticController = new AbortController()
+  const staticSignal = signal ? AbortSignal.any([signal, staticController.signal]) : staticController.signal
+  let staticTimedOut = false
+  const staticTimer = setTimeout(() => { staticTimedOut = true; staticController.abort() }, Math.max(2000, Math.min(15000, timeoutMs * 0.35)))
+  let fast
+  try {
+    fast = skipStatic
+      ? await staticScan(pageUrl, { maxFetches: 8, maxDepth: 2, proxy, browserCookieJar, signal: staticSignal })
+      : await staticScan(pageUrl, { onProgress, proxy, browserCookieJar, signal: staticSignal })
+  } finally { clearTimeout(staticTimer) }
+  if (staticTimedOut && /ABORT/i.test(fast.failure?.code || '')) fast.failure = null
 
   if (signal?.aborted) return { ...fast, candidates: [], userAgent: UA }
   if (fast.expectedDuration && onProgress) {
@@ -2150,7 +2281,7 @@ async function resolvePageImpl(
   const embeds = fast.embeds || []
 
   if (fast.candidates.length) {
-    const verified = dropVariantDuplicates(await verifyCandidates(fast.candidates, { proxy, signal }))
+    const verified = dropVariantDuplicates(await verifyCandidates(fast.candidates, verification))
     const { kept, dropped } = dropShortStreams(verified, minStreamSeconds, fast.expectedDuration)
     if (kept.length) {
       if (dropped && onProgress) onProgress(`${dropped} kısa akış (reklam) atlandı`)
@@ -2167,6 +2298,9 @@ async function resolvePageImpl(
   if (staticOnly) {
     return {
       ...fast,
+      accessRequired: fast.accessRequired || evidence.accessRequired,
+      challengeRequired: fast.challengeRequired || evidence.challengeRequired,
+      failure: fast.failure || evidence.failure,
       title: cleanTitle(fast.title, hostOf(pageUrl)),
       candidates: [],
       embeds,
@@ -2178,18 +2312,22 @@ async function resolvePageImpl(
   // With a nested player to fall back on there is no reason to sit out the full
   // window waiting for a wrapper page that may never yield.
   const frameMap = new Map((fast.frames || []).map((f) => [f.url, f]))
-  const nestedFrames = [...frameMap.values()].sort((a, b) => b.depth - a.depth).slice(0, 4)
-  const first = nestedFrames.find((f) => f.depth >= 2 && !EMBED_HOST.test(f.url))
+  const frameOrder = (a, b) => {
+    const score = (frame) => /embed|player|watch|video|stream/i.test(frame.url) ? 10 : 0
+    return score(b) - score(a) || b.depth - a.depth
+  }
+  const nestedFrames = [...frameMap.values()].filter((frame) => usablePlayerFrame(frame.url)).sort(frameOrder).slice(0, 4)
+  const first = nestedFrames.find((f) => !EMBED_HOST.test(f.url) && (f.depth >= 2 || /\/(?:embed|player)(?:\/|[?#])|\/(?:player|video)\.php(?:[?#]|$)/i.test(f.url)))
   const options = { onProgress, browserCookieJar, minStreamSeconds, expectedDuration: fast.expectedDuration, proxy, useUserScripts, signal, preferredAudioLanguage }
   let deep = await browserScan(first?.url || pageUrl, {
     ...options, referer: first?.referer, timeoutMs: nestedFrames.length ? Math.min(timeoutMs, 24000) : timeoutMs,
   })
   const attempted = new Set([first?.url || pageUrl])
   for (const frame of deep.frames || []) if (!frameMap.has(frame.url)) frameMap.set(frame.url, frame)
-  const remaining = [...frameMap.values()].sort((a, b) => b.depth - a.depth)
+  const remaining = [...frameMap.values()].filter((frame) => usablePlayerFrame(frame.url)).sort(frameOrder)
   if (first) remaining.push({ url: pageUrl, referer: null, depth: 0 })
   let alternatives = 0
-  for (let index = 0; !deep.candidates.length && index < remaining.length && alternatives < 5 && !signal?.aborted; index += 1) {
+  for (let index = 0; !deep.candidates.length && deep.failure?.errorKind !== 'network-blocked' && index < remaining.length && alternatives < 5 && !signal?.aborted; index += 1) {
     const frame = remaining[index]
     if (attempted.has(frame.url)) continue
     attempted.add(frame.url)
@@ -2197,10 +2335,16 @@ async function resolvePageImpl(
     onProgress?.(`alternatif oynatıcı açılıyor: ${hostOf(frame.url)}`)
     const inner = await browserScan(frame.url, { ...options, referer: frame.referer, timeoutMs: Math.min(timeoutMs, 24000) })
     if (inner.candidates.length) deep = { ...inner, title: deep.title || inner.title }
+    else {
+      deep.failure ||= inner.failure
+      deep.accessRequired ||= inner.accessRequired
+      deep.challengeRequired ||= inner.challengeRequired
+      deep.loadError ||= inner.loadError
+    }
     for (const next of inner.frames || []) if (!attempted.has(next.url) && !remaining.some((f) => f.url === next.url)) remaining.push(next)
   }
 
-  const verified = deep.candidates.length ? await verifyCandidates(deep.candidates, { proxy, signal }) : []
+  const verified = deep.candidates.length ? await verifyCandidates(deep.candidates, verification) : []
   // Keep browser finds even if verification couldn't read them: the session that
   // captured them is gone, so a fresh fetch may legitimately fail.
   const pool = dropVariantDuplicates(verified.length ? verified : deep.candidates)
@@ -2209,9 +2353,9 @@ async function resolvePageImpl(
 
   return {
     ...deep,
-    failure: fast.failure,
-    accessRequired: fast.accessRequired,
-    challengeRequired: fast.challengeRequired,
+    failure: deep.failure || fast.failure || evidence.failure,
+    accessRequired: fast.accessRequired || evidence.accessRequired || deep.accessRequired,
+    challengeRequired: fast.challengeRequired || evidence.challengeRequired || deep.challengeRequired,
     candidates: kept.map((c) => ({ ...c, subtitles: mergeTextTracks(c.subtitles || [], fast.subtitles || [], fast.candidates.flatMap((v) => v.subtitles || [])) })),
     adsSkipped: (deep.adsSkipped || 0) + dropped,
     title: cleanTitle(deep.title || fast.title, hostOf(pageUrl)),
@@ -2306,6 +2450,10 @@ module.exports = {
   verifyCandidates,
   injectedScripts: { PLAY_NUDGE, AD_SKIP, HOOK_SCRIPT, HOOK_DRAIN, ASSIST_BANNER, DISCOVERY_SCRIPT, FRAME_SCRIPT },
   metaRefreshOf,
+  retryableNavigationError,
+  createNavigationGuard,
+  usablePlayerFrame,
+  authenticationGateOf,
   UA,
   MOBILE_UA,
 }

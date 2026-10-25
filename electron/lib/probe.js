@@ -34,7 +34,7 @@ function baseArgs(settings) {
   if (cookies) args.push('--cookies-from-browser', cookies)
   // Set per source, not globally: two links can be resolving at the same moment,
   // one through the proxy and one straight out.
-  if (settings.proxy) args.push('--proxy', settings.proxy)
+  args.push('--proxy', settings.proxy || '')
   return args
 }
 
@@ -320,7 +320,7 @@ async function sourceSettings(settings, source, signal) {
       onProgress: (status) => note(source, status.message || `Tor hazırlanıyor (%${status.percent || 0})`, 'network') })
   }
   if (signal?.aborted) throw Object.assign(new Error('Çözümleme durduruldu.'), { code: 'ABORTED' })
-  store.commit(() => { source.network = network.getContext(source.id) || { kind: 'direct', isolated: false, label: 'Doğrudan' } })
+  store.commit(() => { source.network = source.useProxy ? network.getContext(source.id) || { kind: 'proxy', isolated: false, label: 'Vekil bağlantı' } : { kind: 'direct', isolated: false, label: 'Doğrudan' } })
   return { ...settings, proxy, signal }
 }
 
@@ -441,7 +441,7 @@ async function runProbe(source, playlistEnd, signal) {
     const res = await runJson(source.url, extra, effective, source.id)
     json = res.json
   } catch (err) {
-    const message = err && err.code === 'NO_YTDLP' ? 'yt-dlp kurulu değil.' : err.message
+    const message = err.message || 'yt-dlp çalıştırılamadı.'
     missingTool = !!(err && err.code === 'NO_YTDLP')
     // A broken cookie setting shouldn't cost the user their list: drop cookies
     // for this run, say so, and carry on.
@@ -582,6 +582,8 @@ function itemFromCandidate(candidate, source, index, title, userAgent, total, th
       engine: candidate.via,
       selectedVariantUrl: info?.selectedVariantUrl || null,
       rejectedVariantUrls: info?.rejectedVariantUrls || [],
+      selectedVariantChain: info?.selectedVariantChain?.slice(0, 4) || [],
+      preparedVariants: info?.preparedVariants?.slice(0, 8) || [],
       // A flag, not the address. A proxy URL can carry a password, and this
       // object is written to library.json in plain text — the address is looked
       // up from settings at the moment it is needed instead.
@@ -621,7 +623,7 @@ async function tryResolve(source, settings, fallbackError) {
   let browserCookieJar = settings.browserCookieJar || null
   if (settings.cookiesBrowser) {
     store.commit(() => { source.note = 'tarayıcı oturumu alınıyor' })
-    browserCookieJar = await exportCookieJar(settings.cookiesBrowser).catch(() => null)
+    browserCookieJar = await exportCookieJar(settings.cookiesBrowser, { signal: settings.signal }).catch(() => null)
   }
 
   const host = hostOf(source.url)
@@ -741,12 +743,14 @@ function applyResolution(source, result, fallbackError) {
       const shortest =
         result && Number.isFinite(result.shortest) ? Math.round(result.shortest) : null
       source.error =
-        result && result.encrypted
+        result?.failure?.errorKind === 'network-blocked' || result?.networkBlocked
+          ? `Site bu ağın IP adresini engelliyor. Bu, internet bağlantısının kesik olduğu anlamına gelmez. ${source.useProxy ? 'Bu kaynak için VPN / vekili kapatıp yeniden taramayı deneyebilirsin.' : 'Siteyi tarayıcıda kontrol edebilir veya bu kaynak için başka bir ağ yolunu seçebilirsin.'}`
+          : result && result.encrypted
           ? 'Bu akış DRM korumalı — indirilemez.'
           : result?.challengeRequired
             ? 'Site tarayıcı doğrulaması istiyor. Tarayıcıda yakala ile doğrulamayı tamamlayabilir veya mevcut tarayıcı oturumunu seçebilirsin.'
           : result?.accessRequired
-            ? 'Site oturum açılmasını istiyor. Ayarlar → Erişim’den mevcut tarayıcı oturumunu seç veya Tarayıcıda yakala ile giriş yap.'
+            ? 'Site oturum açılmasını istiyor. Ayarlar → Site hesapları bölümünden bu site için giriş izni ver veya Tarayıcıda yakala ile giriş yap.'
           : result?.failure?.status >= 400
             ? `Site HTTP ${result.failure.status} döndürdü. Bu, internet bağlantısının kesik olduğu anlamına gelmez. Tarayıcıda yakala ile siteyi kontrol edebilirsin.`
           : result?.loadError || result?.failure?.message
@@ -847,6 +851,8 @@ function enrich(sourceId, settingsOverride = null, { force = false } = {}) {
                 live.drm = !!info.drm
                 live.resolved.selectedVariantUrl = info.selectedVariantUrl || live.resolved.selectedVariantUrl
                 live.resolved.rejectedVariantUrls = info.rejectedVariantUrls || live.resolved.rejectedVariantUrls || []
+                if (info.selectedVariantChain) live.resolved.selectedVariantChain = info.selectedVariantChain.slice(0, 4)
+                if (info.preparedVariants) live.resolved.preparedVariants = info.preparedVariants.slice(0, 8)
               })
             }
             if (active(item) && needsMetadata(item) && settings.useYtdlp !== false) {
@@ -959,7 +965,7 @@ async function captureSource(sourceId) {
 
     let browserCookieJar = settings.browserCookieJar || null
     if (settings.cookiesBrowser) {
-      browserCookieJar = await exportCookieJar(settings.cookiesBrowser).catch(() => null)
+      browserCookieJar = await exportCookieJar(settings.cookiesBrowser, { signal: settings.signal }).catch(() => null)
     }
 
     let result = null

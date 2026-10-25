@@ -16,6 +16,18 @@ test('every injected browser program compiles before it reaches a player', () =>
   const { Script } = require('vm')
   for (const [name, source] of Object.entries(resolver.injectedScripts)) assert.doesNotThrow(() => new Script(source), name)
 })
+test('Packer extraction substitutes tokens once without executing player code', () => {
+  const packed = `eval(function(p,a,c,k,e,d){throw new Error('never execute')}('0: "1"',36,2,'file|https://cdn.example.test/movie.m3u8'.split('|'),0,{}))`
+  assert.equal(resolver.unpackPacked(packed), 'file: "https://cdn.example.test/movie.m3u8"')
+  assert.equal(resolver.collectFromText(packed, base).candidates[0].url, 'https://cdn.example.test/movie.m3u8')
+  for (const malformed of [packed.replace(',36,2,', ',999,2,'), packed.replace(',36,2,', ',36,999999,'), packed.replace('0: "1"', '\\\\'.repeat(10000))]) assert.doesNotThrow(() => resolver.unpackPacked(malformed))
+  assert.equal(resolver.unpackPacked(packed.replace(',36,2,', ',999,2,')), '')
+})
+test('reversed URL decoding remains bounded with a long unrelated token before it', () => {
+  const reversed = 'https://cdn.example.test/movie.m3u8'.split('').reverse().join('')
+  const result = resolver.collectFromText('a'.repeat(200000) + '"' + reversed + '"', 'https://player.example.test/')
+  assert.ok(result.candidates.some((c) => c.url === 'https://cdn.example.test/movie.m3u8'))
+})
 test('missing duration is preserved as unknown instead of being classified as an advert', () => {
   const unknown = { url: 'https://cdn.example.test/unknown', info: { playable: true, duration: null } }
   const feature = { url: 'https://cdn.example.test/feature', info: { playable: true, duration: 3600 } }
@@ -23,6 +35,29 @@ test('missing duration is preserved as unknown instead of being classified as an
   const result = resolver.dropShortStreams([unknown, advert, feature], 120, 3600)
   assert.deepEqual(result.kept, [feature, unknown])
   assert.equal(result.dropped, 1)
+})
+test('only transient browser connection failures retry; certificate, cancellation and access errors do not', () => {
+  for (const code of ['ERR_CONNECTION_RESET', 'ERR_CONNECTION_CLOSED', 'ERR_TIMED_OUT', 'ERR_EMPTY_RESPONSE', 'ERR_NETWORK_CHANGED']) assert.equal(resolver.retryableNavigationError({ code }), true, code)
+  for (const code of ['ERR_CERT_AUTHORITY_INVALID', 'ERR_ABORTED', 'ERR_ACCESS_DENIED', 'ERR_BLOCKED_BY_CLIENT']) assert.equal(resolver.retryableNavigationError({ code }), false, code)
+})
+test('independent iframe navigations cannot freeze the actual player, only repeated same-frame reloads', () => {
+  let now = 0
+  const guard = resolver.createNavigationGuard(() => now)
+  for (let i = 0; i < 12; i++) assert.equal(guard({ frame: {}, isMainFrame: false, url: 'https://sync.example.test/' + i }), false)
+  const player = {}
+  for (let i = 0; i < 4; i++) assert.equal(guard({ frame: player, url: 'https://player.example.test/embed' }), false)
+  assert.equal(guard({ frame: player, url: 'https://player.example.test/embed' }), true)
+  assert.equal(guard({ frame: player, url: 'https://player.example.test/new-document' }), false)
+  now = 7000
+  assert.equal(guard({ frame: player, url: 'https://player.example.test/embed' }), false)
+})
+test('advert and cookie-sync frames are never retried as standalone video players', () => {
+  for (const url of ['https://sync.ottadvisors.com/match', 'https://example.test/cdn-cgi/challenge-platform/x', 'https://capi.connatix.com/core/us']) assert.equal(resolver.usablePlayerFrame(url), false, url)
+  for (const url of ['https://dbx.molystream.org/embed/one', 'https://example.test/wrapper']) assert.equal(resolver.usablePlayerFrame(url), true, url)
+})
+test('automatic account navigation needs actual watch/access evidence, not a normal login link', () => {
+  for (const markup of ['<p>Login required</p><a href="/login">Log in</a>', '<p>Registration is required</p>', '<p>You must sign in to watch this video</p>', '<p>Bu videoyu izlemek için üye olmanız gerekiyor.</p>']) assert.equal(resolver.authenticationGateOf(markup), true, markup)
+  for (const markup of ['<header><a href="/login">Log in</a></header><video></video>', '<p>Yorum yazmak için üye olmanız gerekiyor.</p>', '<script>"Login required"</script><video></video>']) assert.equal(resolver.authenticationGateOf(markup), false, markup)
 })
 test.before(async () => {
   server = http.createServer((req, res) => {
@@ -35,6 +70,10 @@ test.before(async () => {
     if (req.url === '/page') {
       res.end('<title>A film</title><iframe src="/player"></iframe><script>file:"/movie.mp4"</script>'); return
     }
+    if (req.url === '/auth-page') { res.end('<video><source src="/auth-stream" type="application/dash+xml"></video>'); return }
+    if (req.url === '/network-gate') { res.end('<title>Site</title><h1>500 ERROR</h1><p>VPN veya Server ip adresi ile giriş yapmayınız</p>'); return }
+    if (req.url === '/auth-stream') { res.writeHead(401); res.end('<title>Sign in</title><input type="password">'); return }
+    if (req.url === '/duration-page') { res.end('<meta content="123.5" property="video:duration"><script type="application/ld+json">{"@type":"Recipe","duration":"PT999H"}</script>'); return }
     if (req.url === '/broken-master') { res.end('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=128x96\n/not-video\n'); return }
     if (req.url === '/not-video') { res.end('<html>Unavailable</html>'); return }
     if (req.url === '/poster-source') { res.setHeader('Content-Type', 'image/png'); res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC8sAAAAASUVORK5CYII=', 'base64')); return }
@@ -56,6 +95,29 @@ test('relative config sources, HTML entities and iframe srcdoc are readable', ()
   assert.equal(c.candidates[0].url, base + '/master.m3u8?x=1&y=2')
   assert.deepEqual(resolver.collectIframes('<iframe srcdoc="&lt;iframe src=&quot;https://player.example.test/embed/one&quot;&gt;">', base), ['https://player.example.test/embed/one'])
   assert.equal(resolver.collectFromText('var url="https://schema.org/VideoObject"', base).candidates.length, 0)
+})
+test('typed sources remain typed and JSON ads/licenses are not revived by legacy scanning', () => {
+  const html = `<iframe src="/player"></iframe><script type="application/ld+json">${JSON.stringify({ '@type': 'VideoObject', contentUrl: '/play.php?id=one', encodingFormat: 'application/dash+xml', embedUrl: '/embed', ads: { file: '/advert.mp4' }, license: { src: '/license.mpd' } })}</script>`
+  const result = resolver.collectFromText(html, base)
+  assert.deepEqual(result.candidates.map((c) => [c.url, c.kind]), [[base + '/play.php?id=one', 'dash']])
+})
+test('typed protected stream rejection preserves real authentication evidence', async () => {
+  const result = await resolver.resolvePage(base + '/auth-page', { staticOnly: true })
+  assert.equal(result.candidates.length, 0)
+  assert.equal(result.accessRequired, true)
+  assert.equal(result.challengeRequired, false)
+  assert.equal(result.failure.status, 401)
+})
+test('static HTTP-200 IP denial is preserved as a site error rather than no video/offline', async () => {
+  const result = await resolver.resolvePage(base + '/network-gate', { staticOnly: true })
+  assert.equal(result.candidates.length, 0)
+  assert.equal(result.failure.errorKind, 'network-blocked')
+  assert.equal(result.failure.status, 200)
+  assert.equal(result.accessRequired, false)
+})
+test('duration metadata works regardless of HTML attribute order', async () => {
+  const result = await resolver.staticScan(base + '/duration-page', { maxFetches: 1 })
+  assert.equal(result.expectedDuration, 124)
 })
 test('response byte bounds terminate with an error instead of hanging', async () => {
   await assert.rejects(fetchVia(base + '/large', { maxBytes: 1024, retries: 0 }), { code: 'RESPONSE_TOO_LARGE' })
@@ -124,4 +186,9 @@ test('external player subtitles include Turkish labels and exclude thumbnail VTT
   const { normaliseTrack } = require('../electron/lib/text-tracks')
   assert.equal(normaliseTrack({ url: '/forced.vtt', lang: 'tr', forced: true }, base).forced, true)
   assert.equal(normaliseTrack({ url: '/forced.vtt', name: 'Türkçe forced' }, base).forced, true)
+  assert.equal(collectTextTracks("var tracks = [{file:'/forced.vtt',lang:'tr',kind:'captions',forced:true}]", base)[0].forced, true)
+  assert.equal(normaliseTrack({ url: 'https://user:private@example.test/sub.vtt' }, base), null)
+  const { mergeTextTracks } = require('../electron/lib/text-tracks')
+  assert.equal(mergeTextTracks([{ url: base + '/sub.vtt', lang: '', forced: false }], [{ url: base + '/sub.vtt', lang: 'tr', forced: true }])[0].lang, 'tr')
+  assert.equal(mergeTextTracks([{ url: base + '/sub.vtt', lang: '', forced: false }], [{ url: base + '/sub.vtt', lang: 'tr', forced: true }])[0].forced, true)
 })

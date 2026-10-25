@@ -804,6 +804,9 @@ async function setBiometric(enabled) {
     biometricEnrollmentIssue = null
     touch()
     return status()
+  } catch (err) {
+    if (['missing-entitlement', 'key-missing', 'invalid-key'].includes(err.code)) biometricEnrollmentIssue = err.message
+    throw err
   } finally { secret?.fill(0); biometricBusy = false }
 }
 
@@ -838,7 +841,7 @@ async function unlockBiometric() {
     armAutoLock()
     return status()
   } catch (err) {
-    if (err.code === 'key-missing' || err.code === 'invalid-key') biometricEnrollmentIssue = err.message
+    if (['key-missing', 'invalid-key', 'missing-entitlement'].includes(err.code)) biometricEnrollmentIssue = err.message
     throw err
   } finally { secret?.fill(0); key?.fill(0); biometricBusy = false }
 }

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict')
 const fs = require('fs')
 const path = require('path')
 const http = require('http')
+const net = require('net')
 const crypto = require('crypto')
 const { root, load } = require('./helpers.cjs')
 const own = load('electron/lib/ownengine.js')
@@ -17,8 +18,14 @@ test.before(async () => {
     requests.push({ path: req.url, range: req.headers.range, cookie: req.headers.cookie })
     if (req.url === '/private/start') { res.writeHead(302, { Location: '/public/file' }); res.end(); return }
     if (req.url === '/master') { res.end('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080\n/denied\n#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720\n/viable\n'); return }
+    if (req.url === '/nested-master') { res.end('#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="outer",LANGUAGE="tr",DEFAULT=YES,URI="/audio-tr"\n#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080,AUDIO="outer"\n/inner-master\n'); return }
+    if (req.url === '/inner-master') { res.end('#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="inner",LANGUAGE="en-US",DEFAULT=YES,URI="/audio-en"\n#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720,AUDIO="inner"\n/media-leaf\n'); return }
+    if (req.url === '/media-leaf') { res.end('#EXTM3U\n#EXTINF:1,\n/movie.ts\n#EXT-X-ENDLIST\n'); return }
+    if (req.url === '/cycle-master') { res.end('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n/cycle-master\n'); return }
+    if (/^\/depth\/\d+$/.test(req.url)) { res.end(`#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n/depth/${Number(req.url.split('/').at(-1)) + 1}\n`); return }
     if (req.url === '/waiting') return
     if (req.url === '/reject') { res.writeHead(429); res.end(); return }
+    if (req.url === '/partial') { res.writeHead(206, { 'Content-Range': `bytes 0-99/${payload.length}`, 'Content-Length': 100 }); res.end(payload.subarray(0, 100)); return }
     const range = req.headers.range?.match(/^bytes=(\d+)-(\d*)$/)
     const start = Number(range?.[1] || 0)
     const end = range?.[2] ? Number(range[2]) : payload.length - 1
@@ -88,9 +95,15 @@ test('pause persists a safe journal and resumes without corrupting bytes', async
   const plan = own.readPlan(opts.destPath + '.part.parts', payload.length, '"test-v1"')
   assert.ok(plan.parts.some((p) => p.done > 0))
   assert.equal(own.readPlan(opts.destPath + '.part.parts', payload.length, '"changed"'), null)
+  assert.equal(own.readPlan(opts.destPath + '.part.parts', payload.length, '"test-v1"', base + '/other-resource'), null)
+  const damaged = plan.parts.find((p) => p.done > 0)
+  const fd = fs.openSync(opts.destPath + '.part', 'r+')
+  fs.writeSync(fd, Buffer.from([payload[damaged.start] ^ 0xff]), 0, 1, damaged.start); fs.closeSync(fd)
+  const before = requests.length
   opts.onProgress = () => {}
   await own.fetchFileParallel(opts)
   matches(opts.destPath)
+  assert.ok(requests.slice(before).some((req) => req.range === `bytes=${damaged.start}-${damaged.end}`), 'a corrupted saved prefix must be fetched again')
 })
 test('cancel interrupts a request still waiting for headers', async () => {
   const opts = options('pending.mp4', '/waiting')
@@ -110,8 +123,16 @@ test('an overlapping or incomplete resume plan is rejected', () => {
 test('single connection resumes only a correct range', async () => {
   const opts = options('single.mp4', '/file')
   fs.writeFileSync(opts.destPath + '.part', payload.subarray(0, 17777))
+  fs.writeFileSync(opts.destPath + '.part.single', JSON.stringify({ version: 2,
+    resource: crypto.createHash('sha256').update(opts.url).digest('hex'), validator: opts.validator,
+    size: 17777, hash: crypto.createHash('sha256').update(payload.subarray(0, 17777)).digest('hex') }))
+  const before = requests.length
   await own.fetchFile(opts)
   matches(opts.destPath)
+  assert.ok(requests.slice(before).some((req) => req.range === 'bytes=17777-'))
+  const wrong = options('single-wrong.mp4', '/partial')
+  await assert.rejects(own.fetchFile(wrong), /Sürdürme aralığı/)
+  assert.equal(fs.existsSync(wrong.destPath), false)
 })
 
 test('file probes and transfers recompute cookie path scope on same-origin redirects', async () => {
@@ -136,4 +157,58 @@ test('transfer quality selection skips variants already rejected during verifica
   assert.equal(picked.url, base + '/viable')
   assert.equal(picked.height, 720)
   await assert.rejects(own.pickVariant(base + '/master', { rejectedVariantUrls: [base + '/denied', base + '/viable'] }, 1080), /geçerli değil/)
+})
+
+test('nested HLS selection preserves child audio scope and bounds cycles/depth', async () => {
+  const picked = await own.pickVariant(base + '/nested-master', {}, 1080, null, '', 'en')
+  assert.deepEqual(picked, { url: base + '/media-leaf', height: 720, audioUrl: base + '/audio-en', audioLanguage: 'en-us' })
+  await assert.rejects(own.pickVariant(base + '/cycle-master'), /döngü/)
+  await assert.rejects(own.pickVariant(base + '/depth/0'), /sınır/)
+})
+
+test('prepared verified HLS leaves preserve quality and audio without fetching unverified branches', async () => {
+  const before = requests.length
+  const preparedVariants = [{ url: base + '/nested-master', mediaUrl: base + '/verified-leaf', height: 720,
+    audioTracks: [{ url: base + '/tr', lang: 'tr', default: true }, { url: base + '/en', lang: 'en-US' }] }]
+  const picked = await own.pickVariant(base + '/master', { preparedVariants }, 1080, null, '', 'en')
+  assert.deepEqual(picked, { url: base + '/verified-leaf', height: 720, audioUrl: base + '/en', audioLanguage: 'en-US' })
+  assert.equal(requests.length, before)
+})
+
+test('direct simultaneous transfers ignore a configured active proxy and ambient proxy variables', async () => {
+  let proxyBytes = 0
+  const clients = new Set()
+  const proxyServer = http.createServer()
+  proxyServer.on('connect', (_req, client, head) => {
+    clients.add(client); client.on('error', () => {}); client.once('close', () => clients.delete(client))
+    const remote = net.connect(server.address().port, '127.0.0.1', () => {
+      client.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+      if (head.length) { proxyBytes += head.length; remote.write(head) }
+      client.on('data', (chunk) => { proxyBytes += chunk.length })
+      client.pipe(remote).pipe(client)
+    })
+    remote.on('error', () => client.destroy()); client.once('close', () => remote.destroy())
+  })
+  await new Promise((resolve) => proxyServer.listen(0, '127.0.0.1', resolve))
+  const proxy = `http://127.0.0.1:${proxyServer.address().port}`
+  const inherited = Object.fromEntries(['http_proxy', 'https_proxy', 'ALL_PROXY'].map((key) => [key, process.env[key]]))
+  try {
+    await own.probeVia(base + '/file', {}, proxy)
+    assert.ok(proxyBytes > 0, 'the control request proves that this live proxy works')
+    const before = proxyBytes
+    for (const key of Object.keys(inherited)) process.env[key] = proxy
+    const transfer = (index) => own.transfer({
+      download: { id: `direct-${index}`, url: base + '/file', title: `direct-${index}`, useProxy: false, resolved: { kind: 'file' } },
+      settings: { proxyUrl: proxy, downloadDir: root, connections: 4 },
+      onProgress() {}, onHandle() {}, onNote() {},
+    })
+    const outputs = await Promise.all([transfer(1), transfer(2)])
+    outputs.forEach((output) => matches(output.filePath))
+    assert.equal(proxyBytes, before, 'neither direct transfer sent any bytes to the active proxy')
+  } finally {
+    for (const [key, value] of Object.entries(inherited)) value === undefined ? delete process.env[key] : process.env[key] = value
+    require('../electron/lib/proxy').releaseAgents(proxy)
+    for (const client of clients) client.destroy()
+    await new Promise((resolve) => proxyServer.close(resolve))
+  }
 })

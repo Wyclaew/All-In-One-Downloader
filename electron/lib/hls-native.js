@@ -83,32 +83,38 @@ function parseMediaPlaylist(text, baseUrl) {
   return { segments, duration: segments.reduce((sum, s) => sum + s.duration, 0) }
 }
 
-async function requestBytes(url, resolved, { proxy, signal, range, maxBytes = MAX_FRAGMENT, onBytes, onResponse, limit } = {}) {
+async function requestBytes(url, resolved, { proxy, signal, range, maxBytes = MAX_FRAGMENT, onBytes, onResponse, limit, maximum = 8 } = {}) {
   const { openStream } = require('./ownengine')
   const headers = { ...fetchHeaders(url, resolved), 'Accept-Encoding': 'identity' }
   if (range) headers.Range = `bytes=${range.start}-${range.end}`
-  const res = await openStream(url, headers, { proxy, signal, resolved })
+  const permit = await require('./host-budget').acquire(url, { proxy, signal, maximum })
+  let res, failure = null
   try {
+    res = await openStream(url, headers, { proxy, signal, resolved })
     onResponse?.(res)
     if (res.status !== 200 && res.status !== 206) throw httpError(res.status, res.headers)
+    if (res.headers['content-encoding'] && res.headers['content-encoding'] !== 'identity') throw unsupported('Parça yanıtı beklenmeyen içerik kodlaması kullandı.')
+    const returned = String(res.headers['content-range'] || '').match(/^bytes (\d+)-(\d+)\/(\d+|\*)$/i)
     if (range) {
-      const returned = String(res.headers['content-range'] || '').match(/^bytes (\d+)-(\d+)\/(\d+|\*)$/i)
       if (res.status !== 206 || !returned || Number(returned[1]) !== range.start || Number(returned[2]) !== range.end) throw unsupported('HLS sunucusu yanlış bayt aralığı döndürdü.')
+    } else if (res.status === 206 && (!returned || Number(returned[1]) !== 0 || !Number.isSafeInteger(Number(returned[3])) || Number(returned[2]) + 1 !== Number(returned[3]))) {
+      throw unsupported('Sunucu tam parça yerine eksik bayt aralığı döndürdü.')
     }
     const declared = Number(res.headers['content-length']) || 0
-    if (declared > maxBytes) throw unsupported('HLS parçası boyut sınırını aştı.')
+    if (!Number.isSafeInteger(declared) || declared < 0 || declared > maxBytes) throw unsupported('Parça boyut sınırını aştı.')
     let size = 0
     const chunks = []
     for await (const chunk of res.stream) {
       if (signal?.aborted) throw stopped()
       size += chunk.length
-      if (size > maxBytes) throw unsupported('HLS parçası boyut sınırını aştı.')
+      if (size > maxBytes) throw unsupported('Parça boyut sınırını aştı.')
       if (limit) await limit(chunk.length)
       chunks.push(chunk); onBytes?.(size, declared)
     }
-    if (!size || declared && size !== declared || range && size !== range.end - range.start + 1) throw Object.assign(new Error('HLS parçası eksik indi.'), { code: 'ECONNRESET' })
+    if (!size || declared && size !== declared || range && size !== range.end - range.start + 1) throw Object.assign(new Error('Parça eksik indi.'), { code: 'ECONNRESET' })
     return Buffer.concat(chunks)
-  } finally { res.request.destroy() }
+  } catch (error) { failure = error; throw error }
+  finally { res?.request.destroy(); permit.release(failure) }
 }
 
 function decryptSegment(bytes, key) {
@@ -137,7 +143,7 @@ function cleanCache(destPath) {
 }
 
 async function transferHls({ url, audioUrl = null, audioLanguage = null, resolved, destPath, download, settings,
-  proxy = '', signal, onProgress, onHandle, onNote, onStage, limit = null, sampleSegments = 0 }) {
+  proxy = '', signal, onProgress, onHandle, onNote, onStage, limit = null, sampleSegments = 0, preparedTracks = null, mediaLabel = 'HLS', outputDuration = null }) {
   const controller = new AbortController()
   let muxer = null
   const abort = () => { controller.abort(); muxer?.kill('SIGTERM') }
@@ -148,21 +154,26 @@ async function transferHls({ url, audioUrl = null, audioLanguage = null, resolve
   const journalPath = path.join(dir, 'plan.json')
   let ticker = null
   const keys = new Map()
+  const connections = Math.floor(settingNumber(settings.connections, 8, { min: 1, max: 16 }))
   const save = (plan) => atomicWrite(journalPath, JSON.stringify(plan))
   try {
+    let tracks = preparedTracks
+    if (!tracks) {
     const trackUrls = [url, ...(audioUrl ? [audioUrl] : [])]
     let manifestError = null
     const trackResults = await Promise.allSettled(trackUrls.map(async (trackUrl) => {
       try {
       let finalUrl = trackUrl
-      const bytes = await requestBytes(trackUrl, resolved, { proxy, signal: controller.signal, maxBytes: 2 * 1024 * 1024, onResponse: (r) => { finalUrl = r.finalUrl || trackUrl } })
+      const bytes = await requestBytes(trackUrl, resolved, { proxy, signal: controller.signal, maxBytes: 2 * 1024 * 1024, maximum: connections, onResponse: (r) => { finalUrl = r.finalUrl || trackUrl } })
       const track = parseMediaPlaylist(bytes.toString('utf8'), finalUrl)
       if (sampleSegments > 0) { track.segments = track.segments.slice(0, Math.min(3, sampleSegments)); track.duration = track.segments.reduce((sum, s) => sum + s.duration, 0) }
       return track
       } catch (err) { manifestError ||= err; controller.abort(); throw err }
     }))
     if (manifestError) throw manifestError
-    const tracks = trackResults.map((r) => r.value)
+    tracks = trackResults.map((r) => r.value)
+    }
+    if (!tracks.length || tracks.some((track) => !track.segments?.length || !(track.duration > 0))) throw unsupported('Parça listesi boş veya süresi geçersiz.')
     const tasks = []
     tracks.forEach((track, trackIndex) => {
       const maps = new Map()
@@ -229,11 +240,10 @@ async function transferHls({ url, audioUrl = null, audioLanguage = null, resolve
     }
     ticker = setInterval(() => report(), 500)
     const remaining = tasks.filter((task) => !plan.completed[task.index])
-    onNote?.(`${remaining.length}/${tasks.length} HLS parçası alınacak; tamamlanan parçalar korunuyor`)
-    const connections = Math.floor(settingNumber(settings.connections, 8, { min: 1, max: 16 }))
+    onNote?.(`${remaining.length}/${tasks.length} ${mediaLabel} parçası alınacak; tamamlanan parçalar korunuyor`)
     let cursor = 0, firstError = null
     const loadKey = (key) => {
-      if (!keys.has(key.url)) keys.set(key.url, requestBytes(key.url, resolved, { proxy, signal: controller.signal, maxBytes: 16 }).then((bytes) => {
+      if (!keys.has(key.url)) keys.set(key.url, requestBytes(key.url, resolved, { proxy, signal: controller.signal, maxBytes: 16, maximum: connections }).then((bytes) => {
         if (bytes.length !== 16) throw new Error('HLS anahtarı geçersiz.')
         return bytes
       }).catch((err) => { keys.delete(key.url); throw err }))
@@ -245,7 +255,7 @@ async function transferHls({ url, audioUrl = null, audioLanguage = null, resolve
         for (let attempt = 0; ; attempt += 1) {
           try {
             let received = 0
-            const bytes = await requestBytes(task.url, resolved, { proxy, signal: controller.signal, range: task.range, limit,
+            const bytes = await requestBytes(task.url, resolved, { proxy, signal: controller.signal, range: task.range, limit, maximum: connections,
               onBytes: (done, size) => { wireBytes += done - received; received = done; active.set(task.index, { done, size: size || done }); report() } })
             let data = decryptSegment(bytes, task.key ? { ...task.key, bytes: await loadKey(task.key) } : null)
             if (/^\s*(?:<!doctype|<html|\{\s*"(?:error|message)")/i.test(data.subarray(0, 200).toString('utf8'))) throw Object.assign(new Error('Akış adresi geçmiş; HLS sunucusu video yerine hata sayfası döndürdü.'), { status: 403 })
@@ -261,7 +271,7 @@ async function transferHls({ url, audioUrl = null, audioLanguage = null, resolve
             if (controller.signal.aborted) throw stopped()
             const kind = failureKind(err)
             if (!['network', 'busy'].includes(kind) || attempt >= 3) throw err
-            onNote?.(`HLS parçası yeniden deneniyor (${attempt + 1}/3)`)
+            onNote?.(`${mediaLabel} parçası yeniden deneniyor (${attempt + 1}/3)`)
             await sleep(retryDelay(attempt, kind, err.retryAfter), controller.signal)
           }
         }
@@ -271,6 +281,7 @@ async function transferHls({ url, audioUrl = null, audioLanguage = null, resolve
     save(plan)
     if (firstError) throw firstError
     if (controller.signal.aborted) throw stopped()
+    if (tasks.some((task) => !plan.completed[task.index])) throw new Error('Video parçaları eksik indi; yerel birleştirme yapılmadı.')
     report(true)
     clearInterval(ticker); ticker = null
     // The locally generated playlists contain no remote/key URI. FFmpeg is
@@ -288,11 +299,13 @@ async function transferHls({ url, audioUrl = null, audioLanguage = null, resolve
       const local = path.join(dir, `track-${trackIndex}.m3u8`)
       await fsp.writeFile(local, lines.join('\n') + '\n'); localTracks.push(local)
     }
-    onStage?.('processing'); onNote?.('HLS parçaları yerel olarak birleştiriliyor')
+    onStage?.('processing'); onNote?.(`${mediaLabel} parçaları yerel olarak birleştiriliyor`)
     const bin = ffmpegPath()
     if (!bin) throw new Error('Parçaları birleştirmek için ffmpeg bulunamadı.')
+    const inputBytes = Object.values(plan.completed).reduce((sum, record) => sum + record.size, 0)
+    require('./disk-space').assertSpace(path.dirname(destPath), { requiredBytes: inputBytes, reserveBytes: 64 * 1024 * 1024 })
     const extraHls = await pickyOption(bin) ? ['-extension_picky', '0'] : []
-    const args = ['-hide_banner', '-v', 'error', '-nostdin', '-y']
+    const args = ['-hide_banner', '-v', 'warning', '-nostdin', '-y']
     // bin is a generated local filename; whitelist the media demuxer formats as
     // well as file access, never accept arbitrary remote manifest protocols.
     for (const local of localTracks) args.push('-protocol_whitelist', 'file', '-format_whitelist', 'hls,mov,mpegts,aac,ac3,eac3', '-allowed_extensions', 'bin', ...extraHls, '-i', local)
@@ -308,16 +321,17 @@ async function transferHls({ url, audioUrl = null, audioLanguage = null, resolve
     const mux = { mkv: 'matroska', mp4: 'mp4', m4a: 'ipod', mp3: 'mp3', opus: 'opus', flac: 'flac', wav: 'wav' }[ext] || 'mp4'
     if (mux === 'mp4') args.push('-movflags', '+faststart')
     const work = `${destPath}.part`
+    if (outputDuration > 0) args.push('-t', String(outputDuration))
     args.push('-f', mux, work)
     if (controller.signal.aborted) throw stopped()
     await new Promise((resolve, reject) => {
-      let stderr = ''
+      let stderr = '', integrityError = null
       muxer = spawn(bin, args, { env: toolEnv(), windowsHide: true })
       onHandle?.(muxer)
       const timeout = setTimeout(() => muxer.kill('SIGKILL'), 900000)
-      muxer.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-3000) })
+      muxer.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-3000); integrityError ||= require('./ownengine').muxIntegrityIssue(stderr) })
       muxer.on('error', (err) => { clearTimeout(timeout); reject(err) })
-      muxer.on('close', (code) => { clearTimeout(timeout); controller.signal.aborted ? reject(stopped()) : code === 0 ? resolve() : reject(new Error(stderr.trim() || 'HLS birleştirme başarısız.')) })
+      muxer.on('close', (code) => { clearTimeout(timeout); controller.signal.aborted ? reject(stopped()) : integrityError ? reject(integrityError) : code === 0 ? resolve() : reject(new Error(stderr.trim() || 'HLS birleştirme başarısız.')) })
     })
     if (controller.signal.aborted || signal?.aborted) throw stopped()
     if (!(await fsp.stat(work)).size) throw new Error('HLS çıktısı boş.')

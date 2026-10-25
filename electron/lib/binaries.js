@@ -65,7 +65,12 @@ function toolEnv() {
   const merged = [...bundledDirs(), ...current, ...extraDirs()]
   const seen = new Set()
   const parts = merged.filter((d) => d && !seen.has(d) && seen.add(d))
-  return { ...process.env, PATH: parts.join(sep) }
+  const env = { ...process.env, PATH: parts.join(sep) }
+  // Routing belongs to the individual source. Shell/launcher proxy variables
+  // must neither send direct jobs into a proxy nor bypass an explicit one via
+  // NO_PROXY. Callers add the selected proxy explicitly after this baseline.
+  for (const key of Object.keys(env)) if (/^(?:(?:https?|all|ftp|no)_proxy|NODE_USE_ENV_PROXY)$/i.test(key)) delete env[key]
+  return env
 }
 
 function isExecutable(p) {
@@ -92,51 +97,45 @@ function locate(name) {
   return null
 }
 
-function runVersion(binPath, args) {
+function inspectTool(binPath, args) {
   return new Promise((resolve) => {
     execFile(binPath, args, { env: toolEnv(), timeout: 12000, windowsHide: true }, (err, stdout, stderr) => {
-      if (err) return resolve(null)
-      const out = String(stdout || stderr || '').trim()
-      resolve(out.split('\n')[0] || null)
+      const output = String(stdout || stderr || '').trim()
+      const runnable = !err && !!output
+      resolve({ path: binPath, version: runnable ? output.split('\n')[0].slice(0, 300) : null, runnable,
+        error: runnable ? null : err?.killed ? 'Araç yanıt vermedi. Kurulumu kontrol edip yeniden denetle.' : 'Araç bulundu ancak çalıştırılamadı. Kurulumu kontrol edip yeniden denetle.' })
     })
   })
 }
 
-let cache = null
+let cache = null, checking = null
 
-/** { ytdlp: {path, version} | null, ffmpeg: {path, version} | null } */
 async function detectTools({ force = false } = {}) {
   if (cache && !force) return cache
-  const ytdlpPath = locate('yt-dlp')
-  const ffmpegPath = locate('ffmpeg')
-  // ffprobe ships beside ffmpeg; fall back to the same directory if PATH misses it.
-  let ffprobeFound = locate('ffprobe')
-  if (!ffprobeFound && ffmpegPath) {
-    const sibling = path.join(path.dirname(ffmpegPath), `ffprobe${EXE}`)
-    if (isExecutable(sibling)) ffprobeFound = sibling
-  }
-  const [ytdlpVersion, ffmpegVersion] = await Promise.all([
-    ytdlpPath ? runVersion(ytdlpPath, ['--version']) : Promise.resolve(null),
-    ffmpegPath ? runVersion(ffmpegPath, ['-version']) : Promise.resolve(null),
-  ])
-  cache = {
-    ytdlp: ytdlpPath ? { path: ytdlpPath, version: ytdlpVersion } : null,
-    ffmpeg: ffmpegPath
-      ? {
-          path: ffmpegPath,
-          version: (ffmpegVersion || '').replace(/^ffmpeg version\s*/i, '').split(' ')[0] || null,
-        }
-      : null,
-    ffprobe: ffprobeFound ? { path: ffprobeFound } : null,
-    platform: process.platform,
-    installHint: IS_WIN
-      ? 'winget install yt-dlp.yt-dlp ; winget install Gyan.FFmpeg'
-      : 'brew install yt-dlp ffmpeg',
-  }
-  return cache
+  if (checking) return checking
+  checking = (async () => {
+    const ytdlpPath = locate('yt-dlp'), ffmpegFound = locate('ffmpeg')
+    let ffprobeFound = locate('ffprobe')
+    if (!ffprobeFound && ffmpegFound) {
+      const sibling = path.join(path.dirname(ffmpegFound), `ffprobe${EXE}`)
+      if (isExecutable(sibling)) ffprobeFound = sibling
+    }
+    const [ytdlp, ffmpeg, ffprobe] = await Promise.all([
+      ytdlpPath ? inspectTool(ytdlpPath, ['--version']) : null,
+      ffmpegFound ? inspectTool(ffmpegFound, ['-version']) : null,
+      ffprobeFound ? inspectTool(ffprobeFound, ['-version']) : null,
+    ])
+    if (ffmpeg?.version) ffmpeg.version = ffmpeg.version.replace(/^ffmpeg version\s*/i, '').split(' ')[0]
+    if (ffprobe?.version) ffprobe.version = ffprobe.version.replace(/^ffprobe version\s*/i, '').split(' ')[0]
+    cache = { ytdlp, ffmpeg, ffprobe, platform: process.platform,
+      installHint: IS_WIN ? 'winget install yt-dlp.yt-dlp ; winget install Gyan.FFmpeg' : 'brew install yt-dlp ffmpeg' }
+    return cache
+  })()
+  try { return await checking } finally { checking = null }
 }
 
 function ytdlpPathOrThrow() {
+  if (cache?.ytdlp?.runnable === false) { const err = new Error('yt-dlp bulundu ancak çalıştırılamıyor. Ayarlar → Araçlar bölümünü kontrol et.'); err.code = 'NO_YTDLP'; throw err }
   const p = cache && cache.ytdlp ? cache.ytdlp.path : locate('yt-dlp')
   if (!p) {
     const err = new Error('yt-dlp bulunamadı')
@@ -147,10 +146,12 @@ function ytdlpPathOrThrow() {
 }
 
 function ffmpegPath() {
+  if (cache?.ffmpeg?.runnable === false) return null
   return cache && cache.ffmpeg ? cache.ffmpeg.path : locate('ffmpeg')
 }
 
 function ffprobePath() {
+  if (cache?.ffprobe?.runnable === false) return null
   if (cache && cache.ffprobe) return cache.ffprobe.path
   const direct = locate('ffprobe')
   if (direct) return direct
@@ -168,8 +169,8 @@ function updateYtdlp() {
     let bin
     try {
       bin = ytdlpPathOrThrow()
-    } catch {
-      return resolve({ ok: false, message: 'yt-dlp bulunamadı.' })
+    } catch (err) {
+      return resolve({ ok: false, message: err.message || 'yt-dlp bulunamadı.' })
     }
     execFile(bin, ['-U'], { env: toolEnv(), timeout: 120000, windowsHide: true }, async (err, stdout, stderr) => {
       const out = `${stdout || ''}${stderr || ''}`.trim()
@@ -177,9 +178,9 @@ function updateYtdlp() {
       if (err && !out) return resolve({ ok: false, message: 'Güncelleme çalıştırılamadı.' })
       const managed = /not.*writable|Permission denied|installed by/i.test(out)
       resolve({
-        ok: !managed,
+        ok: !err && !managed,
         message: managed
-          ? 'Bu yt-dlp bir paket yöneticisiyle kurulmuş. Terminalden güncelle: brew upgrade yt-dlp'
+          ? `Bu yt-dlp bir paket yöneticisiyle kurulmuş. ${IS_WIN ? 'Kurulum yaptığın paket yöneticisinden güncelle.' : 'Terminalden güncelle: brew upgrade yt-dlp'}`
           : out.split('\n').slice(-2).join(' ') || 'Güncel.',
       })
     })

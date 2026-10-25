@@ -19,6 +19,8 @@ const { formatSelector, rankCandidates, languageCode } = require('./media-prefer
 const { TransferStats } = require('./transfer-stats')
 const { locateDownload } = require('./locate')
 const network = require('./network-context')
+const queueOrder = require('./queue-order')
+const disk = require('./disk-space')
 
 const TAG = '@P@'
 const PROGRESS_TEMPLATE =
@@ -30,6 +32,7 @@ const PROGRESS_TEMPLATE =
 const jobs = new Map()
 const progressLastSent = new Map()
 const retryTimers = new Map()
+let pumping = false
 
 function activeCount() {
   return store.getState().downloads.filter((d) => d.status === 'running').length
@@ -108,7 +111,8 @@ function buildArgs(download, settings, printFile) {
 
   // Per download, because the link decided this, not the app.
   const proxy = proxyFor(download, settings)
-  if (proxy) args.push('--proxy', proxy)
+  // Empty explicitly disables yt-dlp's environment/OS proxy discovery.
+  args.push('--proxy', proxy)
 
   if (download.resolved) {
     // The page's own headers and cookies; a browser-profile cookie jar would be
@@ -219,7 +223,7 @@ function outlook() {
   const state = store.getState()
   const slots = Math.max(1, Number(state.settings.concurrency) || 1)
   const running = state.downloads.filter((d) => d.status === 'running' && d.stage === 'downloading')
-  const queued = state.downloads.filter((d) => d.status === 'queued')
+  const queued = queueOrder.queuedInOrder(state.downloads)
   if (!running.length) return null
 
   const lineSpeed = running.reduce((sum, d) => sum + (Number(d.speed) > 0 ? Number(d.speed) : 0), 0)
@@ -466,6 +470,7 @@ function deletePartials(job, settings) {
   for (const c of job.destinations) {
     const abs = path.isAbsolute(c) ? c : path.resolve(settings.downloadDir, c)
     require('./hls-native').cleanCache(abs)
+    require('./dash-native').cleanCache(abs)
     for (const p of [`${abs}.part`, `${abs}.ytdl`, `${abs}.part.parts`, `${abs}.part.single`, abs]) {
       try {
         fs.unlinkSync(p)
@@ -543,7 +548,11 @@ function settle(job, download, settings, outcome) {
   // job. Without this the second call overwrites the first, specific message
   // ("spawn ENOENT") with the generic one derived from an empty stderr.
   if (job.settled) return
+  if (!outcome.canceled && (outcome.raw?.code === 'ENOSPC' || /ENOSPC|no space left|disk full/i.test(outcome.error || ''))) {
+    outcome.paused = true; job.paused = true; job.pauseReason ||= outcome.error || 'Disk doldu. Yer açıp indirmeyi sürdürebilirsin.'
+  }
   job.settled = true
+  clearInterval(job.diskWatch)
   clearInterval(job.watchdog)
   jobs.delete(download.id)
 
@@ -566,7 +575,7 @@ function settle(job, download, settings, outcome) {
     store.commit(() => {
       download.status = 'paused'
       download.stage = null
-      download.note = null
+      download.note = job.pauseReason || null
       download.speed = null
       download.eta = null
     })
@@ -645,13 +654,21 @@ async function completeJob(job, download, settings, filePath) {
   if (job.paused) return settle(job, download, settings, { paused: true })
   if (!filePath || !fs.existsSync(filePath)) return settle(job, download, settings, { ok: true, filePath })
   try {
+    store.commit(() => { download.stage = 'processing'; download.speed = null; download.eta = null; download.note = 'Ses ve altyazılar hazırlanıyor…' })
+    const selected = await require('./audio-selection').selectAudio(filePath, download.preferredAudioLanguage || settings.preferredAudioLanguage || 'en', {
+      onHandle: (child) => { job.child = child }, isStopped: () => job.paused || job.canceled,
+    })
+    download.audioLanguage = selected.language || null
+    download.audioWarning = selected.warning || null
+    download.audioAvailableLanguages = selected.availableLanguages || []
+    if (selected.warning) store.toast(`${download.title}: ${selected.warning}`, 'warn')
+    const wanted = languageCode(download.preferredAudioLanguage)
+    if (download.audioSelectionExplicit && wanted && wanted !== 'auto' &&
+        (selected.availableLanguages?.length && !selected.availableLanguages.includes(wanted) || selected.language && languageCode(selected.language) !== wanted)) {
+      const available = selected.availableLanguages?.includes(wanted)
+      throw Object.assign(new Error(`İstenen ${wanted === 'tr' ? 'Türkçe' : 'İngilizce'} ses ${available ? 'dosyada var ancak seçilemedi. Araçları kontrol edip yeniden dene.' : 'bu dosyada bulunamadı. Başka bir kaynak seç veya ses seçimini değiştir.'}`), { code: 'AUDIO_LANGUAGE_UNAVAILABLE' })
+    }
     if (!download.audioOnly) {
-      store.commit(() => { download.stage = 'processing'; download.speed = null; download.eta = null; download.note = 'Ses ve altyazılar hazırlanıyor…' })
-      const selected = await require('./audio-selection').selectAudio(filePath, download.preferredAudioLanguage || settings.preferredAudioLanguage || 'en', {
-        onHandle: (child) => { job.child = child }, isStopped: () => job.paused || job.canceled,
-      })
-      if (selected.language) download.audioLanguage = selected.language
-      if (selected.warning) store.toast(`${download.title}: ${selected.warning}`, 'warn')
       if (!job.paused && !job.canceled && settings.writeSubs) {
         const { found, saved, embedded } = await fetchStreamSubtitles(download, filePath, settings, job).catch((err) => {
           store.toast(`Altyazı eklenemedi: ${err.message}`, 'warn')
@@ -713,7 +730,7 @@ async function prepareRecovery(download, settings, job) {
     store.commit(() => { download.note = 'Akış adresi yenileniyor…' })
     const { resolvePage } = require('./resolver')
     const { exportCookieJar } = require('./browsers')
-    let jar = settings.cookiesBrowser ? await exportCookieJar(settings.cookiesBrowser).catch(() => null) : null
+    let jar = settings.cookiesBrowser ? await exportCookieJar(settings.cookiesBrowser, { signal: job.abort.signal }).catch(() => null) : null
     if (!jar && download.resolved.cookieFile && fs.existsSync(download.resolved.cookieFile)) jar = download.resolved.cookieFile
     const result = await resolvePage(download.resolved.pageUrl, {
       browserCookieJar: jar, proxy: proxyFor(download, settings), signal: job.abort.signal,
@@ -732,7 +749,9 @@ async function prepareRecovery(download, settings, job) {
       download.resolved = { ...download.resolved, referer: candidate.referer || download.resolved.pageUrl,
         origin: candidate.origin || '', userAgent: candidate.userAgent || result.userAgent,
         cookieFile: candidate.cookieFile || null, kind: candidate.kind,
-        selectedVariantUrl: candidate.info?.selectedVariantUrl || null, rejectedVariantUrls: candidate.info?.rejectedVariantUrls || [] }
+        selectedVariantUrl: candidate.info?.selectedVariantUrl || null, rejectedVariantUrls: candidate.info?.rejectedVariantUrls || [],
+        selectedVariantChain: candidate.info?.selectedVariantChain?.slice(0, 4) || [],
+        preparedVariants: candidate.info?.preparedVariants?.slice(0, 8) || [] }
       download.streamSubtitles = require('./text-tracks').mergeTextTracks(candidate.info?.subtitles || [], candidate.subtitles || [])
       download.streamAudioTracks = candidate.info?.audioTracks || []
       download.refreshPending = false
@@ -741,6 +760,36 @@ async function prepareRecovery(download, settings, job) {
     })
   }
   if (job.paused || job.canceled) throw Object.assign(new Error('Aktarım durduruldu.'), { code: 'ABORTED' })
+}
+
+function prepareStorage(download, settings, job) {
+  if (settings.protectDiskSpace === false) return
+  const reserveBytes = settingNumber(settings.diskReserveMB, 256, { min: 64, max: 4096 }) * disk.MiB
+  const check = (preflight) => {
+    try {
+      disk.assertSpace(settings.downloadDir, { reserveBytes,
+        requiredBytes: preflight && !download.pendingFilePath ? Math.max(0, (download.expectedSize || 0) - (download.downloaded || 0)) : 0 })
+    } catch (err) {
+      job.pauseReason = err.message
+      job.paused = true
+      job.abort.abort()
+      try { job.child?.kill('SIGTERM') } catch {}
+      throw err
+    }
+  }
+  check(true)
+  job.diskWatch = setInterval(() => {
+    if (job.settled || job.canceled || job.paused) return
+    try { check(false) } catch { store.toast(job.pauseReason, 'warn') }
+  }, 3000)
+  job.diskWatch.unref?.()
+}
+
+function prioritize(id) {
+  let changed = false
+  store.commit((state) => { changed = queueOrder.bringToFront(state.downloads, id) })
+  if (changed) { broadcastOutlook(); pump_queue() }
+  return changed
 }
 
 function start(downloadId) {
@@ -760,13 +809,14 @@ function start(downloadId) {
 
   if (download.pendingFilePath && fs.existsSync(download.pendingFilePath)) {
     const job = beginJob(download)
+    try { prepareStorage(download, settings, job) } catch (err) { return settle(job, download, settings, { paused: job.paused, error: err.message, raw: err }) }
     job.destinations.add(download.pendingFilePath)
     prepareNetwork(download, settings, job)
       .then((effective) => completeJob(job, download, effective, download.pendingFilePath))
       .catch((err) => settle(job, download, settings, { paused: job.paused, canceled: job.canceled, error: err.message, raw: err }))
     return
   }
-  if (settings.useYtdlp === false || (download.resolved?.kind === 'hls' && settings.nativeHls !== false) || (download.resolved?.kind === 'file' && !download.audioOnly && !settings.rateLimit)) return startOwn(download, settings)
+  if (settings.useYtdlp === false || (download.resolved?.kind === 'hls' && settings.nativeHls !== false) || (download.resolved?.kind === 'dash' && settings.nativeDash !== false) || (download.resolved?.kind === 'file' && !download.audioOnly && !settings.rateLimit)) return startOwn(download, settings)
   return startYtdlp(download, settings)
 }
 
@@ -776,7 +826,7 @@ function start(downloadId) {
  */
 async function startOwn(download, settings) {
   const job = beginJob(download)
-  try { settings = await prepareNetwork(download, settings, job); await prepareRecovery(download, settings, job) } catch (err) {
+  try { prepareStorage(download, settings, job); settings = await prepareNetwork(download, settings, job); await prepareRecovery(download, settings, job) } catch (err) {
     return settle(job, download, settings, { paused: job.paused, canceled: job.canceled, error: err.message, raw: err })
   }
 
@@ -841,7 +891,7 @@ async function startYtdlp(download, settings) {
   }
 
   const job = beginJob(download)
-  try { settings = await prepareNetwork(download, settings, job); await prepareRecovery(download, settings, job) } catch (err) {
+  try { prepareStorage(download, settings, job); settings = await prepareNetwork(download, settings, job); await prepareRecovery(download, settings, job) } catch (err) {
     return settle(job, download, settings, { paused: job.paused, canceled: job.canceled, error: err.message, raw: err })
   }
   const args = buildArgs(download, settings, job.printFile)
@@ -895,6 +945,7 @@ async function startYtdlp(download, settings) {
       const requeue = (reason) => {
         if (job.settled) return
         job.settled = true
+        clearInterval(job.diskWatch)
         clearInterval(job.watchdog)
         jobs.delete(download.id)
         cleanupTemp(job)
@@ -1121,17 +1172,23 @@ async function autoSubtitles(download, filePath, settings) {
 
 /** Start queued transfers up to the concurrency limit. */
 function pump_queue() {
+  if (pumping) return
   const state = store.getState()
   const limit = Math.max(1, Number(state.settings.concurrency) || 1)
   let free = limit - activeCount()
   if (free <= 0) return
-  for (const d of state.downloads) {
-    if (free <= 0) break
-    if (d.status === 'queued' && !jobs.has(d.id) && (!d.retryAt || d.retryAt <= Date.now())) {
-      start(d.id)
-      free -= 1
+  pumping = true
+  try {
+    for (const d of queueOrder.queuedInOrder(state.downloads)) {
+      if (free <= 0) break
+      if (d.status === 'queued' && !jobs.has(d.id) && (!d.retryAt || d.retryAt <= Date.now())) {
+        start(d.id)
+        // Storage preflight can settle synchronously. Do not recurse through
+        // the whole queue or count an already paused job as an occupied slot.
+        free = limit - activeCount()
+      }
     }
-  }
+  } finally { pumping = false }
 }
 
 /**
@@ -1157,8 +1214,13 @@ function expectedSizeFor(item, quality, audioOnly) {
 }
 
 /** Create a download for a media item (or plain URL) and queue it. */
-function enqueue({ item, url, title, site, sourceId, quality, audioOnly, categoryId }) {
+function enqueue({ item, url, title, site, sourceId, quality, audioOnly, categoryId, preferredAudioLanguage }) {
   const settings = store.getState().settings
+  const chosenLanguage = preferredAudioLanguage ?? settings.preferredAudioLanguage ?? 'en'
+  if (!['en', 'tr', 'auto'].includes(chosenLanguage)) throw new Error('Ses dili Türkçe, İngilizce veya kaynağın varsayılanı olmalı.')
+  const chosenQuality = quality === undefined ? settings.defaultQuality : Number(quality) || 0
+  const duplicate = queueOrder.activeDuplicate(store.getState().downloads, { item, url, sourceId, quality: chosenQuality, audioOnly, preferredAudioLanguage: chosenLanguage })
+  if (duplicate) { store.toast('Bu video aynı kalite ve ses tercihiyle zaten kuyrukta.', 'info'); return duplicate }
   const download = {
     id: uid('dl'),
     itemId: item ? item.id : null,
@@ -1170,17 +1232,21 @@ function enqueue({ item, url, title, site, sourceId, quality, audioOnly, categor
     duration: item ? item.duration : null,
     resolved: item && item.resolved ? item.resolved : null,
     language: item && item.language ? item.language : null,
-    preferredAudioLanguage: settings.preferredAudioLanguage || 'en',
+    preferredAudioLanguage: chosenLanguage,
+    audioSelectionExplicit: preferredAudioLanguage !== undefined && chosenLanguage !== 'auto',
+    refreshPending: !!(item?.resolved?.pageUrl && chosenLanguage !== 'auto' &&
+      (chosenLanguage !== (settings.preferredAudioLanguage || 'en') || (item?.audioTracks?.length && !item.audioTracks.some((track) => languageCode(track.lang) === chosenLanguage)))),
     series: item?.series || null,
     season: item?.season ?? null,
     episode: item?.episode ?? null,
+    queueOrder: queueOrder.nextOrder(store.getState().downloads),
     recoveryCount: 0,
     retryAt: null,
     streamAudioTracks: item?.audioTracks || [],
     streamSubtitles: (item && item.subtitles) || [],
     // Inherited from the link the user added, and copied here because a download
     // outlives the source row it came from.
-    useProxy: !!(item && store.findSource(item.sourceId) && store.findSource(item.sourceId).useProxy),
+    useProxy: !!(store.findSource(sourceId || item?.sourceId)?.useProxy ?? item?.resolved?.useProxy ?? false),
     quality: quality === undefined ? settings.defaultQuality : Number(quality) || 0,
     audioOnly: !!audioOnly,
     categoryId: categoryId || null,
@@ -1320,6 +1386,7 @@ function settleRemoved(download) {
   const job = jobs.get(download.id)
   if (job) {
     job.settled = true
+    clearInterval(job.diskWatch)
     jobs.delete(download.id)
     deletePartials(job, settings)
     cleanupTemp(job)
@@ -1472,6 +1539,7 @@ function killAll() {
     job.paused = true
     job.abort.abort()
     clearInterval(job.watchdog)
+    clearInterval(job.diskWatch)
     try {
       job.child.kill()
     } catch {
@@ -1484,6 +1552,7 @@ function killAll() {
 module.exports = {
   buildArgs, parseProgressLine, estimateEta, scheduleRecovery,
   enqueue,
+  prioritize,
   start,
   pause,
   resume,
