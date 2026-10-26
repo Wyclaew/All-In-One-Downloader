@@ -73,6 +73,8 @@ app.whenReady().then(async () => {
       accessRequired: result.accessRequired, challengeRequired: result.challengeRequired, failure: result.failure, loadError: result.loadError }))
   }
 }).catch((err) => { console.error(err); process.exitCode = 1 }).finally(() => {
+  require('../../electron/lib/browsers').shutdownCookieJars()
+  require('../../electron/lib/cookie-files').shutdown({ referencedFiles: [] })
   fs.rmSync(profile, { recursive: true, force: true })
   app.quit()
 })

@@ -1,3 +1,112 @@
+# Claude için güncel devir notu — 0.16.0
+
+26 Ekim 2026. Kullanıcı kalan geliştirmelerin tamamlanmasını ve kararlı sürümün
+mevcut uygulamasının üzerine kurulmasını istedi. Bu tur güvenilirlik ve kitaplık
+kullanımına odaklandı; önceki0.15.0 özellikleri korunuyor.
+
+## Değişiklikler
+
+- **Toplu dizi/bölüm düzenleme:** Kitaplıkta seçilen videoların koleksiyon adı,
+  sezonu ve bölüm numaraları düzenlenebilir. Alanı koru/ata/temizle ayrı seçim;
+  başlığa doğal sıralama, mevcut bölüm sırası veya eklenme sırası kullanılabilir.
+  Kaydetmeden önce önizleme zorunlu, stale revision reddedilir. Son düzenleme
+  geri alınabilir; arada değişen metadata üzerine eski değer yazılmaz.
+  Dosya adı/yolu, içerik, kasa veya indirme durumu değiştirilmez. Koleksiyon
+  adıyla arama Home ve Library'de çalışır.
+- **Kitaplıktan video zamanlama kontrolü:** `⋯ → Videonun zamanlamasını kontrol et`.
+  Oyuncu açılmaz; mevcut sınırlı paket analizcisi kullanılır. Aynı anda en çok
+  iki dosya,120sn/96MiB çıktı sınırı. Modal kapanınca veya uygulama çıkınca iptal.
+  Sonuç ancak kayıt/dosya hâlâ aynıysa kaydedilir. Eşzamanlı AAC/görüntü boşluğu
+  ile tek başına normal olabilen VFR kareleri ayrılır. Dosya değiştirilmez.
+  ffprobe için yalnız yerel protokol ve medya demuxer izinleri var; video diye
+  sunulan yerel bir manifest uzak ağa istek yaptıramaz.
+- **İptal güvenilirliği:** Native tek/paralel dosya aktarımında AbortSignal
+  taşınmıyordu; artık başlık/gövde/faz sınırında iptal yazıcıları kapatıyor.
+  İptalden sonra partial hash'i değişmiyor; doğrulanan kısımdan devam testi geçti.
+- **DASH kalan süre:** Çok dönemli videolarda sadece şu anki dönemin ETA'sı
+  gösteriliyordu. Toplam kalan dönemler ve ölçülen aktarım dikkate alınıyor;
+  ısınma/durma sırasında sayı uydurulmuyor. Mevcut15sn socket hareketsizlik
+  kontrolünün gövde başladıktan sonra da çalıştığı fixture ile doğrulandı.
+- **Çerez dosyalarının yaşam döngüsü:** Yeni dosyalar profil karmalı özel OS temp
+  kökünde, sahiplik işaretiyle,0700dizin/0600dosya olarak oluşur. Kitaplık
+  referansı, önbellek veya aktif iş lease'i varsa silinmez. Devredilen sonuç
+  için15dk pay, en çok32cached export/512managed dizin; başlangıç/periyodik/çıkış
+  temizliği var. Startup sweep'ten önce library referansları yüklenir.
+  Resolver giriş/capture ve downloader/native transfer lease'leri tüm süreyi
+  kapsar. Eski/sahipsiz yollar, yabancı içerik ve symlink'ler temizlenmez.
+  Yarım kayıt, kilitli dosya ve geçici Windows dizin silme hatası yeniden denenir.
+  Yeni plaintext cookie dosyaları userData yedeklerine eklenmez.
+- **Eşzamanlı aynı ad koruması:** Native indirmelerde hedef ad atomik `.aio-owner`
+  işaretçisiyle işe ayrılır. Duraklatma/yeniden açılışta aynı iş devam eder; başka
+  dil/kalite işi ayrı ad alır. Yabancı/başka işe ait işaretçi ve mevcut kısmi dosya
+  sahiplenilmez. İptal yalnız kendi hedefini temizler, başarı işaretçiyi kaldırır.
+  yt-dlp ad şablonuna kararlı iş karması eklenir; ses/video/altyazı ara dosyaları
+  da ayrılır. Eski yt-dlp partial adları yeni adla otomatik taşınmaz; varsa eski
+  yarım dosya korunur ve ilk yeni sürüm denemesinde yeniden aktarım gerekebilir.
+- **MKV tanısı:** Sabit paket süresinin arkasına saklanan DTS/PTS sıçramaları
+  artık ses boşluğuyla birlikte aranır. DTS önceliği B-kare sıralamasını ayrı
+  tutar; farklı timestamp saatleri karıştırılmaz. MP4/MKV gerçek araç fixture
+  testi ve normal B-kare sırası testi geçti.
+- **Yeniden tarama oturumu:** Kaynak maddeleri kaldırılmadan önce önceki cookie
+  jar tutulur; ağ hazırlığı ve export dahil tüm akış sonunda lease bırakılır.
+- **Kuyruk tercihi:** Otomatik başlatma kapalıyken tema gibi bir ayarı değiştirmek
+  veya uygulamayı açmak sırayı istemeden başlatmaz. Açıkça başlat/sürdür çalışır.
+- **Kapanış:** Yeni sürüm SIGTERM/SIGINT için normal quit/pause/flush/lock yolunu
+  kullanır; sonraki güncellemelerde süreçler ve kitaplık daha güvenle kapanır.
+
+## Doğrulama
+
+- Son tam tur **254/254 geçti, 0 skip**; typecheck/build/whitespace başarılı.
+- Transfer alt grubu37/37; cookie alt grubu21/21; collections5/5. Bunlar ortak
+  test sayısına dahildir; toplayıp ayrı toplam diye gösterilmemeli.
+- Gerçek Electron collections smoke: karışık adları koruma, doğal bölüm sırası,
+  önizleme, kaydetme, geri alma, değişmeyen dosya yolları,1000×620pencere ve
+  klavye odağı;0renderer hatası.
+- Gerçek Electron media-health smoke: sentetik eksik ses/görüntü aralığı bulundu,
+  özet kaydedildi, dosya yolu aynı,0dış ağ isteği, uygun modal boyutu/0renderer.
+- Gerçek main IPC smoke: kaynak iptal/tekrar, metadata kimliği, rota değiştirme,
+  duplicate/yedek ve otomatik başlatma kapalıyken ayar değişiminde queued kalma.
+- Gerçek Chromium resolver fixture paketi managed capture değişiminden sonra
+  geçti: nested/POST/runtime cookie, farklı oturumlar, typed HLS/DASH ve sınırlar.
+- Son canlı Dizibox/Hdf denemesi bu tur başarılı olmadı: Chromium
+  `ERR_CONNECTION_CLOSED`, yaklaşık 46,5 sn, sıfır aday/aktarılmış segment. Aynı
+  anda bağımsız direct kontrol iki sitede TLS timeout, GitHub API üzerinde DNS
+  timeout verdi. Resolver gerilemesi kanıtlanmadı; bu tur yeni başarılı örnek
+  video iddia edilmemeli. Loglar `/tmp/aio-0160-dizibox-live.log` ve
+  `/tmp/aio-0160-hdf-live.log`. Geçici oturumlar temizlendi.
+- İlk eşzamanlı geliştirme turunda queue fixture20sn yerel bekleme sınırına
+  takıldı; kod dondurulduktan sonra tekli tekrar ve iki ortak247test turu geçti.
+- Mentalist dosyası bu tur eski konumunda yoktu; yeni analizcinin gerçek kullanıcı
+  dosyasında yeniden42boşluk bulduğu söylenmemeli.42boşluk önceki0.15.0 araştırma
+  bulgusudur. Yeni özellik gerçek araçlarla sentetik benzer boşlukta doğrulandı.
+
+## Kalan sınırlar
+
+Canlı kayıt, büyük listelerde sanallaştırma, doğrulanmış CDN alternatifi ve diğer
+uzun vadeli işler [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) içindedir. Bütün
+siteler/DRM/üyelik için koşulsuz garanti verilmez. Gerçek parmak iziyle insan
+kabul testi bu tur yapılmadı; mevcut Secure Enclave yolu değiştirilmedi.
+Mevcut Mentalist dosyası onarılmadı, kullanıcının videoları değiştirilmedi.
+
+## Dosyalar ve tekrar kontrolleri
+
+Yeni: `collections.js`, `cookie-files.js`, `media-inspection.js`, `download-targets.js`,
+`CollectionEditor.tsx`, `MediaHealth.tsx` ve ilgili testler.
+`npm test`, `npm run typecheck`, `npm run build`.
+Electron: `tests/manual/collections-smoke.js`, `media-health-smoke.js`,
+`source-lifecycle.js`, `resolver-fixtures.js`.
+Loglar: `/tmp/aio-016-release-tests.log`, `/tmp/aio-016-final-fixes.log`, `/tmp/aio-016-source-final.log`,
+`/tmp/aio-016-collections-final.log`, `/tmp/aio-016-media-ui.log`,
+`/tmp/aio-016-resolver-fixtures.log`. UI görselleri:
+`/tmp/aio-collections-preview.png`, `/tmp/aio-media-health-ui.png`.
+
+Yayın/kurulum kaydı aşağıya tamamlandıktan sonra eklenecek.0.15.0 tarihçesi
+altta korunur; eski kurulum/commit bilgilerinin yerine bu bölüm esas alınır.
+
+---
+
+# Tarihçe: 0.15.0
+
 # Claude için güncel devir notu — 0.15.0
 
 25 Ekim 2026. **Önce bu bölümü oku; alttaki 0.14.1 kaydı tarihçedir.**

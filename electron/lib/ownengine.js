@@ -32,6 +32,7 @@ const { safeName, settingNumber, atomicWrite } = require('./util')
 const { failureKind, retryDelay, httpError, sleep } = require('./recovery')
 const { TransferStats } = require('./transfer-stats')
 const { languageCode } = require('./media-preferences')
+const targets = require('./download-targets')
 
 const AUDIO_CODECS = {
   mp3: ['libmp3lame', '-q:a', '2'],
@@ -62,14 +63,6 @@ function extensionFor(download, settings, streamUrl, kind) {
   // Copying segments into webm is not possible for h264/aac, which is most of the
   // web; mkv takes anything, mp4 is what people expect. Nothing else is safe.
   return settings.container === 'mkv' ? 'mkv' : 'mp4'
-}
-
-/** A free path in the download folder, so a second run never overwrites the first. */
-function freePath(dir, base, ext) {
-  let candidate = path.join(dir, `${base}.${ext}`)
-  let n = 2
-  while (fs.existsSync(candidate)) candidate = path.join(dir, `${base} (${n++}).${ext}`)
-  return candidate
 }
 
 /* -------------------------------------------------------------------------- */
@@ -405,10 +398,12 @@ async function fetchFileParallel({
   validator = null,
   limit = null,
   proxy = '',
+  signal = null,
   onProgress,
   onHandle,
   onNote,
 }) {
+  if (signal?.aborted) throw abortError()
   const partPath = `${destPath}.part`
   const planPath = planPathFor(partPath)
 
@@ -441,7 +436,10 @@ async function fetchFileParallel({
 
   let stopped = false
   const controller = new AbortController()
-  onHandle({ kill() { stopped = true; controller.abort() } })
+  const stop = () => { stopped = true; controller.abort() }
+  signal?.addEventListener('abort', stop, { once: true })
+  onHandle({ kill: stop })
+  if (signal?.aborted) stop()
   const doneBytes = () => plan.parts.reduce((sum, p) => sum + p.done, 0)
   const stats = new TransferStats(doneBytes())
   let lastAt = 0
@@ -536,6 +534,7 @@ async function fetchFileParallel({
       controller.abort()
     })))
   } finally {
+    signal?.removeEventListener('abort', stop)
     clearInterval(ticker)
     // Writers are closed before the final journal is hashed. A crash journal
     // without a matching prefix hash is safely re-fetched on the next run.
@@ -562,7 +561,8 @@ async function fetchFileParallel({
 /* plain file over HTTP, one connection                                        */
 /* -------------------------------------------------------------------------- */
 
-async function fetchFile({ url, resolved, destPath, validator = null, limit = null, proxy = '', onProgress, onHandle }) {
+async function fetchFile({ url, resolved, destPath, validator = null, limit = null, proxy = '', signal = null, onProgress, onHandle }) {
+  if (signal?.aborted) throw abortError()
   const partPath = `${destPath}.part`
   let already = 0
   try {
@@ -587,120 +587,123 @@ async function fetchFile({ url, resolved, destPath, validator = null, limit = nu
   let stopped = false
   let request = null
   const controller = new AbortController()
-  onHandle({
-    kill() {
-      stopped = true
-      controller.abort()
-      if (request) {
-        try {
-          request.destroy()
-        } catch {
-          /* already gone */
-        }
+  const stop = () => {
+    stopped = true
+    controller.abort()
+    if (request) {
+      try {
+        request.destroy()
+      } catch {
+        /* already gone */
       }
-    },
-  })
-
-  const headers = { ...fetchHeaders(url, resolved), 'Accept-Encoding': 'identity' }
-  if (already > 0) { headers.Range = `bytes=${already}-`; if (validator) headers['If-Range'] = validator }
-
-  // Same client as the parallel path: one place that knows about redirects,
-  // timeouts and proxies, rather than fetch here and http over there.
-  const res = await openStream(url, headers, { proxy, signal: controller.signal, resolved }).catch((err) => {
-    if (stopped) throw abortError()
-    throw err
-  })
-  request = res.request
-  if (res.status !== 200 && res.status !== 206) {
-    request.destroy()
-    throw httpError(res.status, res.headers)
+    }
   }
-
-  // A redirect to a login wall or an error page answers 200 with HTML. Copying
-  // those bytes would produce a .mp4 that is really a web page — saved, listed as
-  // finished, and unplayable.
-  const type = String(res.headers['content-type'] || '').toLowerCase()
-  if (/^(text\/|application\/(x?html|json|xml))/.test(type)) {
-    request.destroy()
-    throw new Error(`Bağlantı video değil, ${type.split(';')[0]} döndürdü — akış adresi geçmiş olabilir.`)
-  }
-
-  // A server that ignores Range restarts the file; keeping the old bytes would
-  // corrupt it, so start over rather than append.
-  let resuming = already > 0 && res.status === 206
-  const returnedRange = String(res.headers['content-range'] || '').match(/^bytes (\d+)-(\d+)\/(\d+)$/i)
-  const declaredLength = res.headers['content-length']
-  if (res.headers['content-encoding'] && res.headers['content-encoding'] !== 'identity'
-    || res.status === 206 && (!returnedRange || Number(returnedRange[1]) !== already
-      || !Number.isSafeInteger(Number(returnedRange[3])) || Number(returnedRange[2]) + 1 !== Number(returnedRange[3])
-      || Number(returnedRange[2]) < already
-      || declaredLength !== undefined && Number(declaredLength) !== Number(returnedRange[2]) - already + 1
-      || validator?.startsWith('"') && res.headers.etag && res.headers.etag !== validator)) {
-    request.destroy()
-    fs.rmSync(partPath, { force: true })
-    throw Object.assign(new Error('Sürdürme aralığı geçersiz.'), { code: 'ECONNRESET' })
-  }
-  if (already > 0 && !resuming) already = 0
-
-  // No Content-Length means no total. Adding what we already have to a zero would
-  // report the part we resumed from as the whole file — a meter stuck at 100%.
-  const declared = Number(res.headers['content-length']) || 0
-  const total = declared ? (resuming ? already + declared : declared) : null
-
-  const out = fs.createWriteStream(partPath, { flags: resuming ? 'a' : 'w' })
-  let downloaded = already
-  let lastAt = Date.now()
-  const stats = new TransferStats(downloaded)
-
-  // Count inside the pipeline rather than on a 'data' listener: subscribing to
-  // 'data' starts the stream flowing before pipeline has hooked up the sink, and
-  // the first chunks go on the floor.
-  const report = () => {
-    const now = Date.now()
-    lastAt = now
-    onProgress({
-      downloaded,
-      total,
-      // Content-Length is a real length, not a guess — say so, so the caller
-      // doesn't second-guess it with an estimate.
-      totalExact: !!total,
-      ...stats.update(downloaded, total),
-      percent: total ? downloaded / total : null,
-    })
-  }
-
-  const meter = new Transform({
-    transform(chunk, _enc, done) {
-      Promise.resolve(limit?.(chunk.length)).then(() => {
-        downloaded += chunk.length
-        if (Date.now() - lastAt >= 400) report()
-        done(null, chunk)
-      }, done)
-    },
-    // A small file can finish inside one reporting window, which would leave the
-    // meter showing nothing at all. Report once more on the way out.
-    flush(done) {
-      report()
-      done()
-    },
-  })
+  signal?.addEventListener('abort', stop, { once: true })
+  onHandle({ kill: stop })
+  if (signal?.aborted) stop()
 
   try {
-    await pipeline(res.stream, meter, out)
-    if (stopped) throw abortError()
-    if (total && downloaded !== total) throw Object.assign(new Error('Dosya eksik indi.'), { code: 'ECONNRESET' })
-    fs.renameSync(partPath, destPath)
-    fs.rmSync(journal, { force: true })
-    return destPath
-  } catch (err) {
-    // pipeline has closed its writer before a pause/error journal is hashed.
+    const headers = { ...fetchHeaders(url, resolved), 'Accept-Encoding': 'identity' }
+    if (already > 0) { headers.Range = `bytes=${already}-`; if (validator) headers['If-Range'] = validator }
+
+    // Same client as the parallel path: one place that knows about redirects,
+    // timeouts and proxies, rather than fetch here and http over there.
+    const res = await openStream(url, headers, { proxy, signal: controller.signal, resolved }).catch((err) => {
+      if (stopped) throw abortError()
+      throw err
+    })
+    request = res.request
+    if (res.status !== 200 && res.status !== 206) {
+      request.destroy()
+      throw httpError(res.status, res.headers)
+    }
+
+    // A redirect to a login wall or an error page answers 200 with HTML. Copying
+    // those bytes would produce a .mp4 that is really a web page — saved, listed as
+    // finished, and unplayable.
+    const type = String(res.headers['content-type'] || '').toLowerCase()
+    if (/^(text\/|application\/(x?html|json|xml))/.test(type)) {
+      request.destroy()
+      throw new Error(`Bağlantı video değil, ${type.split(';')[0]} döndürdü — akış adresi geçmiş olabilir.`)
+    }
+
+    // A server that ignores Range restarts the file; keeping the old bytes would
+    // corrupt it, so start over rather than append.
+    let resuming = already > 0 && res.status === 206
+    const returnedRange = String(res.headers['content-range'] || '').match(/^bytes (\d+)-(\d+)\/(\d+)$/i)
+    const declaredLength = res.headers['content-length']
+    if (res.headers['content-encoding'] && res.headers['content-encoding'] !== 'identity'
+      || res.status === 206 && (!returnedRange || Number(returnedRange[1]) !== already
+        || !Number.isSafeInteger(Number(returnedRange[3])) || Number(returnedRange[2]) + 1 !== Number(returnedRange[3])
+        || Number(returnedRange[2]) < already
+        || declaredLength !== undefined && Number(declaredLength) !== Number(returnedRange[2]) - already + 1
+        || validator?.startsWith('"') && res.headers.etag && res.headers.etag !== validator)) {
+      request.destroy()
+      fs.rmSync(partPath, { force: true })
+      throw Object.assign(new Error('Sürdürme aralığı geçersiz.'), { code: 'ECONNRESET' })
+    }
+    if (already > 0 && !resuming) already = 0
+
+    // No Content-Length means no total. Adding what we already have to a zero would
+    // report the part we resumed from as the whole file — a meter stuck at 100%.
+    const declared = Number(res.headers['content-length']) || 0
+    const total = declared ? (resuming ? already + declared : declared) : null
+
+    const out = fs.createWriteStream(partPath, { flags: resuming ? 'a' : 'w' })
+    let downloaded = already
+    let lastAt = Date.now()
+    const stats = new TransferStats(downloaded)
+
+    // Count inside the pipeline rather than on a 'data' listener: subscribing to
+    // 'data' starts the stream flowing before pipeline has hooked up the sink, and
+    // the first chunks go on the floor.
+    const report = () => {
+      const now = Date.now()
+      lastAt = now
+      onProgress({
+        downloaded,
+        total,
+        // Content-Length is a real length, not a guess — say so, so the caller
+        // doesn't second-guess it with an estimate.
+        totalExact: !!total,
+        ...stats.update(downloaded, total),
+        percent: total ? downloaded / total : null,
+      })
+    }
+
+    const meter = new Transform({
+      transform(chunk, _enc, done) {
+        Promise.resolve(limit?.(chunk.length)).then(() => {
+          downloaded += chunk.length
+          if (Date.now() - lastAt >= 400) report()
+          done(null, chunk)
+        }, done)
+      },
+      // A small file can finish inside one reporting window, which would leave the
+      // meter showing nothing at all. Report once more on the way out.
+      flush(done) {
+        report()
+        done()
+      },
+    })
+
     try {
-      const size = fs.statSync(partPath).size
-      atomicWrite(journal, JSON.stringify({ version: 2, resource, validator, size, hash: size ? hashRange(partPath, 0, size) : null }))
-    } catch {}
-    if (stopped) throw abortError()
-    throw err
-  }
+      await pipeline(res.stream, meter, out)
+      if (stopped) throw abortError()
+      if (total && downloaded !== total) throw Object.assign(new Error('Dosya eksik indi.'), { code: 'ECONNRESET' })
+      fs.renameSync(partPath, destPath)
+      fs.rmSync(journal, { force: true })
+      return destPath
+    } catch (err) {
+      // pipeline has closed its writer before a pause/error journal is hashed.
+      try {
+        const size = fs.statSync(partPath).size
+        atomicWrite(journal, JSON.stringify({ version: 2, resource, validator, size, hash: size ? hashRange(partPath, 0, size) : null }))
+      } catch {}
+      if (stopped) throw abortError()
+      throw err
+    }
+  } finally { signal?.removeEventListener('abort', stop) }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -923,6 +926,8 @@ async function transfer({
   halt()
   let { url } = located
   const { resolved, kind } = located
+  const releaseCookie = require('./cookie-files').retain(resolved?.cookieFile)
+  try {
   download.resolved = resolved
   download.url = located.url
   let audioUrl = null
@@ -940,8 +945,8 @@ async function transfer({
   const dir = settings.downloadDir
   fs.mkdirSync(dir, { recursive: true })
   const base = safeName(download.title || 'video')
-  const destPath = download.ownDestPath && path.dirname(download.ownDestPath) === dir && !fs.existsSync(download.ownDestPath)
-    ? download.ownDestPath : freePath(dir, base, extensionFor(download, settings, url, kind))
+  const destPath = targets.reserve({ dir, base, ext: extensionFor(download, settings, url, kind), id: download.id, preferred: download.ownDestPath })
+  const completed = (result) => { targets.release(destPath, download.id); return result }
   download.ownDestPath = destPath
   // Tell the caller where we are writing, so a cancelled transfer can clean up
   // after itself the same way the yt-dlp path does.
@@ -983,11 +988,12 @@ async function transfer({
           validator: probed.validator || null,
           limit,
           proxy,
+          signal,
           onProgress,
           onHandle,
           onNote,
         })
-        return { filePath: out.path }
+        return completed({ filePath: out.path })
       } catch (err) {
         // Advertising ranges and honouring them are different things. One retry
         // on a single connection beats failing a download over an optimisation.
@@ -1002,14 +1008,14 @@ async function transfer({
       fs.rmSync(planPathFor(`${destPath}.part`), { force: true })
       fs.rmSync(`${destPath}.part`, { force: true })
     }
-    return { filePath: await fetchFile({ url, resolved, destPath, validator: probed.validator || null, limit, proxy, onProgress, onHandle }) }
+    return completed({ filePath: await fetchFile({ url, resolved, destPath, validator: probed.validator || null, limit, proxy, signal, onProgress, onHandle }) })
   }
 
   if (kind === 'hls' && settings.nativeHls !== false) {
     try {
-      return await require('./hls-native').transferHls({ url, audioUrl, audioLanguage, resolved, destPath, download,
+      return completed(await require('./hls-native').transferHls({ url, audioUrl, audioLanguage, resolved, destPath, download,
         settings: { ...settings, connections: download.recoveryConnections || settings.connections },
-        proxy, signal, onProgress, onHandle, onNote, onStage, limit })
+        proxy, signal, onProgress, onHandle, onNote, onStage, limit }))
     } catch (err) {
       halt()
       if (err.code !== 'HLS_UNSUPPORTED') throw err
@@ -1018,9 +1024,9 @@ async function transfer({
   }
   if (kind === 'dash' && settings.nativeDash !== false) {
     try {
-      return await require('./dash-native').transferDash({ url, resolved, destPath, download,
+      return completed(await require('./dash-native').transferDash({ url, resolved, destPath, download,
         settings: { ...settings, connections: download.recoveryConnections || settings.connections },
-        proxy, signal, onProgress, onHandle, onNote, onStage, limit })
+        proxy, signal, onProgress, onHandle, onNote, onStage, limit }))
     } catch (err) {
       halt()
       if (err.code !== 'DASH_UNSUPPORTED') throw err
@@ -1053,7 +1059,8 @@ async function transfer({
   })
   if (kind === 'hls') require('./hls-native').cleanCache(destPath)
   if (kind === 'dash') require('./dash-native').cleanCache(destPath)
-  return { filePath }
+  return completed({ filePath })
+  } finally { releaseCookie() }
 }
 
 module.exports = { transfer, pickVariant, makePlan, readPlan, fetchFileParallel, fetchFile, probeVia, ffmpegArgs, openStream, muxIntegrityIssue }

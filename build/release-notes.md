@@ -1,25 +1,26 @@
-Ses dilini her indirme için seçebilir, site hesaplarını güvenli biçimde tanımlayabilir ve oynatma sorunlarını daha açık inceleyebilirsin.
+Kitaplığını daha kolay düzenleyebilir, takılan bir videonun zamanlamasını kontrol edebilir ve daha güvenilir iptal/devam davranışından yararlanabilirsin.
 
-## 0.15.0 ile gelenler
+Aynı başlıklı eşzamanlı indirmeler için ayrı dosya hedefleri, yeniden çözümlemede
+oturum koruması ve MKV kesinti tanısı düzeltmeleri de bu sürüme dahildir.
 
-- **İndirme başına ses dili:** çözünürlüğün yanında Türkçe, İngilizce veya kaynağın sesini seç. Video/kaynak/toplu seçimler ve gerçek ses dili ayrı gösterilir. Bilinen yanlış dublaj başarı sayılmaz; etiketsiz ses doğrulanamadı diye belirtilir.
-- **Dizibox çözümlemesi:** reklam çerçeveleri ve statik kodlar gerçek oynatıcının süresini tüketmez. Asıl oynatıcıya öncelik verilir; IP engeli, üyelik ve doğrulama farklı açıklanır.
-- **Site hesapları:** Ayarlar'da e-posta/parolayı güvenli sakla; HTTPS sitesi başına giriş/kayıt izni ver. Standart formlar denenir. Kod/CAPTCHA/koşullar/ek bilgi gereken yerde tarayıcıda tamamla.
-- **Touch ID etkinleştirme düzeltmesi:** kasayı şifreyle açıp yeniden etkinleştir. Yeni kayıtlar Secure Enclave'in biyometrik korumasını kullanır; şifreyle açma korunur.
-- **Gelişmiş oynatıcı:** altyazılar her açılışta kapalı; çoklu ses, ses gecikmesi, konum koruyan uyumluluk işlemi, kare/tampon bilgisi ve isteğe bağlı dosya zamanlama tanısı.
-- **Aktarım bütünlüğü:** açık sonlu DASH, uyarlanan parça sayısı, daha güçlü devam/range kontrolü. FFmpeg eksik parça atlayıp başarılı çıksa bile eksik dosya tamamlandı sayılmaz.
-- **Ağ tercihi:** doğrudan seçilen işler arkada uygulama Tor'u açıkken doğrudan kalır. Kaynağın ağ yolunu değiştirip yeniden tarayabilirsin.
-- **Günlük kullanım:** kitaplık yedeği/kurtarma, disk azlığında güvenli duraklama, FIFO/öncelik ve aynı ses/kalitede çift kayıt kontrolü.
+## 0.16.0 ile gelenler
 
-Kaynakta bulunmayan ses/altyazı üretilemez; bütün siteler, gerçek üyelik veya DRM için koşulsuz çözüm garantisi verilmez. Gerçek parmak iziyle etkileşim cihazında denenmelidir.
+- **Toplu dizi / bölüm düzenleme:** koleksiyon adı, sezon ve bölüm numaraları. Önizleme, doğal sıralama ve son işlemi geri alma. Video dosyaları yeniden adlandırılmaz.
+- **Video zamanlama kontrolü:** kitaplıktaki video menüsünden ses/görüntü boşluklarını incele. Kontrol dosyayı değiştirmez; modal kapanınca durur.
+- **Daha güvenilir aktarım:** tek/paralel dosyalarda iptal sinyali tüm aşamalara ulaşır; doğrulanan kısmi dosyadan devam edilir.
+- **DASH kalan süre:** çok dönemli videolarda sonraki dönemler de hesaba katılır.
+- **Oturum temizliği:** aktif işin/kitaplığın kullandığı çerez dosyaları korunur, kullanılmayan özel geçici dosyalar sınırlı temizlenir.
+- **Kuyruk tercihi:** otomatik başlatma kapalıyken ayar değiştirmek veya uygulamayı açmak indirmeleri kendiliğinden başlatmaz. Koleksiyon adına göre arama eklenmiştir.
+
+Önceki ses seçimi, Dizibox çözümleme, site hesapları, Touch ID ve her açılışta kapalı altyazı davranışı korunur.
 
 ## İndir
 
 | Sistem | Dosya |
 |---|---|
-| macOS Apple Silicon | `All-in-One-Downloader-0.15.0-arm64.dmg` |
-| macOS Intel | `All-in-One-Downloader-0.15.0-x64.dmg` |
-| Windows 10/11 64 bit | `All-in-One-Downloader-0.15.0-setup.exe` |
+| macOS Apple Silicon | `All-in-One-Downloader-0.16.0-arm64.dmg` |
+| macOS Intel | `All-in-One-Downloader-0.16.0-x64.dmg` |
+| Windows 10/11 64 bit | `All-in-One-Downloader-0.16.0-setup.exe` |
 
 Uygulama içindeki güncelleme denetimi açıksa yeni sürüm üstte bildirilir. Açılıştan yaklaşık 15 saniye sonra, ardından altı saatte bir kontrol edilir. Hemen kontrol etmek için Ayarlar → Uygulama → Güncellemeleri denetle kullanılabilir. Kurulum kullanıcı düğmeye bastığında başlar.
 

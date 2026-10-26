@@ -1,8 +1,22 @@
 # Geliştirme planı — All in One Downloader
 
-25 Ekim 2026 · 0.15.0 çalışması (0.14.1 tarihçesi aşağıda). Kullanıcının isteğiyle uygulamanın bütün ana
+25 Ekim 2026 · 0.16.0 çalışması (önceki sürümlerin tarihçesi aşağıda). Kullanıcının isteğiyle uygulamanın bütün ana
 katmanları tarandı. Bu belge tamamlanan işleri, sonraki işleri ve doğrulama
 ölçütlerini ayırır. Gelecek işler henüz uygulanmış özellik sayılmaz.
+
+## 0.16.0 — tamamlanan sonraki işler
+
+- Referans ve aktif iş korumalı geçici çerez temizliği, sınırlı önbellek ve crash recovery.
+- Toplu koleksiyon/sezon/bölüm düzenleyicisi; önizleme, stale edit koruması ve geri alma.
+- Koleksiyon adıyla Home/Library araması.
+- Kitaplıktan sınırlı, iptal edilebilir ve yalnız yerel video zamanlama kontrolü.
+- Dosya aktarımında fazlar boyunca AbortSignal, iptal sonrası yazmama ve doğrulanan devam.
+- Çok dönemli DASH toplam kalan süre hesabı.
+- Otomatik başlatma kapalıyken startup/ayar değişiminde kuyruk tercihini koruma.
+- Sinyalle kapanışta normal güvenli quit yolu.
+
+Bunlar önceki yol haritasının tamamlanan kısımlarıdır. Canlı kayıt, büyük liste
+sanallaştırması ve doğrulanmış CDN alternatifi bu teslimata dahil değildir.
 
 ## 25 Ekim 2026 — 0.15.0 çalışmasında tamamlananlar
 
@@ -194,3 +208,7 @@ edilebilir bir teslimata bölünmelidir.
   etkileşimi ve farklı Windows/Mac cihazları ayrıca insan testidir.
 
 Güncel uygulama/devir/test/yayın durumu: [CLAUDE_HANDOFF.md](CLAUDE_HANDOFF.md).
+
+0.16.0 son inceleme: aynı başlıklı eşzamanlı dosya hedefleri ayrıldı; native
+rezervasyon ve kalıcı devam kimliği, yt-dlp iş başına ad ayrımı eklendi. MKV
+timestamp sıçramaları ve rescan öncesi cookie lease boşluğu düzeltildi.

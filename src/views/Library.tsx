@@ -6,6 +6,8 @@ import { T } from '../strings'
 import type { AppState, Category, Download, Outlook } from '../types'
 import { thumbnailForRoute, Btn, Chip, Empty, Icon, IconBtn, Menu, MenuItem, Meter, Modal, Thumb } from '../components/ui'
 import SubtitlePicker from '../components/SubtitlePicker'
+import CollectionEditor from '../components/CollectionEditor'
+import MediaHealth from '../components/MediaHealth'
 import { useFileThumb } from '../thumbs'
 
 const ACTIVE = new Set(['running', 'queued', 'paused'])
@@ -46,6 +48,10 @@ export default function Library({
   const [alsoDeleteFile, setAlsoDeleteFile] = useState(false)
   const [subtitleFor, setSubtitleFor] = useState<Download | null>(null)
   const [vaulting, setVaulting] = useState<string | null>(null)
+  const [collectionFor, setCollectionFor] = useState<Download[] | null>(null)
+  const [collectionUndo, setCollectionUndo] = useState<{ token: string; count: number } | null>(null)
+  const [undoingCollection, setUndoingCollection] = useState(false)
+  const [checkingMedia, setCheckingMedia] = useState<Download | null>(null)
 
   // The choice of whether a delete takes the file with it is a setting, not a
   // question to be re-answered every time.
@@ -64,7 +70,7 @@ export default function Library({
       if (category && category !== '__none__' && d.categoryId !== category) return false
       if (!needle) return true
       const cat = d.categoryId ? categoryById.get(d.categoryId)?.name || '' : ''
-      return `${d.title} ${d.site} ${cat}`.toLowerCase().includes(needle)
+      return `${d.title} ${d.site} ${d.series || ''} ${cat}`.toLowerCase().includes(needle)
     })
   }, [downloads, query, category, categoryById])
 
@@ -88,7 +94,7 @@ export default function Library({
     )
   }
 
-  if (!filtered.length) {
+  if (!filtered.length && !collectionUndo && !collectionFor && !checkingMedia) {
     return (
       <Empty
         icon="search"
@@ -144,6 +150,8 @@ export default function Library({
     outlook,
     onRemove: (d: Download) => askRemove([d]),
     onFindSubtitle: (d: Download) => setSubtitleFor(d),
+    onCollection: (d: Download) => setCollectionFor([d]),
+    onCheckMedia: (d: Download) => setCheckingMedia(d),
     onToVault: async (d: Download) => {
       setVaulting(d.id)
       // Encrypting a few gigabytes takes seconds with nothing to show for it, and
@@ -159,6 +167,16 @@ export default function Library({
 
   return (
     <>
+      {collectionUndo ? <div className="bulk-bar collection-undo" role="status">
+        <span className="grow">{collectionUndo.count} videonun koleksiyon bilgileri güncellendi.</span>
+        <Btn size="sm" disabled={undoingCollection} spinning={undoingCollection} onClick={async () => {
+          setUndoingCollection(true)
+          const result = await api.undoCollectionEdit(collectionUndo.token)
+          setUndoingCollection(false); setCollectionUndo(null)
+          if (result) onToast(`${result.count} videonun önceki koleksiyon bilgileri geri getirildi.`, 'ok')
+        }}>Geri al</Btn>
+        <IconBtn icon="x" title="Koleksiyon düzenleme bildirimini kapat" disabled={undoingCollection} onClick={() => setCollectionUndo(null)} />
+      </div> : null}
       {selectedList.length ? (
         <div className="bulk-bar">
           <span className="grow">
@@ -185,6 +203,7 @@ export default function Library({
               </option>
             ))}
           </select>
+          <Btn size="sm" icon="layers" onClick={() => setCollectionFor(selectedList)}>Dizi / bölüm düzenle</Btn>
           <Btn size="sm" icon="trash" variant="danger" onClick={() => askRemove(selectedList)}>
             {T.library.removeSelected}
           </Btn>
@@ -194,6 +213,7 @@ export default function Library({
         </div>
       ) : null}
 
+      {!filtered.length ? <Empty icon="search" title={T.empty.filterTitle} body={T.empty.filterBody} action={<Btn icon="x" onClick={onClearFilters} style={{ marginTop: 6 }}>{T.common.all}</Btn>} /> : null}
       {active.length ? (
         <Section
           title={T.library.active}
@@ -270,6 +290,12 @@ export default function Library({
           onOpenSettings={onOpenSettings}
         />
       ) : null}
+      {collectionFor ? <CollectionEditor downloads={collectionFor} onClose={() => setCollectionFor(null)} onApplied={(result) => {
+        setCollectionFor(null); setSelected(new Set())
+        setCollectionUndo(result.undoToken ? { token: result.undoToken, count: result.count } : null)
+        onToast(result.count ? `${result.count} videonun koleksiyon bilgileri güncellendi.` : 'Koleksiyon bilgileri zaten bu şekildeydi.', result.count ? 'ok' : 'info')
+      }} /> : null}
+      {checkingMedia ? <MediaHealth download={checkingMedia} onClose={() => setCheckingMedia(null)} /> : null}
 
       {pendingRemove ? (
         <Modal
@@ -358,6 +384,8 @@ function Row({
   outlook,
   onRemove,
   onFindSubtitle,
+  onCollection,
+  onCheckMedia,
   onToVault,
 }: {
   download: Download
@@ -370,6 +398,8 @@ function Row({
   outlook: Outlook
   onRemove: (d: Download) => void
   onFindSubtitle: (d: Download) => void
+  onCollection: (d: Download) => void
+  onCheckMedia: (d: Download) => void
   onToVault: (d: Download) => void
 }) {
   const category = d.categoryId ? categoryById.get(d.categoryId) : null
@@ -438,6 +468,7 @@ function Row({
             </Chip>
           ) : null}
           <span>{describe(d.quality, d.audioOnly)}</span>
+          {d.series ? <><span className="sep" /><span className="truncate" title={d.series}>{d.series}{d.season !== null && d.season !== undefined ? ` · S${d.season}` : ''}{d.episode !== null && d.episode !== undefined ? ` · B${d.episode}` : ''}</span></> : null}
           <span className="sep" />
           <span title={`İstenen ses: ${fmt.audioLanguage(d.preferredAudioLanguage || 'auto')}`}>
             {d.status === 'done' ? `Ses: ${fmt.audioLanguage(d.audioLanguage)}` : `İstenen ses: ${fmt.audioLanguage(d.preferredAudioLanguage || 'auto')}`}
@@ -561,6 +592,8 @@ function Row({
           {(close) => (
             <>
               {queued ? <MenuItem icon="chevron" onClick={() => { api.prioritizeDownload(d.id); close() }}>Sırada öne al</MenuItem> : null}
+              <MenuItem icon="layers" onClick={() => { onCollection(d); close() }}>Dizi / bölüm bilgilerini düzenle</MenuItem>
+              {playable && !d.audioOnly ? <MenuItem icon="target" onClick={() => { onCheckMedia(d); close() }}>Videonun zamanlamasını kontrol et</MenuItem> : null}
               <div className="menu-label label">{T.library.setCategory}</div>
               <MenuItem
                 icon={d.categoryId ? undefined : 'check'}

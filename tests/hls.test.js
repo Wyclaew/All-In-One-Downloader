@@ -113,7 +113,7 @@ test('a missing middle segment fails native and remote FFmpeg paths without publ
   await assert.rejects(hls.transferHls(native), (error) => error.status === 404)
   assert.equal(fs.existsSync(native.destPath), false)
   let output
-  await assert.rejects(own.transfer({ download: { url: native.url, title: 'missing-remote', duration: 4, resolved: { kind: 'hls' } },
+  await assert.rejects(own.transfer({ download: { id: 'missing-remote', url: native.url, title: 'missing-remote', duration: 4, resolved: { kind: 'hls' } },
     settings: { downloadDir: root, container: 'mp4', nativeHls: false, preferredAudioLanguage: 'auto' },
     onDest(file) { output = file }, onHandle() {}, onProgress() {}, onNote() {},
   }), { code: 'MEDIA_INCOMPLETE', exitCode: 0 })

@@ -44,6 +44,11 @@ contextBridge.exposeInMainWorld('api', {
 
   prioritizeDownload: (id) => ipcRenderer.invoke('dl:prioritize', id),
   backupLibrary: () => ipcRenderer.invoke('settings:backup'),
+  previewCollectionEdit: (payload) => ipcRenderer.invoke('collection:preview', payload),
+  applyCollectionEdit: (payload) => ipcRenderer.invoke('collection:apply', payload),
+  undoCollectionEdit: (token) => ipcRenderer.invoke('collection:undo', token),
+  inspectDownloadMedia: (id) => ipcRenderer.invoke('dl:inspectMedia', id),
+  cancelDownloadMediaCheck: (id) => ipcRenderer.invoke('dl:inspectMedia:cancel', id),
   siteAccountsStatus: () => ipcRenderer.invoke('accounts:status'),
   saveSiteAccountProfile: (profile) => ipcRenderer.invoke('accounts:profile:set', profile),
   clearSiteAccountProfile: () => ipcRenderer.invoke('accounts:profile:clear'),

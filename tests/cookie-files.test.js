@@ -1,0 +1,152 @@
+'use strict'
+const test = require('node:test'), assert = require('node:assert/strict')
+const fs = require('node:fs'), path = require('node:path'), os = require('node:os')
+const { createCookieFiles } = require('../electron/lib/cookie-files')
+
+function fixture(t, options = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aio-cookie-files-test-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const directory = path.join(root, 'private-cache')
+  let at = 1000000
+  const make = () => createCookieFiles({ directory, now: () => at, graceMs: 100, ...options })
+  return { root, directory, manager: make(), make, advance: (ms) => { at += ms } }
+}
+
+test('new cookie material starts private and replacement writes keep a single owned readable jar', (t) => {
+  const { manager, directory } = fixture(t)
+  const file = manager.allocate('browser')
+  assert.match(file, /cookies\.txt$/)
+  assert.match(fs.readFileSync(file, 'utf8'), /^# Netscape HTTP Cookie File/)
+  manager.write(file, '# synthetic fixture\nprivate-value')
+  assert.equal(fs.readFileSync(file, 'utf8'), '# synthetic fixture\nprivate-value')
+  assert.deepEqual(fs.readdirSync(path.dirname(file)).sort(), ['.aio-cookie-owner.json', 'cookies.txt'])
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(directory).mode & 0o777, 0o700)
+    assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700)
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+  }
+})
+
+test('library references and independent active leases protect old jars beyond expiry', (t) => {
+  const { manager, advance } = fixture(t)
+  const referenced = manager.allocate(), active = manager.allocate(), unused = manager.allocate()
+  manager.setReferences([referenced])
+  const first = manager.retain(active), second = manager.retain(active)
+  advance(1000)
+  assert.equal(manager.sweep().removed, 1)
+  assert.equal(fs.existsSync(unused), false)
+  assert.equal(fs.existsSync(referenced), true)
+  first(); first()
+  assert.equal(manager.sweep({ forceUnused: true }).removed, 0)
+  second()
+  assert.equal(manager.sweep().removed, 0, 'recently released result has a handoff grace period')
+  manager.setReferences([])
+  assert.equal(manager.sweep().removed, 1)
+  assert.equal(fs.existsSync(active), true)
+  assert.equal(manager.shutdown().removed, 1)
+  assert.equal(fs.existsSync(active), false)
+})
+
+test('startup recovery scans only the dedicated root and keeps references loaded before cleanup', (t) => {
+  const { manager, make, advance } = fixture(t)
+  const persisted = manager.allocate(), abandoned = manager.allocate()
+  advance(1000)
+  const restarted = make()
+  restarted.setReferences([persisted])
+  assert.equal(restarted.sweep().removed, 1)
+  assert.equal(fs.existsSync(abandoned), false)
+  assert.equal(fs.existsSync(persisted), true)
+  assert.equal(restarted.shutdown().removed, 0, 'shutdown keeps library references for restart/resume')
+  restarted.setReferences([])
+  assert.equal(restarted.shutdown().removed, 1)
+})
+
+test('a crash after ownership marker creation or a failed credential deletion remains recoverable', (t) => {
+  const { directory, manager, make, advance } = fixture(t)
+  const markerOnly = manager.allocate(), locked = manager.allocate()
+  fs.unlinkSync(markerOnly)
+  advance(1000)
+  const broken = createCookieFiles({ directory, now: () => 2000000, filesystem: { ...fs, unlinkSync: (file) => {
+    if (file === locked) throw Object.assign(new Error('locked'), { code: 'EBUSY' })
+    return fs.unlinkSync(file)
+  } } })
+  assert.equal(broken.sweep({ forceUnused: true }).removed, 1)
+  assert.equal(fs.existsSync(path.dirname(markerOnly)), false)
+  assert.equal(fs.existsSync(path.join(path.dirname(locked), '.aio-cookie-owner.json')), true)
+  assert.equal(make().sweep({ forceUnused: true }).removed, 1)
+  assert.equal(fs.existsSync(locked), false)
+})
+
+test('foreign and legacy files never become cleanup targets, including misleading jar directory names', (t) => {
+  const { root, directory, manager, advance } = fixture(t)
+  const old = path.join(root, 'edl-cookies-legacy.txt'); fs.writeFileSync(old, 'foreign')
+  const owned = manager.allocate()
+  const foreign = path.join(directory, 'jar-foreign1'); fs.mkdirSync(foreign, { mode: 0o700 }); fs.writeFileSync(path.join(foreign, 'cookies.txt'), 'foreign')
+  const release = manager.retain(old); release()
+  assert.throws(() => manager.write(old, 'overwrite'), /ait değil/)
+  assert.equal(manager.discard(old), false)
+  advance(1000); manager.sweep({ forceUnused: true })
+  assert.equal(fs.existsSync(owned), false)
+  assert.equal(fs.readFileSync(old, 'utf8'), 'foreign')
+  assert.equal(fs.readFileSync(path.join(foreign, 'cookies.txt'), 'utf8'), 'foreign')
+})
+
+test('unexpected files, directories and malformed ownership markers prevent deletion', (t) => {
+  const { manager, advance } = fixture(t)
+  const foreignFile = manager.allocate(), foreignDir = manager.allocate(), invalid = manager.allocate()
+  fs.writeFileSync(path.join(path.dirname(foreignFile), 'do-not-delete.txt'), 'foreign')
+  fs.mkdirSync(path.join(path.dirname(foreignDir), 'foreign-data'))
+  fs.writeFileSync(path.join(path.dirname(invalid), '.aio-cookie-owner.json'), JSON.stringify({ magic: 'OTHER_APP' }))
+  advance(1000)
+  assert.equal(manager.sweep({ forceUnused: true }).removed, 0)
+  for (const file of [foreignFile, foreignDir, invalid]) assert.equal(fs.existsSync(file), true)
+})
+
+test('symlink roots, jars and entries are left untouched instead of following them', { skip: process.platform === 'win32' }, (t) => {
+  const { root, directory, manager, advance } = fixture(t)
+  const file = manager.allocate(), outside = path.join(root, 'outside.txt')
+  fs.writeFileSync(outside, 'private outside value')
+  fs.unlinkSync(file); fs.symlinkSync(outside, file)
+  const target = path.join(root, 'foreign-directory'); fs.mkdirSync(target, { mode: 0o700 }); fs.writeFileSync(path.join(target, 'cookies.txt'), 'foreign-directory-value')
+  fs.symlinkSync(target, path.join(directory, 'jar-symbolic'))
+  advance(1000)
+  assert.equal(manager.sweep({ forceUnused: true }).removed, 0)
+  assert.equal(fs.lstatSync(file).isSymbolicLink(), true)
+  assert.equal(fs.readFileSync(outside, 'utf8'), 'private outside value')
+  assert.equal(fs.readFileSync(path.join(target, 'cookies.txt'), 'utf8'), 'foreign-directory-value')
+  const linkedRoot = path.join(root, 'linked-cache'); fs.symlinkSync(target, linkedRoot)
+  const linked = createCookieFiles({ directory: linkedRoot })
+  assert.throws(() => linked.allocate(), /güvenli/)
+  assert.equal(linked.sweep({ forceUnused: true }).removed, 0)
+})
+
+test('bounded admission never evicts active jars and recovers when an unused slot expires', (t) => {
+  const { manager, advance } = fixture(t, { maxEntries: 2 })
+  const a = manager.allocate(), b = manager.allocate()
+  manager.setReferences([a, b]); advance(1000)
+  assert.throws(() => manager.allocate(), /sınırına/)
+  assert.equal(fs.existsSync(a), true); assert.equal(fs.existsSync(b), true)
+  manager.setReferences([b])
+  const replacement = manager.allocate()
+  assert.equal(fs.existsSync(a), false)
+  assert.equal(fs.existsSync(b), true); assert.equal(fs.existsSync(replacement), true)
+})
+
+test('cleanup filesystem failures are best effort and do not reject ongoing operations', (t) => {
+  const { directory, manager, advance } = fixture(t)
+  const file = manager.allocate()
+  advance(1000)
+  const broken = createCookieFiles({ directory, now: () => 2000000, filesystem: { ...fs, unlinkSync: () => { throw new Error('synthetic locked file') } } })
+  assert.doesNotThrow(() => broken.sweep({ forceUnused: true }))
+  assert.equal(fs.existsSync(file), true)
+})
+
+test('a temporarily locked empty directory keeps its marker for a future successful cleanup', (t) => {
+  const { directory, manager, make } = fixture(t)
+  const file = manager.allocate()
+  const broken = createCookieFiles({ directory, filesystem: { ...fs, rmdirSync: () => { throw Object.assign(new Error('directory temporarily busy'), { code: 'EBUSY' }) } } })
+  assert.equal(broken.sweep({ forceUnused: true }).removed, 0)
+  assert.equal(fs.existsSync(file), false, 'credentials were still removed')
+  assert.equal(fs.existsSync(path.join(path.dirname(file), '.aio-cookie-owner.json')), true)
+  assert.equal(make().sweep({ forceUnused: true }).removed, 1)
+})

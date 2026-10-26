@@ -193,6 +193,18 @@ test('VFR video alone and unrelated audio gaps cannot be reported as matching mi
   assert.equal(lowFps.finish().videoLongFrames, 0)
 })
 
+test('normal-duration video timestamp jumps correlate in MKV without counting B-frame reordering', () => {
+  const analyzer = createTimingAnalyzer(timingMedia)
+  analyzer.push(packet(0, 1, 1 / 24))
+  analyzer.push(packet(1, 1.01, 1024 / 48000))
+  analyzer.push(packet(0, 3.04, 1 / 24))
+  analyzer.push(packet(1, 3.05, 1024 / 48000))
+  assert.equal(analyzer.finish().correlatedGaps, 1)
+  const reordered = createTimingAnalyzer(timingMedia)
+  for (let n = 0; n < 100; n++) reordered.push(`stream_index=0|pts_time=${(n + (n % 3 === 0 ? 2 : -1)) / 24}|dts_time=${n / 24}|duration_time=0.041667`)
+  assert.equal(reordered.finish().kind, 'regular')
+})
+
 test('packet timing rejects malformed numbers and bounds anomaly memory and returned examples', () => {
   const analyzer = createTimingAnalyzer(timingMedia)
   for (const line of ['not packet data', packet(0, 'Infinity', 5), packet(0, 'N/A', 5), packet(0, 0, 'Infinity'), packet(0, 0, -2), packet(99, 0, 10)]) analyzer.push(line)

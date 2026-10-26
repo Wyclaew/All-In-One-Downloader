@@ -16,7 +16,7 @@ function createTimingAnalyzer(media) {
   const audioByIndex = new Map(audio.map((track) => [track.streamIndex, track]))
   const previous = new Map()
   const videoLong = [], audioLong = [], audioJumps = []
-  let packets = 0, durationKnown = 0
+  let packets = 0, durationKnown = 0, priorVideo = null
   const add = (list, value) => {
     if (list.length >= MAX_ANOMALIES) throw new Error('Dosyada çok fazla zamanlama sapması var; kontrol sınırına ulaşıldı.')
     list.push(value)
@@ -33,10 +33,22 @@ function createTimingAnalyzer(media) {
       const track = audioByIndex.get(index)
       if (!isVideo && !track) return
       packets += 1
-      const at = timestamp(fields.dts_time) ?? timestamp(fields.pts_time)
+      const dts = timestamp(fields.dts_time)
+      const at = dts ?? timestamp(fields.pts_time)
+      const clock = dts !== null ? 'dts' : 'pts'
       const duration = positive(fields.duration_time)
       if (duration) durationKnown += 1
-      if (isVideo && duration && duration > videoThreshold && at !== null) add(videoLong, { at, duration })
+      if (isVideo && at !== null) {
+        // Matroska often keeps a normal packet duration across a missing span.
+        // Decode timestamps avoid mistaking ordinary B-frame PTS reordering for
+        // missing content. Do not compare two different timestamp clocks.
+        if (priorVideo && priorVideo.clock === clock && !priorVideo.long && at - priorVideo.at > videoThreshold) {
+          add(videoLong, { at: priorVideo.at, duration: at - priorVideo.at })
+        }
+        const long = !!(duration && duration > videoThreshold)
+        if (long) add(videoLong, { at, duration })
+        priorVideo = { at, clock, long }
+      }
       if (track) {
         // AAC-LC's 1024-sample cadence gives an independent expectation even
         // when the MP4 demuxer stretched a packet's declared duration over a gap.

@@ -21,6 +21,8 @@ const { locateDownload } = require('./locate')
 const network = require('./network-context')
 const queueOrder = require('./queue-order')
 const disk = require('./disk-space')
+const cookieFiles = require('./cookie-files')
+const targets = require('./download-targets')
 
 const TAG = '@P@'
 const PROGRESS_TEMPLATE =
@@ -94,9 +96,9 @@ function buildArgs(download, settings, printFile) {
     '-o',
     // A resolved stream has no metadata title — `master.m3u8` would become the
     // filename — so name the file after the page we found it on.
-    download.resolved
+    targets.outputTemplate(download.resolved
       ? `${safeName(download.title)}.%(ext)s`
-      : settings.filenameTemplate || '%(title).120B.%(ext)s',
+      : settings.filenameTemplate || '%(title).120B.%(ext)s', download.id),
   ]
 
   const ff = ffmpegPath()
@@ -451,6 +453,8 @@ function resolveFinalPath(job, settings) {
 }
 
 function cleanupTemp(job) {
+  for (const release of job.cookieLeases?.values() || []) release()
+  job.cookieLeases?.clear()
   try {
     fs.unlinkSync(job.printFile)
   } catch {
@@ -469,6 +473,7 @@ function cleanupTemp(job) {
 function deletePartials(job, settings) {
   for (const c of job.destinations) {
     const abs = path.isAbsolute(c) ? c : path.resolve(settings.downloadDir, c)
+    if (fs.existsSync(`${abs}.aio-owner`) && !targets.owned(abs, job.id)) continue
     require('./hls-native').cleanCache(abs)
     require('./dash-native').cleanCache(abs)
     for (const p of [`${abs}.part`, `${abs}.ytdl`, `${abs}.part.parts`, `${abs}.part.single`, abs]) {
@@ -494,12 +499,14 @@ function deletePartials(job, settings) {
     } catch {
       /* directory gone */
     }
+    targets.release(abs, job.id)
   }
 }
 
 /** Everything both engines need in place before the first byte moves. */
 function beginJob(download) {
   const job = {
+    id: download.id,
     child: null,
     printFile: path.join(os.tmpdir(), `edl-${download.id}-${Date.now()}.txt`),
     paused: false,
@@ -515,7 +522,9 @@ function beginJob(download) {
     stderrTail: '',
     abort: new AbortController(),
     lastActivity: Date.now(),
+    cookieLeases: new Map(),
   }
+  holdCookie(job, download.resolved?.cookieFile)
   jobs.set(download.id, job)
 
   store.commit(() => {
@@ -537,6 +546,11 @@ function beginJob(download) {
   sendProgress(download, true)
   startOutlook()
   return job
+}
+
+function holdCookie(job, file) {
+  if (!file || job.cookieLeases.has(file)) return
+  job.cookieLeases.set(file, cookieFiles.retain(file))
 }
 
 /**
@@ -732,6 +746,7 @@ async function prepareRecovery(download, settings, job) {
     const { exportCookieJar } = require('./browsers')
     let jar = settings.cookiesBrowser ? await exportCookieJar(settings.cookiesBrowser, { signal: job.abort.signal }).catch(() => null) : null
     if (!jar && download.resolved.cookieFile && fs.existsSync(download.resolved.cookieFile)) jar = download.resolved.cookieFile
+    holdCookie(job, jar)
     const result = await resolvePage(download.resolved.pageUrl, {
       browserCookieJar: jar, proxy: proxyFor(download, settings), signal: job.abort.signal,
       timeoutMs: settingNumber(settings.resolverTimeout, 45000),
@@ -745,6 +760,7 @@ async function prepareRecovery(download, settings, job) {
     const candidate = candidates.find((c) => !download.duration || !c.info?.duration || Math.abs(c.info.duration - download.duration) < Math.max(30, download.duration * 0.15))
     if (!candidate && !job.abort.signal.aborted) throw new Error('Akış adresi yenilenemedi. Kaynağı yeniden tara veya Tarayıcıda yakala ile oturumunu aç.')
     if (candidate && !job.abort.signal.aborted) store.commit(() => {
+      holdCookie(job, candidate.cookieFile)
       download.url = candidate.url
       download.resolved = { ...download.resolved, referer: candidate.referer || download.resolved.pageUrl,
         origin: candidate.origin || '', userAgent: candidate.userAgent || result.userAgent,
@@ -1384,6 +1400,9 @@ function cancel(id) {
 function settleRemoved(download) {
   const settings = store.getState().settings
   const job = jobs.get(download.id)
+  if (!job && targets.owned(download.ownDestPath, download.id)) {
+    deletePartials({ id: download.id, destinations: new Set([download.ownDestPath]) }, settings)
+  }
   if (job) {
     job.settled = true
     clearInterval(job.diskWatch)

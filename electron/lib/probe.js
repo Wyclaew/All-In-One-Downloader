@@ -21,6 +21,7 @@ const { rankCandidates } = require('./media-preferences')
 const { parseTitle } = require('./subtitles')
 const network = require('./network-context')
 const diagnostics = require('./diagnostics')
+const cookieFiles = require('./cookie-files')
 
 const MAX_JSON = 64 * 1024 * 1024 // channels can dump a lot of JSON
 
@@ -365,8 +366,10 @@ async function probeUrl(url, { sourceId = null, playlistEnd = 0 } = {}) {
   const controller = new AbortController()
   controllers.set(source.id, controller)
   const started = Date.now()
+  const previousJar = store.itemsOfSource(source.id).find((item) => item.resolved?.cookieFile)?.resolved.cookieFile || null
+  const releasePrevious = cookieFiles.retain(previousJar)
   try {
-    return await runProbe(source, playlistEnd, controller.signal)
+    return await runProbe(source, playlistEnd, controller.signal, previousJar)
   } catch (err) {
     // A source must never be left spinning. Anything unexpected becomes visible.
     if (!controller.signal.aborted && (source.status === 'probing' || source.status === 'queued')) {
@@ -380,6 +383,7 @@ async function probeUrl(url, { sourceId = null, playlistEnd = 0 } = {}) {
     }
     return source
   } finally {
+    releasePrevious()
     if (controllers.get(source.id) === controller) {
       store.commit(() => { source.elapsedMs = Date.now() - started; diagnostics.addEvent(source, source.status, source.error || `${source.count || 0} medya bulundu`, source.status === 'error' ? 'error' : 'info') })
       controllers.delete(source.id); running.delete(source.id)
@@ -387,8 +391,7 @@ async function probeUrl(url, { sourceId = null, playlistEnd = 0 } = {}) {
   }
 }
 
-async function runProbe(source, playlistEnd, signal) {
-  const previousJar = store.itemsOfSource(source.id).find((item) => item.resolved?.cookieFile)?.resolved.cookieFile || null
+async function runProbe(source, playlistEnd, signal, previousJar) {
   const globalSettings = store.getState().settings
   const ytdlpOff = globalSettings.useYtdlp === false
 
@@ -949,6 +952,8 @@ async function captureSource(sourceId) {
   controllers.set(sourceId, controller)
   const started = Date.now()
   const previousJar = store.itemsOfSource(source.id).find((item) => item.resolved?.cookieFile)?.resolved.cookieFile || null
+  const releasePrevious = cookieFiles.retain(previousJar)
+  try {
   store.commit((s) => {
     source.status = 'probing'
     source.stage = source.useProxy ? 'network' : 'resolver'
@@ -959,7 +964,6 @@ async function captureSource(sourceId) {
     s.items = s.items.filter((i) => i.sourceId !== source.id)
     source.count = 0
   })
-  try {
     const settings = { ...await sourceSettings(store.getState().settings, source, controller.signal), browserCookieJar: previousJar }
     store.commit(() => { source.stage = 'resolver'; source.note = 'Tarayıcı penceresi açılıyor' })
 
@@ -995,6 +999,7 @@ async function captureSource(sourceId) {
   } catch (err) {
     if (!controller.signal.aborted) store.commit(() => { source.status = 'error'; source.error = diagnostics.redact(err.message); source.stage = null; source.note = null; diagnostics.addEvent(source, 'error', err.message, 'error') })
   } finally {
+    releasePrevious()
     if (controllers.get(sourceId) === controller) {
       store.commit(() => { source.elapsedMs = Date.now() - started })
       controllers.delete(sourceId)

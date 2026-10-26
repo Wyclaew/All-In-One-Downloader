@@ -210,6 +210,21 @@ async function signature(file, signal) {
   return JSON.stringify(streams.map((stream) => Object.fromEntries(fields.map((key) => [key, stream[key] ?? null]))))
 }
 
+function periodProgress(progress, { elapsed, periodDuration, totalDuration, savedBytes, expectedSize }) {
+  const downloaded = savedBytes + Math.max(0, Number(progress.downloaded) || 0)
+  const currentTotal = Number(progress.total)
+  const estimate = Number(expectedSize) > 0 ? Number(expectedSize)
+    : currentTotal > 0 && periodDuration > 0 ? savedBytes + currentTotal * (totalDuration - elapsed) / periodDuration : null
+  const total = estimate ? Math.max(downloaded, Math.round(estimate)) : null
+  const speed = Number(progress.speed)
+  // A period's ETA stops at that period, not at the end of the recording.
+  // Keep the child's warm-up/idle confidence, then include all future bytes.
+  const eta = progress.eta !== null && progress.eta !== undefined && speed > 0 && total > downloaded
+    ? Math.ceil((total - downloaded) / speed) : null
+  return { ...progress, downloaded, total, totalExact: false, eta,
+    percent: Math.min(0.999, (elapsed + periodDuration * (Number(progress.percent) || 0)) / totalDuration) }
+}
+
 async function transferDash({ url, resolved, destPath, download, settings, proxy = '', signal,
   onProgress, onHandle, onNote, onStage, limit = null }) {
   const controller = new AbortController()
@@ -255,9 +270,8 @@ async function transferDash({ url, resolved, destPath, download, settings, proxy
           audioUrl: period.tracks.length > 1 ? 'prepared-audio' : null, audioLanguage: period.audioLanguage,
           resolved, destPath: file, download: { ...download, audioOnly: false }, settings, proxy,
           signal: controller.signal, onHandle, onNote, onStage, limit, outputDuration: period.duration,
-          onProgress: (progress) => onProgress?.({ ...progress, downloaded: savedBytes + (progress.downloaded || 0),
-            total: download.expectedSize || null, totalExact: false,
-            percent: Math.min(0.999, (elapsed + period.duration * (progress.percent || 0)) / manifest.duration) }) })
+          onProgress: (progress) => onProgress?.(periodProgress(progress, { elapsed, savedBytes,
+            periodDuration: period.duration, totalDuration: manifest.duration, expectedSize: download.expectedSize })) })
         plan.completed[index] = { size: (await fsp.stat(file)).size, hash: await hashFile(file, controller.signal) }
         atomicWrite(journal, JSON.stringify(plan))
       }
@@ -312,4 +326,4 @@ async function transferDash({ url, resolved, destPath, download, settings, proxy
   } finally { signal?.removeEventListener('abort', abort) }
 }
 
-module.exports = { parseManifest, transferDash, cleanCache }
+module.exports = { parseManifest, transferDash, cleanCache, periodProgress }

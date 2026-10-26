@@ -38,7 +38,9 @@ test.before(async () => {
       ...(range ? { 'Content-Range': `bytes ${req.url === '/wrong-range' ? start + 1 : start}-${end}/${payload.length}` } : {}),
       ETag: '"test-v1"',
     })
-    if (req.url === '/drop' && !dropped && end > 0) {
+    if (req.url === '/stalled-body') {
+      res.write(payload.subarray(start, Math.min(end + 1, start + 16001)))
+    } else if (req.url === '/drop' && !dropped && end > 0) {
       dropped = true
       res.write(payload.subarray(start, start + 16001))
       setTimeout(() => res.destroy(), 20)
@@ -112,6 +114,74 @@ test('cancel interrupts a request still waiting for headers', async () => {
   const promise = own.fetchFileParallel(opts)
   setTimeout(() => handle.kill(), 40)
   await assert.rejects(promise, { code: 'ABORTED' })
+})
+
+test('an AbortSignal alone cancels plain transfers, closes writers and preserves resumable bytes', async () => {
+  for (const connections of [1, 4]) {
+    const controller = new AbortController()
+    const download = { id: `signal-${connections}`, url: base + '/slow', title: `signal-${connections}`, resolved: { kind: 'file' } }
+    let destination
+    const config = { download, settings: { downloadDir: root, connections }, signal: controller.signal,
+      onDest: (file) => { destination = file }, onHandle() {}, onNote() {},
+      onProgress: (progress) => { if (progress.downloaded > 64000) controller.abort() } }
+    await assert.rejects(own.transfer(config), { code: 'ABORTED' })
+    assert.equal(fs.existsSync(destination), false)
+    const partialSize = fs.statSync(destination + '.part').size
+    const partialHash = crypto.createHash('sha256').update(fs.readFileSync(destination + '.part')).digest('hex')
+    assert.ok(partialSize > 0)
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.equal(fs.statSync(destination + '.part').size, partialSize, 'no writer survives signal cancellation')
+    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(destination + '.part')).digest('hex'), partialHash, 'a preallocated file must not keep changing after cancellation')
+    await own.transfer({ ...config, signal: undefined, onProgress() {} })
+    matches(destination)
+  }
+})
+
+test('simultaneous language jobs with identical titles do not share partials when one stops', async () => {
+  const controller = new AbortController(), destinations = []
+  const config = (index) => ({
+    download: { id: `same-title-${index}`, url: base + '/slow', title: 'Same concurrent title', preferredAudioLanguage: index ? 'tr' : 'en', resolved: { kind: 'file' } },
+    settings: { downloadDir: root, connections: 1 }, signal: index ? undefined : controller.signal,
+    onDest: (file) => { destinations[index] = file }, onHandle() {}, onNote() {},
+    onProgress: (progress) => { if (!index && progress.downloaded > 64000) controller.abort() },
+  })
+  const first = config(0), second = config(1)
+  const outcomes = await Promise.allSettled([own.transfer(first), own.transfer(second)])
+  assert.equal(outcomes[0].status, 'rejected'); assert.equal(outcomes[0].reason.code, 'ABORTED')
+  assert.equal(outcomes[1].status, 'fulfilled')
+  assert.notEqual(destinations[0], destinations[1])
+  matches(destinations[1])
+  await own.transfer({ ...first, signal: undefined, onProgress() {} })
+  matches(destinations[0]); matches(destinations[1])
+  assert.equal(fs.existsSync(destinations[0] + '.aio-owner'), false)
+  assert.equal(fs.existsSync(destinations[1] + '.aio-owner'), false)
+})
+
+test('already-aborted file requests never create output and signal cancels a header wait', async () => {
+  for (const transfer of [own.fetchFile, own.fetchFileParallel]) {
+    const controller = new AbortController(); controller.abort()
+    const opts = options('never-' + transfer.name + '.mp4', '/file')
+    await assert.rejects(transfer({ ...opts, signal: controller.signal }), { code: 'ABORTED' })
+    assert.equal(fs.existsSync(opts.destPath + '.part'), false)
+  }
+  const controller = new AbortController()
+  const opts = options('signal-headers.mp4', '/waiting')
+  const pending = own.fetchFile({ ...opts, signal: controller.signal })
+  setTimeout(() => controller.abort(), 25)
+  await assert.rejects(pending, { code: 'ABORTED' })
+})
+
+test('the native socket watchdog also interrupts a response that stalls after body bytes', async () => {
+  const response = await own.openStream(base + '/stalled-body', {})
+  assert.equal(response.stream.socket.timeout, 15000)
+  // Keep the actual production timeout handler, shortening only this fixture's
+  // inactivity interval so the regression does not sleep fifteen seconds.
+  response.request.setTimeout(80)
+  let received = 0
+  await assert.rejects((async () => {
+    for await (const bytes of response.stream) received += bytes.length
+  })(), (error) => ['ECONNRESET', 'ETIMEDOUT'].includes(error.code))
+  assert.ok(received > 0 && received < payload.length)
 })
 test('an overlapping or incomplete resume plan is rejected', () => {
   const file = path.join(root, 'bad.parts')

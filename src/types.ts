@@ -384,6 +384,38 @@ export interface DownloadRequest {
   categoryId?: string | null
 }
 
+export interface CollectionEditRequest {
+  ids: string[]
+  series?: string | null
+  season?: number | null
+  episodeStart?: number | null
+  order?: 'existing' | 'title' | 'created'
+  revision?: string
+}
+export interface CollectionMetadata { series: string | null; season: number | null; episode: number | null }
+export interface CollectionEditPreview {
+  count: number
+  rows: Array<{ id: string; title: string; before: CollectionMetadata; after: CollectionMetadata }>
+  revision: string
+}
+export interface CollectionEditResult extends CollectionEditPreview { undoToken: string | null }
+
+export interface MediaInspection {
+  checkedAt: number
+  fileSize: number
+  fileModifiedAt: number
+  packetCount: number
+  videoLongFrames: number
+  audioLongPackets: number
+  correlatedGaps: number
+  longestVideoHold: number
+  kind: 'regular' | 'timing-variation' | 'matching-audio-video-gaps'
+  firstCorrelatedGaps: Array<{ at: number; duration: number }>
+  firstVideoHolds: Array<{ at: number; duration: number }>
+  video: { codec: string; width: number | null; height: number | null; frameRate: number | null } | null
+  audio: Array<{ language: string; codec: string; sampleRate: number | null }>
+}
+
 /** Where the app stands against its latest GitHub release. */
 export interface UpdateState {
   phase: 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'installing' | 'error'

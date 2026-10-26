@@ -6,6 +6,7 @@ const os = require('node:os')
 const path = require('node:path')
 const vm = require('node:vm')
 const cp = require('node:child_process')
+const { createCookieFiles } = require('../electron/lib/cookie-files')
 
 const HEADER = '# Netscape HTTP Cookie File\n'
 const EXPORTED = HEADER + '# Synthetic test export\n\noffline.invalid\tFALSE\t/\tFALSE\t4102444800\tsynthetic\tfixture-only\n'
@@ -18,6 +19,7 @@ function fixture(t, options = {}) {
   let now = 1000000
   const module = { exports: {} }
   const testFs = { ...fs, ...(options.fs || {}) }
+  const cookieFiles = createCookieFiles({ directory: path.join(root, 'owned-cookies'), now: () => now, filesystem: testFs })
   const execute = options.execFile || ((bin, args, config, callback) => calls.push({ bin, args, config, callback }))
   vm.runInNewContext(source, {
     module, exports: module.exports, Buffer,
@@ -28,6 +30,7 @@ function fixture(t, options = {}) {
       if (name === 'os') return { tmpdir: () => root }
       if (name === 'child_process') return { execFile: execute }
       if (name === './binaries') return { toolEnv: () => options.env || {}, ytdlpPathOrThrow: () => { if (options.missingTool) throw new Error('missing'); return 'synthetic-yt-dlp' } }
+      if (name === './cookie-files') return cookieFiles
       return require(name)
     },
   }, { filename: 'browsers.js' })
@@ -35,12 +38,12 @@ function fixture(t, options = {}) {
     if (content !== null) fs.writeFileSync(call.args[call.args.indexOf('--cookies') + 1], content)
     call.callback(error)
   }
-  return { browsers: module.exports, root, calls, complete, advance: (ms) => { now += ms } }
+  return { browsers: module.exports, cookieFiles, root, calls, complete, advance: (ms) => { now += ms } }
 }
 
 function outputFile(call) { return call.args[call.args.indexOf('--cookies') + 1] }
 function infoFile(call) { return call.args[call.args.indexOf('--load-info-json') + 1] }
-function exportDirs(root) { return fs.readdirSync(root).filter((name) => name.startsWith('edl-browser-cookies-')) }
+function exportDirs(root) { try { return fs.readdirSync(path.join(root, 'owned-cookies')).filter((name) => name.startsWith('jar-')) } catch { return [] } }
 
 test('cookie export starts in a private unique directory and supplies only an empty local playlist', async (t) => {
   const { browsers, calls, complete } = fixture(t)
@@ -131,6 +134,40 @@ test('refreshing an expired jar preserves the previously issued file for active 
   assert.equal(fs.existsSync(nextFile), true)
 })
 
+test('cached and referenced exports survive cleanup while retired unused jars are removed', async (t) => {
+  const { browsers, cookieFiles, calls, complete, advance } = fixture(t)
+  const first = browsers.exportCookieJar('firefox:/synthetic/profile')
+  complete(calls[0]); const oldFile = await first
+  assert.equal(browsers.cleanupCookieJars({ forceUnused: true }).removed, 0)
+  cookieFiles.setReferences([oldFile])
+  advance(5 * 60000 + 1)
+  const fresh = browsers.exportCookieJar('firefox:/synthetic/profile')
+  complete(calls[1]); const current = await fresh
+  assert.equal(browsers.cleanupCookieJars({ forceUnused: true }).removed, 0)
+  cookieFiles.setReferences([])
+  assert.equal(browsers.cleanupCookieJars({ forceUnused: true }).removed, 1)
+  assert.equal(fs.existsSync(oldFile), false)
+  assert.equal(fs.existsSync(current), true)
+  browsers.shutdownCookieJars()
+  assert.equal(browsers.cleanupCookieJars({ forceUnused: true }).removed, 1)
+  assert.equal(fs.existsSync(current), false)
+  assert.equal(await browsers.exportCookieJar('firefox:/synthetic/profile'), null)
+})
+
+test('shutdown stops only owned pending exports and late completion cannot cache another credential file', async (t) => {
+  let call, killed = 0
+  const { browsers, complete, root } = fixture(t, { execFile: (bin, args, config, callback) => {
+    call = { bin, args, config, callback }
+    return { kill: () => { killed++ } }
+  } })
+  const pending = browsers.exportCookieJar('firefox:/synthetic/profile')
+  browsers.shutdownCookieJars()
+  assert.equal(killed, 1)
+  complete(call)
+  assert.equal(await pending, null)
+  assert.deepEqual(exportDirs(root), [])
+})
+
 test('failed or untouched exports return null, remove their private output and can be retried', async (t) => {
   const { browsers, root, calls, complete } = fixture(t)
   const failed = browsers.exportCookieJar('firefox:/synthetic/profile')
@@ -161,11 +198,11 @@ test('synchronous setup, tool and process errors remain null results with no lea
 test('file protection failures discard new cookies and cleanup errors never reject callers', async (t) => {
   const protect = fixture(t, { fs: { chmodSync: () => { throw new Error('synthetic permission error') } } })
   const pending = protect.browsers.exportCookieJar('firefox:/synthetic/profile')
-  protect.complete(protect.calls[0])
   assert.equal(await pending, null)
+  assert.equal(protect.calls.length, 0)
   assert.deepEqual(exportDirs(protect.root), [])
   let attemptedCleanup = false
-  const cleanup = fixture(t, { fs: { rmSync: () => { attemptedCleanup = true; throw new Error('synthetic cleanup error') } } })
+  const cleanup = fixture(t, { fs: { rmdirSync: () => { attemptedCleanup = true; throw new Error('synthetic cleanup error') } } })
   const failed = cleanup.browsers.exportCookieJar('firefox:/synthetic/profile')
   cleanup.complete(cleanup.calls[0], new Error('synthetic extraction error'))
   assert.equal(await failed, null)

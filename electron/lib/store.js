@@ -9,6 +9,7 @@ const { app, BrowserWindow } = require('electron')
 const { atomicWrite, readJson, uid } = require('./util')
 const { detectBrowsers } = require('./browsers')
 const libraryBackup = require('./library-backup')
+const cookieFiles = require('./cookie-files')
 
 const STATE_VERSION = 1
 
@@ -256,12 +257,17 @@ function getState() {
   return state
 }
 
+function cookieReferences() {
+  return [...state.items, ...state.downloads].flatMap((entry) => [entry.resolved?.cookieFile, entry.cookieFile]).filter((file) => typeof file === 'string' && file)
+}
+
 function save() {
   if (saveTimer) return
   saveTimer = setTimeout(() => {
     saveTimer = null
     try {
       libraryBackup.writeLibrary(stateFile, state)
+      cookieFiles.setReferences(cookieReferences())
     } catch (err) {
       console.error('[store] kaydedilemedi', err)
     }
@@ -275,6 +281,7 @@ function flush() {
   }
   try {
     libraryBackup.writeLibrary(stateFile, state)
+    cookieFiles.setReferences(cookieReferences())
   } catch (err) {
     console.error('[store] kaydedilemedi', err)
   }
@@ -465,6 +472,7 @@ function ensureDownloadDir() {
 }
 
 module.exports = {
+  cookieReferences,
   init,
   getState,
   commit,

@@ -8,6 +8,17 @@ macOS için yazıldı; Windows altyapısı baştan hazır (aşağıya bak).
 
 ---
 
+## 0.16.0 — kitaplık düzeni ve aktarım kararlılığı
+
+- Kitaplıkta tek veya çoklu seçimle **Dizi / bölüm düzenle**: koleksiyon, sezon
+  ve sıralı bölüm numaraları; kaydetmeden önce önizleme ve son işlemi geri alma.
+- Video menüsündeki **Videonun zamanlamasını kontrol et**, ses/görüntüdeki
+  boşlukları dosyayı değiştirmeden inceler. Bu, eksik sahneleri yeniden üretmez.
+- Tek/paralel dosya aktarımında iptal ve devam, çok dönemli DASH kalan süre
+  hesabı ve geçici oturum dosyalarının güvenli temizliği güçlendirildi.
+- Otomatik başlatma kapalıyken ayar değiştirmek veya uygulamayı açmak sırayı
+  kendiliğinden başlatmaz. Koleksiyon adına göre arama kullanılabilir.
+
 ## 0.15.0 — ses seçimi, güvenilir oynatma ve site hesapları
 
 - Kaynaklarda çözünürlüğün yanında **Türkçe ses / İngilizce ses / Kaynağın sesi**

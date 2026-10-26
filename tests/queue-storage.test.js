@@ -5,7 +5,9 @@ const { root, load } = require('./helpers.cjs')
 const store = load('electron/lib/store.js')
 const starts = [], transfers = new Map()
 let lowSpace = false
+const cookieLeases = new Set()
 const downloader = load('electron/lib/downloader.js', {
+  './cookie-files': { retain: (file) => { cookieLeases.add(file); return () => cookieLeases.delete(file) } },
   './disk-space': { MiB: 1024 * 1024, assertSpace: () => { if (lowSpace) throw Object.assign(new Error('Disk doldu; yer açıp sürdür.'), { code: 'ENOSPC' }) } },
   './network-context': { getContext: () => ({ kind: 'tor' }), ensureForSource: async () => 'socks5://127.0.0.1:32123' },
   './ownengine': { transfer: (options) => new Promise((resolve, reject) => {
@@ -93,4 +95,15 @@ test('per-download audio choices stay independent from defaults and duplicate de
   assert.equal(english.preferredAudioLanguage, 'en')
   assert.equal(downloader.enqueue({ item, preferredAudioLanguage: 'en' }).id, english.id)
   assert.throws(() => downloader.enqueue({ item, preferredAudioLanguage: 'invalid' }), /Ses dili/)
+})
+
+test('active transfers retain their captured session until pause settles', async () => {
+  reset()
+  const item = { id: 'captured', title: 'captured', url: 'https://example.test/captured.mp4', resolved: { kind: 'file', cookieFile: '/synthetic/cookies.txt' } }
+  const download = downloader.enqueue({ item })
+  downloader.pumpQueue(); await tick()
+  assert.equal(cookieLeases.has(item.resolved.cookieFile), true)
+  downloader.pause(download.id); await tick(); await tick()
+  assert.equal(cookieLeases.has(item.resolved.cookieFile), false)
+  assert.equal(download.status, 'paused')
 })

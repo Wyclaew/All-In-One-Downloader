@@ -10,10 +10,12 @@ const store = {
   itemsOfSource: (id) => state.items.filter((i) => i.sourceId === id), getHostProfile: () => null,
   rememberHostProfile() {}, toast() {},
 }
-let failNetwork = false, blockMetadata = false, seenProxy = '', aborted = false, delayAbort = false
+let failNetwork = false, blockMetadata = false, seenProxy = '', aborted = false, delayAbort = false, inspectNetwork = null
+const heldCookies = new Set()
 const probe = load('electron/lib/probe.js', {
   './store': store,
-  './network-context': { ensureForSource: async () => { if (failNetwork) throw new Error('Tor başlatılamadı'); return 'socks5://127.0.0.1:32123' }, getContext: () => ({ kind: 'tor', isolated: true, label: 'Tor' }) },
+  './cookie-files': { retain: (file) => { if (file) heldCookies.add(file); return () => heldCookies.delete(file) } },
+  './network-context': { ensureForSource: async () => { await inspectNetwork?.(); if (failNetwork) throw new Error('Tor başlatılamadı'); return 'socks5://127.0.0.1:32123' }, getContext: () => ({ kind: 'tor', isolated: true, label: 'Tor' }) },
   './resolver': {
     embedCandidatesFor: () => [],
     resolvePage: async (_url, options) => { seenProxy = options.proxy; return { title: 'Video', engine: 'static', candidates: [{ url: 'https://cdn.example.test/video.m3u8', kind: 'hls', info: { duration: 1800, height: 1080, live: false } }] } },
@@ -85,4 +87,26 @@ test('network bootstrap failure becomes a terminal source error for discovery an
   await probe.captureSource(source.id)
   assert.equal(source.status, 'error')
   assert.equal(source.stage, null)
+})
+
+test('rescans retain the previous cookie before removing items and release it after network success or failure', async () => {
+  for (const capture of [false, true]) for (const fail of [false, true]) {
+    failNetwork = fail
+    const source = probe.createSource('https://site.example.test/retained', { useProxy: true })
+    const jar = `/synthetic/${source.id}/cookies.txt`
+    state.items.push({ id: 'previous', sourceId: source.id, resolved: { cookieFile: jar } })
+    let reached = false
+    inspectNetwork = async () => {
+      reached = true
+      assert.equal(store.itemsOfSource(source.id).length, 0)
+      assert.equal(heldCookies.has(jar), true, 'the old library reference is gone, but the rescan owns a lease')
+      await Promise.resolve()
+      assert.equal(heldCookies.has(jar), true)
+    }
+    if (capture) await probe.captureSource(source.id)
+    else await probe.probeUrl(source.url, { sourceId: source.id })
+    assert.equal(reached, true)
+    assert.equal(heldCookies.has(jar), false)
+  }
+  inspectNetwork = null; failNetwork = false
 })

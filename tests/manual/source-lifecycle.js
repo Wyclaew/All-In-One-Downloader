@@ -53,6 +53,8 @@ app.once('browser-window-created', (_event, win) => {
       assert.equal(report.includes('/master.m3u8'), false)
       const first = await call('download', { itemIds: [item.id], quality: 720 })
       assert.equal(first.count, 1)
+      await call('updateSettings', { theme: 'light' })
+      assert.equal((await state()).downloads[0].status, 'queued', 'Changing appearance must not start a manually queued download')
       assert.equal((await call('download', { itemIds: [item.id], quality: 720 })).count, 0)
       assert.equal(await call('setSourceProxy', queued.id, true), true)
       await call('cancelSource', queued.id)

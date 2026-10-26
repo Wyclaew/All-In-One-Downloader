@@ -1291,7 +1291,7 @@ function writeCookieJar(cookies, file) {
       ].join('\t')
     )
   }
-  fs.writeFileSync(file, `${lines.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 })
+  require('./cookie-files').write(file, `${lines.join('\n')}\n`)
   return file
 }
 
@@ -1381,7 +1381,8 @@ function browserScan(
     let documentEvidence = accessEvidence(null, '')
     let documentFailure = null
     let accountState = null
-    const captureCookieFile = path.join(os.tmpdir(), `edl-cookies-${uid('c')}.txt`)
+    const captureCookieFile = require('./cookie-files').allocate('resolver')
+    const releaseCaptureCookie = require('./cookie-files').retain(captureCookieFile)
     // A runtime announced by a user script, used the same way the page's own
     // declared duration is: to tell a short pre-roll from the feature.
     let scriptDuration = null
@@ -1649,6 +1650,7 @@ function browserScan(
     async function finish(force = false) {
       if (done) return
       done = true
+      try {
       if (force || signal?.aborted) captureController.abort()
       clearTimeout(settleTimer)
       clearTimeout(hardStop)
@@ -1739,6 +1741,7 @@ function browserScan(
           ? Math.min(...all.filter((h) => h.info && h.info.duration).map((h) => h.info.duration), Infinity)
           : Infinity,
       })
+      } finally { releaseCaptureCookie() }
     }
 
     // Close discovery at the deadline, but let an already captured manifest
@@ -2419,6 +2422,7 @@ async function assistedCaptureImpl(
 }
 
 async function resolvePage(pageUrl, options = {}) {
+  const releaseInputCookie = require('./cookie-files').retain(options.browserCookieJar)
   const controller = new AbortController()
   const abort = () => controller.abort(options.signal?.reason)
   if (options.signal?.aborted) abort()
@@ -2429,11 +2433,13 @@ async function resolvePage(pageUrl, options = {}) {
   try {
     const result = await withRules(options, () => resolvePageImpl(pageUrl, { ...options, signal: controller.signal }))
     return { ...result, timedOut }
-  } finally { clearTimeout(timer); options.signal?.removeEventListener('abort', abort) }
+  } finally { clearTimeout(timer); options.signal?.removeEventListener('abort', abort); releaseInputCookie() }
 }
 
-function assistedCapture(pageUrl, options = {}) {
-  return withRules(options, () => assistedCaptureImpl(pageUrl, options))
+async function assistedCapture(pageUrl, options = {}) {
+  const releaseInputCookie = require('./cookie-files').retain(options.browserCookieJar)
+  try { return await withRules(options, () => assistedCaptureImpl(pageUrl, options)) }
+  finally { releaseInputCookie() }
 }
 
 module.exports = {

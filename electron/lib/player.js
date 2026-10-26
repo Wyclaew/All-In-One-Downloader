@@ -435,14 +435,17 @@ function storeDirFor(filePath) {
  * the subtitle streams Chromium refuses to surface, the audio streams (so a
  * dual-language episode can switch), and the chapter marks.
  */
-function probeMedia(input, signal) {
+const LOCAL_MEDIA_FORMATS = 'mov,matroska,webm,mpegts,mpeg,mpegvideo,avi,asf,mp3,aac,ac3,eac3,flac,wav,ogg'
+const localProbeArgs = () => ['-protocol_whitelist', 'file', '-format_whitelist', LOCAL_MEDIA_FORMATS]
+
+function probeMedia(input, signal, { localOnly = false } = {}) {
   return new Promise((resolve) => {
     const empty = { subs: [], audio: [], chapters: [], video: null }
     const bin = ffprobePath()
     if (!bin) return resolve(empty)
     execFile(
       bin,
-      ['-v', 'quiet', '-print_format', 'json', '-show_streams', '-show_chapters', input],
+      ['-v', 'quiet', ...(localOnly ? localProbeArgs() : []), '-print_format', 'json', '-show_streams', '-show_chapters', input],
       { env: toolEnv(), signal, timeout: 30000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
       (err, stdout) => {
         if (err) return resolve(empty)
@@ -527,7 +530,7 @@ function probeTiming(session) {
   const pending = (async () => {
     const bin = ffprobePath()
     if (!bin) throw new Error('Zamanlama kontrolü için ffprobe gerekiyor.')
-    const media = session.media || await probeMedia(inputOf(session), session.controller?.signal)
+    const media = session.media || await probeMedia(inputOf(session), session.controller?.signal, { localOnly: !!session.localOnly })
     if (session.controller?.signal.aborted || (session.epoch || 0) !== epoch) throw new Error('Kontrol iptal edildi.')
     if (!media.video && !media.audio.length) throw new Error('Kontrol edilebilen görüntü veya ses akışı bulunamadı.')
     const analyzer = createTimingAnalyzer(media)
@@ -543,7 +546,7 @@ function probeTiming(session) {
         }
       }
       try {
-        child = spawn(bin, ['-v', 'error', '-show_entries', 'packet=stream_index,pts_time,dts_time,duration_time',
+        child = spawn(bin, ['-v', 'error', ...(session.localOnly ? localProbeArgs() : []), '-show_entries', 'packet=stream_index,pts_time,dts_time,duration_time',
           '-of', 'compact=p=0:nk=0', inputOf(session)], { env: toolEnv(), windowsHide: true, signal: session.controller?.signal })
         timer = setTimeout(() => finish(new Error('Kontrol iki dakika içinde tamamlanamadı.')), 120000)
         child.stdout.on('data', (chunk) => {
@@ -575,6 +578,28 @@ function probeTiming(session) {
   const clear = () => { if (session.timingPromise === pending) session.timingPromise = null }
   pending.then(clear, clear)
   return pending
+}
+
+/** Library inspection shares the player's bounded scanner, without opening it. */
+async function inspectFileTiming(file, { signal } = {}) {
+  const before = fs.statSync(file)
+  if (!before.isFile()) throw new Error('Kontrol edilecek video dosyası bulunamadı.')
+  const session = { file, controller: new AbortController(), localOnly: true }
+  const abort = () => session.controller.abort()
+  if (signal?.aborted) abort()
+  else signal?.addEventListener('abort', abort, { once: true })
+  try {
+    session.media = await probeMedia(file, session.controller.signal, { localOnly: true })
+    const report = await probeTiming(session)
+    const after = fs.statSync(file)
+    if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new Error('Dosya kontrol sırasında değişti. Yeniden kontrol et.')
+    return { ...report, checkedAt: Date.now(), fileSize: after.size, fileModifiedAt: after.mtimeMs,
+      video: session.media.video,
+      audio: session.media.audio.map((track) => ({ language: String(track.language || '').slice(0, 32), codec: track.codec, sampleRate: track.sampleRate })) }
+  } finally {
+    signal?.removeEventListener('abort', abort)
+    releaseSession(session)
+  }
 }
 
 async function listTracks(session) {
@@ -1349,5 +1374,6 @@ module.exports = {
   neighbour,
   rangeOf,
   probeMedia,
+  inspectFileTiming,
   _internals: { listTracks, releaseSession, remux, probeTiming, frameRateOf },
 }

@@ -19,6 +19,18 @@ const diagnostics = require('./lib/diagnostics')
 const locate = require('./lib/locate')
 const updater = require('./lib/updater')
 const siteAccounts = require('./lib/site-accounts')
+const cookieFiles = require('./lib/cookie-files')
+let cookieSweepTimer = null
+const collections = require('./lib/collections').createCollectionEditor({
+  getDownloads: () => store.getState().downloads,
+  commit: (fn) => store.commit(fn),
+})
+const mediaInspection = require('./lib/media-inspection').createMediaInspection({
+  getDownload: (id) => store.findDownload(id),
+  resolvePath: (download) => locateDownloadFile(download),
+  inspect: (file, options) => player.inspectFileTiming(file, options),
+  commit: (fn) => store.commit(fn),
+})
 const { uid, extractUrls, isProbablyUrl } = require('./lib/util')
 
 // The player streams the file over a private scheme, and a scheme has to claim
@@ -698,6 +710,15 @@ function registerIpc() {
     return true
   })
 
+  handle('collection:preview', (payload) => collections.preview(payload))
+  handle('collection:apply', (payload) => collections.apply(payload))
+  handle('collection:undo', (token) => collections.undo(token))
+  handle('dl:inspectMedia', async (id) => {
+    try { return await mediaInspection.check(id) }
+    catch (error) { if (error.code === 'ABORTED') return null; throw error }
+  })
+  handle('dl:inspectMedia:cancel', (id) => mediaInspection.cancel(id))
+
   handle('settings:update', (raw) => {
     // Settings the interface has no business writing: an executable path the
     // app will later spawn, a sealed credential, bookkeeping. A compromised page
@@ -712,7 +733,7 @@ function registerIpc() {
       vault.configure({ autoLockMinutes: patch.vaultAutoLockMinutes })
       pushVault()
     }
-    downloader.pumpQueue()
+    if (store.getState().settings.autoStartDownloads) downloader.pumpQueue()
     return store.getState().settings
   })
 
@@ -1042,6 +1063,10 @@ async function runTidy({ quiet = false } = {}) {
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
+  // OS updates and terminal shutdown must run the same pause/flush/lock path
+  // as the Quit menu instead of abandoning active processes and partial state.
+  process.once('SIGTERM', () => app.quit())
+  process.once('SIGINT', () => app.quit())
   app.on('second-instance', () => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
@@ -1059,6 +1084,13 @@ if (!app.requestSingleInstanceLock()) {
       }
     }
     store.init()
+    cookieFiles.setReferences(store.cookieReferences())
+    browsers.cleanupCookieJars()
+    cookieSweepTimer = setInterval(() => {
+      cookieFiles.setReferences(store.cookieReferences())
+      browsers.cleanupCookieJars()
+    }, 60000)
+    cookieSweepTimer.unref?.()
     player.registerProtocol()
     vault.configure({ autoLockMinutes: store.getState().settings.vaultAutoLockMinutes })
     // An idle lock has to reach the interface, or it would keep showing a list
@@ -1086,7 +1118,7 @@ if (!app.requestSingleInstanceLock()) {
     await binaries.detectTools()
     store.send('state', store.getState())
     downloader.verifyFiles()
-    downloader.pumpQueue()
+    if (store.getState().settings.autoStartDownloads) downloader.pumpQueue()
     // What older versions left lying in the download folder — the player page
     // and loose subtitle files — is cleared up once per launch, after the window
     // is up so it never delays it.
@@ -1106,6 +1138,8 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.on('before-quit', () => {
+    clearInterval(cookieSweepTimer)
+    mediaInspection.shutdown()
     downloader.killAll()
     probe.killAll()
     network.shutdown()
@@ -1115,5 +1149,7 @@ if (!app.requestSingleInstanceLock()) {
     // Quitting locks the vault and takes the decrypted temp copies with it.
     vault.lock({ reason: 'quit' })
     store.flush()
+    browsers.shutdownCookieJars()
+    cookieFiles.shutdown({ referencedFiles: store.cookieReferences() })
   })
 }

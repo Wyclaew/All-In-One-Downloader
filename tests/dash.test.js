@@ -39,6 +39,21 @@ test('DASH native parser bounds open repeats and rejects DRM, live, gaps, unsupp
   assert.throws(() => dash.parseManifest(manifest(video.replace('r="3"', 'r="50001"')), 'https://example.test/v.mpd'), { code: 'DASH_UNSUPPORTED' })
 })
 
+test('DASH progress includes later periods instead of presenting the current period ETA as the whole video', () => {
+  const context = { elapsed: 10, periodDuration: 10, totalDuration: 30, savedBytes: 10000000, expectedSize: 30000000 }
+  const report = dash.periodProgress({ downloaded: 5000000, total: 10000000, speed: 1000000, eta: 5, percent: 0.5 }, context)
+  assert.equal(report.downloaded, 15000000)
+  assert.equal(report.total, 30000000)
+  assert.equal(report.percent, 0.5)
+  assert.equal(report.eta, 15, 'the final ten-second period must remain in the estimate')
+  assert.equal(report.totalExact, false)
+  assert.equal(dash.periodProgress({ downloaded: 0, total: 10000000, speed: 1000000, eta: null, percent: 0 }, context).eta, null, 'warm-up remains unknown')
+  assert.equal(dash.periodProgress({ downloaded: 5000000, total: 10000000, speed: 0, eta: null, percent: 0.5 }, context).eta, null, 'an idle connection has no ETA')
+  const unknown = dash.periodProgress({ downloaded: 5000000, total: 10000000, speed: 1000000, eta: 5, percent: 0.5 }, { ...context, expectedSize: null })
+  assert.equal(unknown.total, 30000000, 'measured period bytes estimate all remaining periods when metadata has no size')
+  assert.equal(unknown.eta, 15)
+})
+
 test.before(async () => {
   if (skip) return
   const fixture = path.join(root, 'dash-fixture'); fs.mkdirSync(fixture)

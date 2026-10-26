@@ -16,6 +16,10 @@ import type {
   VaultState,
   SiteAccountPolicy,
   SiteAccountsStatus,
+  CollectionEditRequest,
+  CollectionEditPreview,
+  CollectionEditResult,
+  MediaInspection,
 } from './types'
 
 type Result<T> = { ok: true; data: T } | { ok: false; error: string }
@@ -56,6 +60,11 @@ interface Bridge {
   download(payload: DownloadRequest): Promise<Result<{ count: number }>>
   prioritizeDownload(id: string): Promise<Result<boolean>>
   backupLibrary(): Promise<Result<{ path: string }>>
+  previewCollectionEdit(payload: CollectionEditRequest): Promise<Result<CollectionEditPreview>>
+  applyCollectionEdit(payload: CollectionEditRequest): Promise<Result<CollectionEditResult>>
+  undoCollectionEdit(token: string): Promise<Result<{ count: number }>>
+  inspectDownloadMedia(id: string): Promise<Result<MediaInspection | null>>
+  cancelDownloadMediaCheck(id: string): Promise<Result<boolean>>
   siteAccountsStatus(): Promise<Result<SiteAccountsStatus>>
   saveSiteAccountProfile(profile: { email: string; password: string }): Promise<Result<SiteAccountsStatus>>
   clearSiteAccountProfile(): Promise<Result<SiteAccountsStatus>>
@@ -195,6 +204,11 @@ export const api = {
 
   prioritizeDownload: (id: string) => call(bridge.prioritizeDownload(id)),
   backupLibrary: () => call(bridge.backupLibrary()),
+  previewCollectionEdit: (payload: CollectionEditRequest) => call(bridge.previewCollectionEdit(payload)),
+  applyCollectionEdit: (payload: CollectionEditRequest) => call(bridge.applyCollectionEdit(payload)),
+  undoCollectionEdit: (token: string) => call(bridge.undoCollectionEdit(token)),
+  inspectDownloadMedia: (id: string) => call(bridge.inspectDownloadMedia(id)),
+  cancelDownloadMediaCheck: (id: string) => call(bridge.cancelDownloadMediaCheck(id)),
   siteAccountsStatus: () => call(bridge.siteAccountsStatus()),
   saveSiteAccountProfile: (profile: { email: string; password: string }) => call(bridge.saveSiteAccountProfile(profile)),
   clearSiteAccountProfile: () => call(bridge.clearSiteAccountProfile()),

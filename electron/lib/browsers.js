@@ -10,10 +10,10 @@
 // BROWSER:PROFILE_PATH form, pointing at the real profile directory.
 
 const fs = require('fs')
-const os = require('os')
 const path = require('path')
 const { execFile } = require('child_process')
 const { toolEnv, ytdlpPathOrThrow } = require('./binaries')
+const cookieFiles = require('./cookie-files')
 
 const HOME = process.env.HOME || process.env.USERPROFILE || ''
 const IS_WIN = process.platform === 'win32'
@@ -212,8 +212,31 @@ const jarCache = new Map()
 const jarExports = new Map()
 const JAR_TTL = 5 * 60 * 1000
 const JAR_HEADER = '# Netscape HTTP Cookie File\n'
+const MAX_CACHED_JARS = 32
+let exportsClosed = false
+
+function expireCachedJars({ all = false } = {}) {
+  for (const [arg, cached] of jarCache) {
+    if (!all && Date.now() - cached.at < JAR_TTL && exists(cached.file)) continue
+    jarCache.delete(arg)
+    cached.release?.()
+  }
+}
+
+function cleanupCookieJars(options = {}) {
+  expireCachedJars()
+  return cookieFiles.sweep(options)
+}
+
+function shutdownCookieJars() {
+  exportsClosed = true
+  expireCachedJars({ all: true })
+  for (const pending of jarExports.values()) pending.stop?.()
+}
 
 function exportSharedCookieJar(browserId) {
+  if (exportsClosed) return Promise.resolve(null)
+  expireCachedJars()
   let arg
   try { arg = resolveCookieArg(browserId) } catch { return Promise.resolve(null) }
   if (!arg) return Promise.resolve(null)
@@ -221,19 +244,21 @@ function exportSharedCookieJar(browserId) {
   const cached = jarCache.get(arg)
   if (cached && Date.now() - cached.at < JAR_TTL) {
     try {
-      if (fs.statSync(cached.file).isFile()) return Promise.resolve(cached.file)
+      const stat = fs.lstatSync(cached.file)
+      if (stat.isFile() && !stat.isSymbolicLink() && cookieFiles.touch(cached.file)) return Promise.resolve(cached.file)
     } catch {
       /* fall through and re-export */
     }
+    jarCache.delete(arg); cached.release?.()
   }
   if (jarExports.has(arg)) return jarExports.get(arg)
 
+  let stopExport = () => {}
   const pending = new Promise((resolve) => {
-    let dir
+    let file, release = () => {}
     const discard = () => {
-      if (dir) {
-        try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* best effort; directory remains private */ }
-      }
+      release(); release = () => {}
+      if (file) cookieFiles.discard(file)
       resolve(null)
     }
     try {
@@ -241,15 +266,15 @@ function exportSharedCookieJar(browserId) {
       // mkdtemp creates an unpredictable directory with mode 0700 on POSIX,
       // before any cookie data exists. Date-based filenames collided between
       // concurrent sources and exposed the jar until a later chmod.
-      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'edl-browser-cookies-'))
-      const file = path.join(dir, 'cookies.txt')
+      file = cookieFiles.allocate('browser')
+      const dir = path.dirname(file)
+      release = cookieFiles.retain(file)
       const info = path.join(dir, 'empty.info.json')
-      fs.writeFileSync(file, JAR_HEADER, { mode: 0o600, flag: 'wx' })
       fs.writeFileSync(info, JSON.stringify({
         _type: 'playlist', id: 'aio-cookie-export', title: 'Cookie export',
         extractor: 'aio-cookie-export', extractor_key: 'Generic', entries: [],
       }), { mode: 0o600, flag: 'wx' })
-      execFile(
+      const child = execFile(
         bin,
         [
           '--ignore-config',
@@ -264,27 +289,36 @@ function exportSharedCookieJar(browserId) {
         ],
         { env: toolEnv(), timeout: 60000, windowsHide: true },
         (err) => {
-          if (err) return discard()
+          if (err || exportsClosed) return discard()
           try {
-            const stat = fs.statSync(file)
+            const stat = fs.lstatSync(file)
             // The precreated header alone does not prove that the tool saved
             // its jar. An empty browser still produces yt-dlp's full header.
-            if (!stat.isFile() || stat.size <= Buffer.byteLength(JAR_HEADER)) return discard()
+            if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= Buffer.byteLength(JAR_HEADER)) return discard()
             fs.chmodSync(file, 0o600)
             fs.rmSync(info, { force: true })
-            jarCache.set(arg, { file, at: Date.now() })
+            while (jarCache.size >= MAX_CACHED_JARS) {
+              const oldest = jarCache.entries().next().value
+              jarCache.delete(oldest[0]); oldest[1].release?.()
+            }
+            jarCache.set(arg, { file, at: Date.now(), release: cookieFiles.retain(file) })
+            release(); release = () => {}
             resolve(file)
           } catch { discard() }
         }
       )
+      // Child handles are not available in a synthetic synchronous exporter;
+      // production execFile always returns one. Do not cancel other waiters.
+      stopExport = () => { try { child?.kill() } catch {} }
     } catch {
       discard()
     }
   })
+  pending.stop = () => stopExport()
   jarExports.set(arg, pending)
   pending.then(() => { if (jarExports.get(arg) === pending) jarExports.delete(arg) })
-  // Expiration only controls reuse. Older issued jars may still be referenced
-  // by an active source/download; their lifecycle must not be guessed here.
+  // Retiring a cached lease does not discard a jar still referenced by an
+  // active source/download. The shared manager owns the grace period and refs.
   return pending
 }
 
@@ -300,4 +334,4 @@ function exportCookieJar(browserId, { signal } = {}) {
   })
 }
 
-module.exports = { detectBrowsers, resolveCookieArg, exportCookieJar }
+module.exports = { detectBrowsers, resolveCookieArg, exportCookieJar, cleanupCookieJars, shutdownCookieJars }

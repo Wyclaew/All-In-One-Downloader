@@ -120,5 +120,7 @@ app.whenReady().then(async () => {
   console.log(JSON.stringify({ ok: true, results, postResponse: true, rejectsHtmlAnd404: true, disguisedDashDrm: true, boundedStalledManifest: true, isolatedSessionReuse: true }))
 }).catch((err) => { console.error(err); exitCode = 1 }).finally(async () => {
   if (server) { server.closeAllConnections(); await new Promise((r) => server.close(r)) }
+  require('../../electron/lib/browsers').shutdownCookieJars()
+  require('../../electron/lib/cookie-files').shutdown({ referencedFiles: [] })
   fs.rmSync(profile, { recursive: true, force: true }); app.exit(exitCode)
 })

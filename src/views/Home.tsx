@@ -66,7 +66,7 @@ export default function Home({ state, downloads, category, query, onToast, onOpe
     let list = playable.filter((d) => {
       if (category === '__none__' && d.categoryId) return false
       if (category && category !== '__none__' && d.categoryId !== category) return false
-      if (needle && !`${d.title} ${d.site}`.toLocaleLowerCase('tr').includes(needle)) return false
+      if (needle && !`${d.title} ${d.site} ${d.series || ''}`.toLocaleLowerCase('tr').includes(needle)) return false
       if (filter === 'watched') return isWatched(d)
       if (filter === 'unwatched') return !isWatched(d) && progressOf(d) === 0
       if (filter === 'progress') return progressOf(d) > 0
