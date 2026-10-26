@@ -52,6 +52,8 @@ app.once('browser-window-created', (_event, win) => {
       win.webContents.send('menu', 'view:sources')
       await until(() => evaluate(`!!document.querySelector('.row-actions button[title="Seçilen ses ve kaliteyle yeniden dene"]')`))
       assert.equal(await evaluate(`document.querySelectorAll('.row-actions button[title="Yeniden dene"]').length`), 0)
+      assert.equal(await evaluate("document.querySelector('select[aria-label=\"Bu videonun indirilecek ses dili\"]').value"), 'en', 'retry keeps the existing requested language instead of the global auto preference')
+      assert.equal(await evaluate("document.querySelector('.row-actions select[title=\"Kalite\"]').value"), '720', 'retry keeps the existing quality')
       await evaluate(`{const select=document.querySelector('select[aria-label="Bu videonun indirilecek ses dili"]');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,'original');select.dispatchEvent(new Event('change',{bubbles:true}));}`)
       await evaluate(`document.querySelector('.row-actions button[title="Seçilen ses ve kaliteyle yeniden dene"]').click()`)
       await until(() => store.findDownload('job').status === 'done')

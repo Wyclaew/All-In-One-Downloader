@@ -1,4 +1,4 @@
-## 0.17.0 — ses ve aktarım düzeltmeleri
+## 0.17.1 — ses ve aktarım düzeltmeleri
 
 Türkçe ve İngilizce ses seçimleri artık sıkıdır; istenen dil doğrulanamazsa
 başka ses indirmek yerine açık hata gösterilir. LANGUAGE etiketi olmayan ama

@@ -1,6 +1,14 @@
-# Claude için güncel devir notu — 0.17.0
+# Claude için güncel devir notu — 0.17.1
 
-26 Ekim 2026. Bu bölüm günceldir; alttaki 0.16.0 tarihçedir.
+26 Ekim 2026. Son kurulum kontrolünde ek bir UI düzeltmesi gerekti: hata
+satırının ses/kalite seçicileri eski işin isteği yerine genel ayara dönüyordu.
+**0.17.1 bu isteği korur**; gerçek Electron testine İngilizce + 720p korunması
+regresyonu eklendi. Satır/iş eşlemesi güncelleme başına indekslenir; büyük bir
+kitaplık her satır için baştan taranmaz. Ses seçeneklerinde bitrate/DRC gibi
+çıkarıcı ayrıntıları yerine tekilleştirilmiş dil ve orijinal ses adları gösterilir.
+0.17.0 etiketi değiştirilmeyecek; tamamlanmış yaması 0.17.1 olarak yayımlanacak.
+
+Bu bölüm günceldir; alttaki 0.16.0 tarihçedir.
 Kullanıcının ses seçimi, Hdf/Dizibox aktarımı, geç başlama, kaynak/kitaplık
 durum farkı ve oynayan ilerleme çubukları şikâyetleri incelendi.
 
@@ -75,8 +83,7 @@ durum farkı ve oynayan ilerleme çubukları şikâyetleri incelendi.
 - Yeni helper'lar: `media-catalog.js`, `src/download-state.ts`, `AudioSelect.tsx`.
   Yeni test: `download-state.test.js`, `tests/manual/transfer-ui-smoke.js`.
 
-Yayın/kurulum tamamlandığında doğrulanmış sürüm, kaynak commit, CI ve kullanıcı
-kütüphanesinin korunması kaydı bu bölüme eklenecek.
+Yayın/kurulum tamamlandığında 0.17.1 kaynak commit, CI ve kurulum kaydı buraya eklenecek.
 
 ---
 

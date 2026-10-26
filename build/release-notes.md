@@ -11,7 +11,7 @@ Gereksiz yeniden çözümleme kaldırıldı; geçici kopmalarda sağlam parçala
 Aynı başlıklı eşzamanlı indirmeler için ayrı dosya hedefleri, yeniden çözümlemede
 oturum koruması ve MKV kesinti tanısı düzeltmeleri de bu sürüme dahildir.
 
-## 0.17.0 ile gelenler
+## 0.17.1 ile gelenler
 
 - **Toplu dizi / bölüm düzenleme:** koleksiyon adı, sezon ve bölüm numaraları. Önizleme, doğal sıralama ve son işlemi geri alma. Video dosyaları yeniden adlandırılmaz.
 - **Video zamanlama kontrolü:** kitaplıktaki video menüsünden ses/görüntü boşluklarını incele. Kontrol dosyayı değiştirmez; modal kapanınca durur.
@@ -26,9 +26,9 @@ oturum koruması ve MKV kesinti tanısı düzeltmeleri de bu sürüme dahildir.
 
 | Sistem | Dosya |
 |---|---|
-| macOS Apple Silicon | `All-in-One-Downloader-0.17.0-arm64.dmg` |
-| macOS Intel | `All-in-One-Downloader-0.17.0-x64.dmg` |
-| Windows 10/11 64 bit | `All-in-One-Downloader-0.17.0-setup.exe` |
+| macOS Apple Silicon | `All-in-One-Downloader-0.17.1-arm64.dmg` |
+| macOS Intel | `All-in-One-Downloader-0.17.1-x64.dmg` |
+| Windows 10/11 64 bit | `All-in-One-Downloader-0.17.1-setup.exe` |
 
 Uygulama içindeki güncelleme denetimi açıksa yeni sürüm üstte bildirilir. Açılıştan yaklaşık 15 saniye sonra, ardından altı saatte bir kontrol edilir. Hemen kontrol etmek için Ayarlar → Uygulama → Güncellemeleri denetle kullanılabilir. Kurulum kullanıcı düğmeye bastığında başlar.
 

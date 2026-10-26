@@ -1,5 +1,5 @@
 import AudioSelect, { type AudioChoice } from '../components/AudioSelect'
-import { downloadForItem, mediaPreferenceKey } from '../download-state'
+import { indexDownloads, mediaPreferenceKey } from '../download-state'
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import * as fmt from '../format'
@@ -107,7 +107,10 @@ export default function Sources({
     return map
   }, [state.items])
 
-  const downloadsByItem = useMemo(() => new Map(state.items.map((item) => [item.id, downloadForItem(item, downloads)])), [state.items, downloads])
+  const downloadsByItem = useMemo(() => {
+    const find = indexDownloads(downloads)
+    return new Map(state.items.map((item) => [item.id, find(item)]))
+  }, [state.items, downloads])
 
   if (!state.sources.length) {
     return (
@@ -119,9 +122,13 @@ export default function Sources({
     )
   }
 
-  const qualityFor = (item: MediaItem) =>
-    rowQuality[mediaPreferenceKey(item)] ?? rowQuality[item.id] ?? groupQuality[item.sourceId] ?? fallbackQuality
-  const audioFor = (item: MediaItem) => audioRow[mediaPreferenceKey(item)] ?? audioRow[item.id] ?? audioGroup[item.sourceId] ?? state.settings.preferredAudioLanguage ?? 'en'
+  const qualityFor = (item: MediaItem) => {
+    const previous = downloadsByItem.get(item.id)
+    return rowQuality[mediaPreferenceKey(item)] ?? rowQuality[item.id] ?? groupQuality[item.sourceId] ??
+      (previous ? previous.audioOnly ? 'audio' : fromDefault(previous.quality) : fallbackQuality)
+  }
+  const audioFor = (item: MediaItem): AudioChoice => (audioRow[mediaPreferenceKey(item)] ?? audioRow[item.id] ?? audioGroup[item.sourceId] ??
+    downloadsByItem.get(item.id)?.preferredAudioLanguage ?? state.settings.preferredAudioLanguage ?? 'en') as AudioChoice
 
   const startDownload = (item: MediaItem) => {
     api.download({ itemIds: [item.id], ...toRequest(qualityFor(item)), preferredAudioLanguage: audioFor(item) })
@@ -575,7 +582,13 @@ function Row({
           {size ? <span className="sep" /> : null}
           <span>{item.site}</span>
           {download ? <><span className="sep" /><span>{download.status === 'done' ? `Ses: ${fmt.audioLanguage(download.audioLanguage || (download.preferredAudioLanguage === 'original' ? 'original' : null))}` : `İstenen ses: ${fmt.audioLanguage(download.preferredAudioLanguage || 'auto')}`}</span></> : null}
-          {item.audioTracks?.length ? <><span className="sep" /><span title="Kaynağın bildirdiği ses seçenekleri">Sesler: {[...new Set(item.audioTracks.map((track) => track.name || fmt.audioLanguage(track.lang)))].join(", ")}</span></> : null}
+          {item.audioTracks?.some((track) => track.lang || /original|orijinal|turkish|türkçe|turkce|english|ingilizce/i.test(track.name || '')) ? <><span className="sep" /><span title="Kaynağın bildirdiği ses seçenekleri">Sesler: {[...new Set(item.audioTracks.map((track) => {
+            if (track.lang) return fmt.audioLanguage(track.lang)
+            if (/original|orijinal/i.test(track.name || '')) return 'Orijinal ses'
+            if (/turkish|türkçe|turkce/i.test(track.name || '')) return 'Türkçe'
+            if (/english|ingilizce/i.test(track.name || '')) return 'İngilizce'
+            return ''
+          }).filter(Boolean))].join(", ")}</span></> : null}
           {!item.duration && !item.isLive ? <span className="sep" /> : null}
           {!item.duration && !item.isLive ? <span>{T.item.unknownDuration}</span> : null}
           {!size && !item.isLive ? <span className="sep" /> : null}
