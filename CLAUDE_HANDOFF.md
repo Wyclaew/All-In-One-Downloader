@@ -100,8 +100,41 @@ Loglar: `/tmp/aio-016-release-tests.log`, `/tmp/aio-016-final-fixes.log`, `/tmp/
 `/tmp/aio-016-resolver-fixtures.log`. UI görselleri:
 `/tmp/aio-collections-preview.png`, `/tmp/aio-media-health-ui.png`.
 
-Yayın/kurulum kaydı aşağıya tamamlandıktan sonra eklenecek.0.15.0 tarihçesi
-altta korunur; eski kurulum/commit bilgilerinin yerine bu bölüm esas alınır.
+## Yayın ve yerel kurulum tamamlandı
+
+- Kaynak commit **`8f3f873`**, `main` ve annotated **`v0.16.0`** GitHub'a gönderildi.
+  [0.16.0 stable yayını](https://github.com/Wyclaew/All-In-One-Downloader/releases/tag/v0.16.0)
+  public; draft=false, prerelease=false. Mac arm64/x64 ZIP+DMG, Windows installer
+  ve iki otomatik güncelleme manifesti mevcut.
+- [Release workflow 40298615462](https://github.com/Wyclaew/All-In-One-Downloader/actions/runs/40298615462)
+  başarılı: iki platform typecheck/test/build, paketler ve yayın öncesi manifest
+  doğrulaması tamamlandı. Yerel test adedi **254/254, 0 skip**; CI test adetleri
+  burada ayrıca sayılmadı.
+- Gerçek updater, izole profil ile `0.15.0 → 0.16.0`, `phase=available`,
+  `automatic=true` verdi. Log `/tmp/aio-016-update-smoke.log`.
+- Kullanıcının **`/Applications/All in One Downloader.app` uygulaması 0.15.0'dan
+  0.16.0'a güncellendi ve açıldı.** Eski uygulama menüdeki Çık ile normal kapandı;
+  paket değiştirmeden önce ana sürecin kapandığı doğrulandı. Yerel arm64 paket,
+  yayımlanan tam `8f3f873` kaynağından üretildi; kullanıcı tekrar indirmedi.
+- Paket içindeki **53 uygulama kaynak dosyası + 3 renderer çıktısı** kaynak
+  commit/build ile bayt olarak eşleşti. Paket kimliği/sürümü ve deep/strict
+  codesign doğrulandı. GitHub ZIP'i kurulmadı; onun arşiv SHA512'si yerel kuruluma
+  aitmiş gibi raporlanmamalı. Native helper promptsuz
+  `available=true, backend=secure-enclave` verdi; parmak iziyle insan kabul testi
+  yapılmadı, kasa açılmadı veya yeniden enroll edilmedi.
+- Gerçek masaüstünde CUA ile açılış, **Ayarlar v0.16.0** ve ana sayfa/Kitaplık19
+  görüldü. Kurulum sonrası dosya kontrolü: **19 indirme, 24 kaynak, 29 öğe**;
+  ID'ler, video yolları, başlık/indirme durumları, izleme değerleri ve temel
+  indirme/dil/altyazı/vekil/kasa tercihleri önceki kütüphane ile aynı. Kullanıcı
+  videoları değiştirilmedi, silinmedi veya test amacıyla oynatılmadı.
+- Önceki 0.15.0 paket ve özel kütüphane yedeği geri alma için
+  `/Applications/.aio-install-pfxx6wx5/previous-bundle` ve aynı klasörde
+  `library-before.json` konumunda korunuyor. Kurulum kaydı
+  `/tmp/aio-installed-0160.json`; paket doğrulama kaydı
+  `/tmp/aio-016-package-verification.json`.
+
+Alttaki 0.15.0 bilgileri tarihçedir; güncel kaynak/yayın/kurulum için bu bölüm
+esas alınır. Uzun vadeli planın tamamı bitmiş veya tüm siteler doğrulanmış değildir.
 
 ---
 
