@@ -124,8 +124,11 @@ Loglar: `/tmp/aio-016-release-tests.log`, `/tmp/aio-016-final-fixes.log`, `/tmp/
   yapılmadı, kasa açılmadı veya yeniden enroll edilmedi.
 - Gerçek masaüstünde CUA ile açılış, **Ayarlar v0.16.0** ve ana sayfa/Kitaplık19
   görüldü. Kurulum sonrası dosya kontrolü: **19 indirme, 24 kaynak, 29 öğe**;
-  ID'ler, video yolları, başlık/indirme durumları, izleme değerleri ve temel
-  indirme/dil/altyazı/vekil/kasa tercihleri önceki kütüphane ile aynı. Kullanıcı
+  ID'ler, video yolları, başlık/indirme durumları ve temel
+  indirme/dil/altyazı/vekil/kasa tercihleri önceki kütüphane ile aynı. 41 izleme
+  imi ve 3 izlenen kaydı korunuyor. Son arayüz kontrolü sırasında bir imin
+  `at/seen` alanları ilerledi; tüm izleme değerleri birebir aynı kaldı denmemeli.
+  Bu güncel değerler eski yedekle geri alınmadı. Kullanıcı
   videoları değiştirilmedi, silinmedi veya test amacıyla oynatılmadı.
 - Önceki 0.15.0 paket ve özel kütüphane yedeği geri alma için
   `/Applications/.aio-install-pfxx6wx5/previous-bundle` ve aynı klasörde
