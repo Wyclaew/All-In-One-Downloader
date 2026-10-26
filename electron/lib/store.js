@@ -180,6 +180,8 @@ function init() {
       watched: loaded.watched && typeof loaded.watched === 'object' ? loaded.watched : {},
     }
   }
+  state.items = require('./media-catalog').withoutRenditionRows(state.items)
+  for (const source of state.sources) source.count = state.items.filter((item) => item.sourceId === source.id).length
   migrateCookieBrowser()
   migrateSettings()
 

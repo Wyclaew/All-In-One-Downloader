@@ -1,3 +1,13 @@
+## 0.17.0 — ses ve aktarım düzeltmeleri
+
+Türkçe ve İngilizce ses seçimleri artık sıkıdır; istenen dil doğrulanamazsa
+başka ses indirmek yerine açık hata gösterilir. LANGUAGE etiketi olmayan ama
+`Original Audio` adlı sesi olan kaynaklarda **Orijinal ses** seçilebilir.
+Kaynaklar ve kitaplık CDN adresi değişse de aynı işi gösterir. Ana indirme çubuğu
+toplam ilerlemeyi izler; yeniden denemede eski ilerleme taşınmaz. Geçici bağlantı
+kopmalarında aynı manifest/parça günlüğü korunur. Hatalı işin sesini değiştirerek
+aynı kayıttan yeniden denemek mümkündür.
+
 # All in One Downloader
 
 Bir bağlantı yapıştır, sayfadaki indirilebilir videoları listele, seçtiklerini indir.

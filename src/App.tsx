@@ -30,8 +30,8 @@ export default function App() {
   // Held here so a trip to the library and back does not undo a quality pick.
   const [groupQuality, setGroupQuality] = useState<Record<string, string>>({})
   const [rowQuality, setRowQuality] = useState<Record<string, string>>({})
-  const [groupAudio, setGroupAudio] = useState<Record<string, 'en' | 'tr' | 'auto'>>({})
-  const [rowAudio, setRowAudio] = useState<Record<string, 'en' | 'tr' | 'auto'>>({})
+  const [groupAudio, setGroupAudio] = useState<Record<string, 'en' | 'tr' | 'auto' | 'original'>>({})
+  const [rowAudio, setRowAudio] = useState<Record<string, 'en' | 'tr' | 'auto' | 'original'>>({})
   const [useProxy, setUseProxy] = useState(false)
 
   // The default is a setting, but only until the user touches the switch — after

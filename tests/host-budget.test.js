@@ -4,6 +4,18 @@ const assert = require('node:assert/strict')
 const { createHostBudget } = require('../electron/lib/host-budget')
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+test('a metadata probe does not serialize later parallel transfers, while real backoff remains shared', async () => {
+  const budget = createHostBudget()
+  const url = 'https://ramp.example/video'
+  ;(await budget.acquire(url, { maximum: 1 })).release()
+  const permits = await Promise.all(Array.from({ length: 6 }, () => budget.acquire(url, { maximum: 6 })))
+  assert.equal(budget.snapshot(url).active, 6)
+  permits[0].release(new Error('HTTP 429'))
+  for (const permit of permits.slice(1)) permit.release()
+  assert.equal(budget.snapshot(url).limit, 3)
+  assert.equal(budget.snapshot(url).coolingDown, true)
+})
+
 test('host admission limits active requests, queues in order and cancels waiters', async () => {
   const budget = createHostBudget()
   const url = 'https://one.example/video'

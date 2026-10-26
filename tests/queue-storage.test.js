@@ -89,7 +89,7 @@ test('per-download audio choices stay independent from defaults and duplicate de
   const turkish = downloader.enqueue({ item, preferredAudioLanguage: 'tr' })
   const english = downloader.enqueue({ item, preferredAudioLanguage: 'en' })
   assert.notEqual(turkish.id, english.id)
-  assert.equal(turkish.preferredAudioLanguage, 'tr'); assert.equal(turkish.refreshPending, true)
+  assert.equal(turkish.preferredAudioLanguage, 'tr'); assert.equal(turkish.refreshPending, false)
   assert.equal(english.preferredAudioLanguage, 'en'); assert.equal(english.audioSelectionExplicit, true)
   settings.preferredAudioLanguage = 'tr'
   assert.equal(english.preferredAudioLanguage, 'en')

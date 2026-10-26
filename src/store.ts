@@ -1,3 +1,4 @@
+import { mergeProgress } from './download-state'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, bridge, setToastSink } from './api'
 import type { AppState, Download, Outlook, ProgressEvent, Toast, Tools, VaultState } from './types'
@@ -36,10 +37,12 @@ export function useApp() {
 
   useEffect(() => {
     let alive = true
-    api.getState().then((s) => alive && s && setState(s))
+    let receivedState = false
+    api.getState().then((s) => alive && !receivedState && s && setState(s))
     api.getTools().then((t) => alive && t && setTools(t))
 
     const offState = bridge.onState((s) => {
+      receivedState = true
       setState(s)
       // Progress arrives on its own channel and was never cleaned up, so every
       // download the app had ever seen kept an entry after it was cleared away.
@@ -109,22 +112,7 @@ export function useVault() {
 
 /** Merge persisted download fields with the live progress channel. */
 export function withProgress(download: Download, progress: Record<string, ProgressEvent>): Download {
-  const live = progress[download.id]
-  if (!live || live.status !== download.status) return download
-  if (download.stage === 'processing' && live.stage === 'downloading') return download
-  return {
-    ...download,
-    status: live.status,
-    stage: live.stage,
-    percent: live.percent,
-    speed: live.speed,
-    eta: live.eta,
-    downloaded: live.downloaded,
-    total: live.total,
-    phase: live.phase,
-    phases: live.phases,
-    parts: live.parts ?? null,
-  }
+  return mergeProgress(download, progress[download.id])
 }
 
 /** Aggregate throughput history for the header scope. */

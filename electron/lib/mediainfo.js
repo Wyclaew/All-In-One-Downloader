@@ -417,7 +417,7 @@ function parseHls(text, baseUrl) {
       const attr = (name) => attrs[name] || ''
       const uri = attr('URI')
       audioTracks.push({
-        url: uri ? absolute(uri) : null, lang: attr('LANGUAGE').toLowerCase(),
+        url: uri ? absolute(uri) : null, lang: attr('LANGUAGE').toLowerCase() || require('./media-preferences').trackLanguage({ name: attr('NAME') }),
         name: attr('NAME'), group: attr('GROUP-ID'), default: /DEFAULT=YES/i.test(line),
       })
       continue

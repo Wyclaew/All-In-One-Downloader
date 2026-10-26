@@ -562,15 +562,10 @@ function registerIpc() {
     // Match on URL, not item id: ids change on rescan, the link doesn't.
     const chosenLanguage = preferredAudioLanguage ?? store.getState().settings.preferredAudioLanguage ?? 'en'
     const chosenQuality = quality === undefined ? store.getState().settings.defaultQuality : Number(quality) || 0
-    const taken = new Set(
-      store
-        .getState()
-        .downloads.filter((d) => d.status !== 'canceled' && d.status !== 'error' && d.quality === chosenQuality && !!d.audioOnly === !!audioOnly && (d.preferredAudioLanguage || 'en') === chosenLanguage)
-        .map((d) => d.url)
-    )
+    const taken = store.getState().downloads.filter((d) => !['canceled', 'error'].includes(d.status) && d.quality === chosenQuality && !!d.audioOnly === !!audioOnly && (d.preferredAudioLanguage || 'en') === chosenLanguage)
     let count = 0
     for (const item of items) {
-      if (skipDownloaded && taken.has(item.url)) continue
+      if (skipDownloaded && taken.some((d) => require('./lib/queue-order').sameMedia(d, { item }))) continue
       const before = store.getState().downloads.length
       downloader.enqueue({ item, quality, audioOnly, categoryId, preferredAudioLanguage })
       count += Math.max(0, store.getState().downloads.length - before)
@@ -620,7 +615,7 @@ function registerIpc() {
   handle('dl:pause', (id) => downloader.pause(id))
   handle('dl:resume', (id) => downloader.resume(id))
   handle('dl:cancel', (id) => downloader.cancel(id))
-  handle('dl:retry', (id) => downloader.retry(id))
+  handle('dl:retry', (payload) => typeof payload === 'string' ? downloader.retry(payload) : downloader.retry(payload?.id, payload || {}))
   handle('dl:remove', ({ id, deleteFile }) => downloader.remove(id, { deleteFile }))
   handle('dl:removeMany', ({ ids, deleteFile }) => {
     const list = Array.isArray(ids) ? ids : []

@@ -10,7 +10,7 @@ const { spawn, execFile } = require('child_process')
 const { parseDashTree, parseDash } = require('./mediainfo')
 const { requestBytes, transferHls } = require('./hls-native')
 const { ffmpegPath, ffprobePath, toolEnv } = require('./binaries')
-const { languageCode } = require('./media-preferences')
+const { languageCode, pickAudioTrack } = require('./media-preferences')
 const { atomicWrite } = require('./util')
 
 const MAX_SEGMENTS = 50000
@@ -177,7 +177,7 @@ function parseManifest(text, manifestUrl, { quality = 0, audioOnly = false, pref
     const audios = representations.filter((r) => r.type === 'audio')
     const score = (r) => !preferred || preferred === 'auto' ? 0 : languageCode(r.lang) === preferred ? 2 : !r.lang || r.lang === 'und' ? 1 : 0
     audios.sort((a, b) => score(b) - score(a) || b.bandwidth - a.bandwidth)
-    audio = audios[0] || null
+    audio = pickAudioTrack(audios, preferredAudioLanguage)
     if ((!video && !audio) || audioOnly && !audio) throw unsupported('DASH manifestinde istenen medya izi bulunamadı.')
     const tracks = [video, audio].filter(Boolean).map((r) => buildTrack(r, bound.duration, manifestUrl))
     totalSegments += tracks.reduce((sum, track) => sum + track.segments.length, 0)

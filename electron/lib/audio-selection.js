@@ -5,7 +5,7 @@ const path = require('path')
 const crypto = require('crypto')
 const { spawn, execFile } = require('child_process')
 const { ffmpegPath, ffprobePath, toolEnv } = require('./binaries')
-const { languageCode } = require('./media-preferences')
+const { languageCode, trackLanguage, originalTrack } = require('./media-preferences')
 
 function inspectAudio(filePath) {
   return new Promise((resolve) => {
@@ -18,18 +18,25 @@ function inspectAudio(filePath) {
   })
 }
 
-async function selectAudio(filePath, preferred, { onHandle, isStopped } = {}) {
+async function selectAudio(filePath, preferred, { onHandle, isStopped, verifiedChoice = null } = {}) {
   const lang = languageCode(preferred)
-  const tracks = await inspectAudio(filePath)
-  const selected = lang && lang !== 'auto' ? tracks.find((t) => languageCode(t.tags?.language) === lang) : null
-  const known = [...new Set(tracks.map((t) => languageCode(t.tags?.language)).filter((l) => l && l !== 'und'))]
+  const tracks = (await inspectAudio(filePath)).map((t) => ({ ...t, tags: { ...t.tags, title: t.tags?.title || t.tags?.handler_name } }))
+  // A strict extractor selector may identify the one audio stream even when
+  // the output container drops its language tag. Contradictory tags still win;
+  // this evidence must never relabel a known Turkish dub as English.
+  if (verifiedChoice === lang && tracks.length === 1) {
+    if (lang === 'original') tracks[0].tags.title ||= 'Original Audio'
+    else if (!trackLanguage(tracks[0])) tracks[0].tags.language = lang
+  }
+  const selected = lang && lang !== 'auto' ? tracks.find((t) => lang === 'original' ? originalTrack(t) : trackLanguage(t) === lang) : null
+  const known = [...new Set(tracks.map((t) => trackLanguage(t)).filter((l) => l && l !== 'und'))]
   // Until the remux really succeeds, playback still starts with the file's
   // current default. Finding the desired tag alone must not claim it was set.
   const current = tracks.find((t) => t.disposition?.default) || tracks[0]
-  const currentLanguage = languageCode(current?.tags?.language)
+  const currentLanguage = trackLanguage(current)
   const result = { language: currentLanguage || null, warning: null,
-    availableLanguages: known, requestedLanguage: lang && lang !== 'auto' ? lang : null }
-  const requestedLabel = ({ en: 'İngilizce', tr: 'Türkçe' })[lang] || lang.toUpperCase()
+    matched: !!selected && selected.index === current?.index || !lang || lang === 'auto', availableLanguages: known, requestedLanguage: lang && lang !== 'auto' ? lang : null }
+  const requestedLabel = ({ en: 'İngilizce', tr: 'Türkçe', original: 'Orijinal' })[lang] || lang.toUpperCase()
   if (isStopped?.()) return result
   if (lang && lang !== 'auto' && !selected) {
     result.warning = known.length
@@ -56,11 +63,11 @@ async function selectAudio(filePath, preferred, { onHandle, isStopped } = {}) {
     })
     if (isStopped?.()) return result
     fs.renameSync(temp, filePath)
-    return { ...result, language: languageCode(selected.tags?.language) || null }
+    return { ...result, matched: true, language: trackLanguage(selected) || null }
   } catch (err) {
     const fallback = tracks.find((t) => t.disposition?.default) || tracks[0]
-    const fallbackLanguage = languageCode(fallback?.tags?.language)
-    return { ...result, language: fallbackLanguage || null, warning: `${err.message} Dosyada tüm sesler korundu.` }
+    const fallbackLanguage = trackLanguage(fallback)
+    return { ...result, matched: false, language: fallbackLanguage || null, warning: `${err.message} Dosyada tüm sesler korundu.` }
   } finally { fs.rmSync(temp, { force: true }) }
 }
 

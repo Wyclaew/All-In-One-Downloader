@@ -87,6 +87,29 @@ test('fMP4 initialization maps and separate English audio are muxed locally', { 
   assert.ok(info.streams.some((s) => s.codec_type === 'video'))
   assert.equal(info.streams.find((s) => s.codec_type === 'audio').tags.language, 'eng')
 })
+
+test('HDF-style Original Audio selects its actual separate packets and stays original, not falsely English', { skip }, async () => {
+  const download = { id: 'named-original', title: 'Named original', url: base + '/master', quality: 720, preferredAudioLanguage: 'original',
+    resolved: { kind: 'hls', preparedVariants: [{ url: base + '/master', mediaUrl: base + '/fragmented.m3u8', height: 96,
+      audioTracks: [{ name: 'Turkish', default: true, url: base + '/movie.m3u8' }, { name: 'Original Audio', url: base + '/audio.m3u8' }] }] } }
+  const before = requests.length
+  const { filePath } = await own.transfer({ download, settings: { downloadDir: root, connections: 4 }, onHandle() {}, onProgress() {} })
+  assert.equal(requests.slice(before).some((r) => r.url === '/movie.m3u8'), false)
+  assert.equal(requests.slice(before).some((r) => r.url === '/audio.m3u8'), true)
+  const audio = load('electron/lib/audio-selection.js')
+  const selected = await audio.selectAudio(filePath, 'original')
+  assert.equal(selected.matched, true); assert.equal(selected.language, null)
+  const pcm = execFileSync(bin, ['-v', 'error', '-i', filePath, '-map', '0:a:0', '-t', '2', '-ac', '1', '-ar', '48000', '-f', 's16le', '-'], { env: toolEnv() })
+  const power = (frequency) => {
+    let real = 0, imaginary = 0
+    for (let sample = 0; sample < pcm.length / 2; sample += 4) {
+      const angle = 2 * Math.PI * frequency * sample / 48000, value = pcm.readInt16LE(sample * 2)
+      real += value * Math.cos(angle); imaginary += value * Math.sin(angle)
+    }
+    return real * real + imaginary * imaginary
+  }
+  assert.ok(power(600) > power(400) * 100, 'the original 600 Hz sound must dominate, not the 400 Hz dub')
+})
 test('pausing preserves verified fragments and resume skips completed network requests', { skip }, async () => {
   const opts = options('resumed', 'slow')
   opts.settings.connections = 1

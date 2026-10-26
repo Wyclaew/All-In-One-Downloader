@@ -63,6 +63,14 @@ test('a pending auto-retry can be paused and manual retry starts a fresh budget'
   d.recoveryCount = 3
   assert.equal(downloader.scheduleRecovery(d, { recoveryAttempts: 3 }, 'ECONNRESET'), false)
 })
+
+test('repeated transient connection resets preserve the manifest instead of rotating CDN URLs and losing the journal', () => {
+  const download = { id: 'stable-journal', url: 'https://cdn.example.test/master', status: 'running', recoveryCount: 1, resolved: { pageUrl: 'https://example.test/page' } }
+  store.getState().downloads = [download]
+  assert.equal(downloader.scheduleRecovery(download, { recoveryAttempts: 3 }, { code: 'ECONNRESET' }), true)
+  assert.equal(download.refreshPending, false)
+  downloader.pause(download.id)
+})
 test('unsupported extraction does not become an internet-offline error', () => {
   const { readableError } = load('electron/lib/probe.js')
   assert.ok(!readableError('ERROR: Unable to download webpage: HTTP Error 403').includes('Ağa ulaşılamadı'))

@@ -252,56 +252,27 @@ export function Meter({
   percent: number | null
   tone?: 'running' | 'done' | 'paused' | 'bad' | 'queued'
   slim?: boolean
-  /** Per-connection progress. Turns the one bar into that many, side by side. */
+  /** Active workers are informational; the meter always represents the file. */
   parts?: { done: number; size: number }[] | null
 }) {
-  const indeterminate = percent === null || percent === undefined
-  const classes = ['meter', tone, slim ? 'slim' : '', indeterminate ? 'indeterminate' : '']
-    .filter(Boolean)
-    .join(' ')
-
-  // With several connections, one averaged bar hides the thing worth seeing:
-  // whether they are all pulling, or three finished while one stalls. Each
-  // connection gets its share of the same bar, sized by how much of the file it
-  // owns — so the bar still reads as one length, and still fills left to right.
-  if (parts && parts.length > 1) {
-    const total = parts.reduce((sum, p) => sum + p.size, 0) || 1
-    return (
-      <div
-        className={`${classes} split`}
-        role="progressbar"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={indeterminate ? undefined : Math.round((percent as number) * 100)}
-      >
-        {parts.map((part, i) => (
-          <div
-            key={i}
-            className="meter-slot"
-            style={{ flexGrow: part.size / total }}
-            title={`${i + 1}. bağlantı — %${Math.round(Math.min(1, part.done / (part.size || 1)) * 100)}`}
-          >
-            <div
-              className="meter-fill"
-              style={{ width: `${Math.min(100, (part.done / (part.size || 1)) * 100)}%` }}
-            />
-          </div>
-        ))}
-      </div>
-    )
-  }
+  const indeterminate = percent === null || percent === undefined || !Number.isFinite(percent)
+  const amount = indeterminate ? 0 : Math.min(1, Math.max(0, percent as number))
+  const classes = ['meter', tone, slim ? 'slim' : '', indeterminate ? 'indeterminate' : ''].filter(Boolean).join(' ')
+  // Segment workers continuously finish and restart. Their individual chunk
+  // bars are not the video's completion and must not replace the main meter.
 
   return (
     <div
       className={classes}
+      title={parts?.length ? `${parts.length} etkin bağlantı` : undefined}
       role="progressbar"
       aria-valuemin={0}
       aria-valuemax={100}
-      aria-valuenow={indeterminate ? undefined : Math.round((percent as number) * 100)}
+      aria-valuenow={indeterminate ? undefined : Math.round(amount * 100)}
     >
       <div
         className="meter-fill"
-        style={indeterminate ? undefined : { width: `${Math.min(100, Math.max(0, percent * 100))}%` }}
+        style={indeterminate ? undefined : { width: `${amount * 100}%` }}
       />
     </div>
   )

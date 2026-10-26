@@ -82,6 +82,7 @@ export function shortPath(p: string | null | undefined, max = 52): string {
 }
 /** Human labels for requested and detected audio; unknown is never English. */
 export function audioLanguage(value?: string | null): string {
+  if (value === 'original') return 'Orijinal ses'
   const code = String(value || '').trim().toLowerCase().split(/[-_]/)[0]
   const names: Record<string, string> = { tr: 'Türkçe', tur: 'Türkçe', en: 'İngilizce', eng: 'İngilizce', auto: 'Kaynağın sesi', und: 'dil doğrulanmadı', '': 'dil doğrulanmadı' }
   return names[code] || value || 'dil doğrulanmadı'

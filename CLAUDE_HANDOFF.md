@@ -1,4 +1,86 @@
-# Claude için güncel devir notu — 0.16.0
+# Claude için güncel devir notu — 0.17.0
+
+26 Ekim 2026. Bu bölüm günceldir; alttaki 0.16.0 tarihçedir.
+Kullanıcının ses seçimi, Hdf/Dizibox aktarımı, geç başlama, kaynak/kitaplık
+durum farkı ve oynayan ilerleme çubukları şikâyetleri incelendi.
+
+## Bulunan nedenler ve düzeltmeler
+
+- Hdf Mentalist 8/9 kayıtlarında `Turkish` ve `Original Audio` isimli iki ses
+  listesi vardı, LANGUAGE alanları boştu. Seçici etiketlere baktığından varsayılan
+  Türkçe sesi indirmiş, ancak yaklaşık 800 MB aktarım sonunda dil kontrolünde
+  durmuştu. Artık güvenilir açık adlardan Türkçe/İngilizce tanınır; `Original Audio`
+  ayrı **Orijinal ses** seçeneğidir. Orijinalin dili etiketsizse İngilizce diye
+  uydurulmaz. HLS/DASH ve yt-dlp seçimleri başka dile sessizce düşmez; doğrulanamayan
+  istek açık hata verir. HLS bilinen seçenekler uyuşmuyorsa video aktarılmadan durur.
+  Daha düşük ama kalite sınırına uygun bir varyant istenen sesi taşıyorsa seçilebilir.
+- Ses seçimi kaynağı yeniden çözümlenmeksizin mevcut master listesinden yapılır;
+  her ses değişiminde 45–80 saniyelik sayfa taraması başlatılmaz. Seçimler yeniden
+  taramada öğe kimliği/CDN değişse de sayfa ve içerik kimliğiyle korunur.
+- Ses hatası olan satırdan dili değiştirip aynı işi yeniden denemek mümkündür.
+  Önceki yanlış sesli dosya tekrar tekrar işlenmez; eski dosya korunur,
+  `rejectedAudioFilePath` ile ilişkilendirilir. Bu sürüm eski videoya yalnız yeni
+  ses ekleyerek onarım yapmaz; yeniden aktarım gerekebilir. Kullanıcı dosyaları
+  bu geliştirme turunda onarılmadı veya silinmedi.
+- Kaynak/kitaplık eşlemesi dönen CDN URL'sinden ibaret değildir: öğe ve kaynak
+  kimliği, ilk adres ve aynı sayfadaki bölüm kimliği kullanılır. Aktif kayıt eski
+  hatalı kaydın önüne geçer. Duplicate kontrolü ve toplu indir atlaması da aynı
+  kimliği kullanır. Aynı bölümde eski başarısız kayıtlar otomatik silinmez.
+- Master'ın ses/altyazı alt listeleri ikinci video olarak sunulmaz. Eski
+  katalogdaki kanıtlanmış rendition satırları da açılışta ayıklanır; indirme
+  kayıtları/dosyaları korunur. Tek videolu kaynakta gereksiz üst indirme/ses/kalite
+  takımı gizlendi. Hatalı satırdaki çift indir/yeniden dene ve kayıp dosyadaki
+  çift indir düğmeleri giderildi. Hata açıklaması kaynak satırında da görünür.
+- İlerleme iletileri deneme kimliği ve sıra numarası taşır. Eski denemenin %99'u
+  yeni denemeye taşınmaz, işleme aşaması eski aktarım iletisiyle ezilmez. Ana çubuk
+  parçaların anlık doluluğunu değil bütün videonun ilerlemesini gösterir.
+- İlk küçük metadata isteğinin bağlantı bütçesi sonraki işi tek kanala sıkıştıramaz.
+  Aynı sunucudaki eşzamanlı HLS işlerine en çok 16 ortak istek izni verilir; iş
+  başına bağlantı ayarı ve 429/Retry-After geri çekilmesi korunur. Boşta kalan
+  eski ceza sonraki işi sürekli yavaşlatmaz. İnternet hattı hızını doldurma
+  garantisi verilmez; canlı CDN hızının kontrollü önce/sonra karşılaştırması yok.
+- ECONNRESET gibi geçici kopmalarda aynı manifest ve parça günlüğüyle devam edilir.
+  İkinci kopmada tüm sayfayı yeniden çözümleyip dönen CDN adresi nedeniyle sağlam
+  parçaları kaybetme davranışı kaldırıldı. Süresi dolmuş bağlantılar yine yenilenir.
+- yt-dlp ses filtresi artık sıkıdır. Kaynağın doğruladığı tek sesin dil etiketi
+  çıktıda kaybolduğunda bu seçim kanıtı saklanır; karşıt Türkçe etiketi İngilizce
+  diye değiştirilmez. Native/FFmpeg yolları bilinen ses adı ve dilini çıktıda korur.
+- DiziBox'ta 720p istenip yalnız 1080p mevcut olduğunda eski belirsiz hata yerine
+  mevcut kaliteler ve seçim önerisi gösterilir. Yükseklik bilgisi eksik geçerli
+  video varyantları, başka etiketli varyant var diye elenmez; yalnız ses içeren
+  varyant video diye seçilmez.
+
+## Doğrulama
+
+- **265/265 test, 0 skip**; typecheck/build başarılı. Yeni testler gerçek AAC
+  paketleri ve 400/600 Hz ayrı seslerle doğru kanalın seçildiğini, orijinalin
+  İngilizce diye etiketlenmediğini, strict dil reddini, deneme/sıra numaralarını,
+  CDN değişiminde aynı işin bulunmasını ve ağ kurtarmada manifestin korunmasını
+  doğrular. Log `/tmp/aio-017-full.log`.
+- Gerçek Electron `transfer-ui-smoke.js`: eski CDN'ye ait çalışan kayıt kaynakta
+  görünür; eski ilerleme yok sayılır; toplam çubuk; rendition ayıklama; tek retry;
+  seçilen orijinal sesin motora ulaşıp gerçek medya araçlarıyla tamamlanması;
+  aynı kayıt, eski dosyanın korunması, 1000 px pencere ve sıfır renderer hatası.
+  Log `/tmp/aio-017-transfer-ui.log`, görsel `/tmp/aio-017-transfer-ui.png`.
+- Genel UI smoke: ses seçimi gezinmede korunur ve kuyruğa aynen ulaşır; koleksiyon
+  sırası/1000 px kaynak ekranı/sıfır renderer hatası. `/tmp/aio-017-ui-general.log`.
+- Canlı Hdf Mentalist 8: Orijinal ses seçilerek **618.902 bayt / 15,015 sn**
+  örnek indirildi ve yerel FFmpeg ile mux edildi; artık tek video adayı.
+  `/tmp/aio-017-hdf-original.log`.
+- Canlı Dizibox Mentalist 6: kaynağın varsayılan sesiyle **530.192 bayt / 10,031 sn**
+  örnek indirildi ve mux edildi. `/tmp/aio-017-dizibox-sample.log`.
+  İki canlı sonuç da **tam bölüm indirme testi değildir**. İlk çözümleme Hdf'de
+  yaklaşık 52 sn, Dizibox'ta 80 sn sürdü; bu rakamlar aktarım başlama süresi veya
+  indirme hızı olarak sunulmamalı. Üyelik/DRM/erişim kapıları aşılmadı.
+- Yeni helper'lar: `media-catalog.js`, `src/download-state.ts`, `AudioSelect.tsx`.
+  Yeni test: `download-state.test.js`, `tests/manual/transfer-ui-smoke.js`.
+
+Yayın/kurulum tamamlandığında doğrulanmış sürüm, kaynak commit, CI ve kullanıcı
+kütüphanesinin korunması kaydı bu bölüme eklenecek.
+
+---
+
+# Tarihçe — 0.16.0
 
 26 Ekim 2026. Kullanıcı kalan geliştirmelerin tamamlanmasını ve kararlı sürümün
 mevcut uygulamasının üzerine kurulmasını istedi. Bu tur güvenilirlik ve kitaplık

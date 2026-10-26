@@ -245,6 +245,22 @@ test('prepared verified HLS leaves preserve quality and audio without fetching u
   assert.equal(requests.length, before)
 })
 
+test('named audio is chosen from the captured master without reloading the page or silently falling back', async () => {
+  const before = requests.length
+  const resolved = { preparedVariants: [{ url: base + '/master', mediaUrl: base + '/verified-leaf', height: 720,
+    audioTracks: [{ url: base + '/tr', name: 'Turkish', default: true }, { url: base + '/original', name: 'Original Audio' }] }] }
+  assert.equal((await own.pickVariant(base + '/master', resolved, 1080, null, '', 'tr')).audioUrl, base + '/tr')
+  const original = await own.pickVariant(base + '/master', resolved, 1080, null, '', 'original')
+  assert.equal(original.audioUrl, base + '/original'); assert.equal(original.audioLanguage, null)
+  await assert.rejects(own.pickVariant(base + '/master', resolved, 1080, null, '', 'en'), { code: 'AUDIO_LANGUAGE_UNAVAILABLE' })
+  assert.equal(requests.length, before)
+  const mixed = { preparedVariants: [
+    { url: base + '/1080', mediaUrl: base + '/tr-video', height: 1080, audioTracks: [{ lang: 'tr', url: base + '/tr' }] },
+    { url: base + '/720', mediaUrl: base + '/en-video', height: 720, audioTracks: [{ lang: 'en', url: base + '/en' }] },
+  ] }
+  assert.equal((await own.pickVariant(base + '/master', mixed, 1080, null, '', 'en')).url, base + '/en-video')
+})
+
 test('direct simultaneous transfers ignore a configured active proxy and ambient proxy variables', async () => {
   let proxyBytes = 0
   const clients = new Set()

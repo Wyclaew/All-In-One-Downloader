@@ -1,3 +1,4 @@
+import AudioSelect, { type AudioChoice } from '../components/AudioSelect'
 import { type ReactNode, useMemo, useState } from 'react'
 import { api } from '../api'
 import * as fmt from '../format'
@@ -402,6 +403,7 @@ function Row({
   onCheckMedia: (d: Download) => void
   onToVault: (d: Download) => void
 }) {
+  const [retryAudio, setRetryAudio] = useState<AudioChoice>((d.preferredAudioLanguage || 'auto') as AudioChoice)
   const category = d.categoryId ? categoryById.get(d.categoryId) : null
   const running = d.status === 'running'
   const paused = d.status === 'paused'
@@ -471,7 +473,7 @@ function Row({
           {d.series ? <><span className="sep" /><span className="truncate" title={d.series}>{d.series}{d.season !== null && d.season !== undefined ? ` · S${d.season}` : ''}{d.episode !== null && d.episode !== undefined ? ` · B${d.episode}` : ''}</span></> : null}
           <span className="sep" />
           <span title={`İstenen ses: ${fmt.audioLanguage(d.preferredAudioLanguage || 'auto')}`}>
-            {d.status === 'done' ? `Ses: ${fmt.audioLanguage(d.audioLanguage)}` : `İstenen ses: ${fmt.audioLanguage(d.preferredAudioLanguage || 'auto')}`}
+            {d.status === 'done' ? `Ses: ${fmt.audioLanguage(d.audioLanguage || (d.preferredAudioLanguage === 'original' ? 'original' : null))}` : `İstenen ses: ${fmt.audioLanguage(d.preferredAudioLanguage || 'auto')}`}
           </span>
           <span className="sep" />
           <span title="Bu indirme için seçilen ağ yolu">{d.useProxy ? 'VPN / vekil' : 'Doğrudan'}</span>
@@ -558,6 +560,7 @@ function Row({
       </div>
 
       <div className="dl-actions">
+        {failed ? <AudioSelect value={retryAudio} onChange={setRetryAudio} title="Yeniden denemede indirilecek ses" /> : null}
         {running ? <IconBtn icon="pause" title={T.library.pause} onClick={() => api.pause(d.id)} /> : null}
         {paused || queued ? (
           <IconBtn
@@ -569,7 +572,7 @@ function Row({
         {running || queued || paused ? (
           <IconBtn icon="x" title={T.library.cancel} variant="danger" onClick={() => api.cancel(d.id)} />
         ) : null}
-        {failed ? <IconBtn icon="refresh" title={T.library.retry} onClick={() => api.retry(d.id)} /> : null}
+        {failed ? <IconBtn icon="refresh" title={T.library.retry} onClick={() => api.retry(d.id, { preferredAudioLanguage: retryAudio })} /> : null}
         {d.status === 'done' && d.missing ? (
           <IconBtn icon="download" title={T.library.redownload} onClick={() => api.redownload(d.id)} />
         ) : null}

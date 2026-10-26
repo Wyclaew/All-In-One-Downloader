@@ -2173,6 +2173,9 @@ async function verifyCandidates(candidates, { limit = 16, concurrency = 3, proxy
 function dropVariantDuplicates(candidates) {
   const children = new Set()
   for (const c of candidates) {
+    for (const track of [...(c.info?.audioTracks || []), ...(c.info?.subtitles || []), ...(c.subtitles || [])]) {
+      if (track.url) children.add(track.url.split('#')[0])
+    }
     for (const variant of (c.info && c.info.variants) || []) {
       if (variant.url) children.add(variant.url.split('#')[0])
     }

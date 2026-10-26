@@ -53,7 +53,7 @@ interface Bridge {
     quality?: number
     audioOnly?: boolean
     categoryId?: string | null
-    preferredAudioLanguage?: 'en' | 'tr' | 'auto'
+    preferredAudioLanguage?: 'en' | 'tr' | 'auto' | 'original'
   }): Promise<Result<{ count: number }>>
   removeItem(id: string): Promise<Result<boolean>>
   openItem(id: string): Promise<Result<boolean>>
@@ -73,7 +73,7 @@ interface Bridge {
   pause(id: string): Promise<Result<unknown>>
   resume(id: string): Promise<Result<unknown>>
   cancel(id: string): Promise<Result<unknown>>
-  retry(id: string): Promise<Result<unknown>>
+  retry(payload: string | { id: string; preferredAudioLanguage?: 'en' | 'tr' | 'auto' | 'original'; quality?: number; audioOnly?: boolean }): Promise<Result<unknown>>
   removeDownload(id: string, deleteFile?: boolean): Promise<Result<unknown>>
   removeDownloads(ids: string[], deleteFile?: boolean): Promise<Result<number>>
   verifyDownloads(): Promise<Result<number>>
@@ -195,7 +195,7 @@ export const api = {
   retryFailedSources: () => call(bridge.retryFailedSources()),
   cancelAllSources: () => call(bridge.cancelAllSources()),
   openSource: (id: string) => call(bridge.openSource(id)),
-  downloadSource: (sourceId: string, opts: { quality?: number; audioOnly?: boolean; categoryId?: string | null; preferredAudioLanguage?: 'en' | 'tr' | 'auto' } = {}) =>
+  downloadSource: (sourceId: string, opts: { quality?: number; audioOnly?: boolean; categoryId?: string | null; preferredAudioLanguage?: 'en' | 'tr' | 'auto' | 'original' } = {}) =>
     call(bridge.downloadSource({ sourceId, ...opts })),
 
   removeItem: (id: string) => call(bridge.removeItem(id)),
@@ -217,7 +217,7 @@ export const api = {
   pause: (id: string) => call(bridge.pause(id)),
   resume: (id: string) => call(bridge.resume(id)),
   cancel: (id: string) => call(bridge.cancel(id)),
-  retry: (id: string) => call(bridge.retry(id)),
+  retry: (id: string, options: { preferredAudioLanguage?: 'en' | 'tr' | 'auto' | 'original'; quality?: number; audioOnly?: boolean } = {}) => call(bridge.retry({ id, ...options })),
   removeDownload: (id: string, deleteFile = false) => call(bridge.removeDownload(id, deleteFile)),
   removeDownloads: (ids: string[], deleteFile = false) => call(bridge.removeDownloads(ids, deleteFile)),
   verifyDownloads: () => call(bridge.verifyDownloads()),

@@ -29,3 +29,17 @@ test('an explicit unavailable language is not marked complete as a different dub
   downloader.pumpQueue(); await finish(english)
   assert.equal(english.status, 'done'); assert.deepEqual(chosen, ['tr', 'auto', 'en'])
 })
+
+test('retry can change the failed language on the same record without reprocessing the wrong file', async () => {
+  const state = store.getState(), failed = state.downloads.find((d) => d.status === 'error')
+  const previousFile = failed.pendingFilePath, count = state.downloads.length
+  const priorCalls = chosen.length
+  downloader.retry(failed.id, { preferredAudioLanguage: 'en' })
+  await finish(failed)
+  assert.equal(state.downloads.length, count)
+  assert.equal(failed.preferredAudioLanguage, 'en')
+  assert.equal(failed.rejectedAudioFilePath, previousFile)
+  assert.equal(failed.status, 'done')
+  assert.equal(chosen.length, priorCalls + 1)
+  assert.equal(failed.refreshPending, false)
+})

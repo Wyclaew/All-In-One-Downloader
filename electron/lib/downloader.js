@@ -168,6 +168,8 @@ function sendProgress(download, force = false) {
   progressLastSent.set(download.id, now)
   store.send('progress', {
     id: download.id,
+    attempt: download.attempts || 0,
+    sequence: download.progressSequence = (download.progressSequence || 0) + 1,
     status: download.status,
     stage: download.stage,
     percent: download.percent,
@@ -657,6 +659,7 @@ function settle(job, download, settings, outcome) {
     download.eta = null
     download.parts = null
     download.error = outcome.error || 'Aktarım başarısız.'
+    download.errorCode = outcome.raw?.code || null
   })
   sendProgress(download, true)
   pump_queue()
@@ -671,16 +674,16 @@ async function completeJob(job, download, settings, filePath) {
     store.commit(() => { download.stage = 'processing'; download.speed = null; download.eta = null; download.note = 'Ses ve altyazılar hazırlanıyor…' })
     const selected = await require('./audio-selection').selectAudio(filePath, download.preferredAudioLanguage || settings.preferredAudioLanguage || 'en', {
       onHandle: (child) => { job.child = child }, isStopped: () => job.paused || job.canceled,
+      verifiedChoice: download.verifiedAudioChoice || null,
     })
     download.audioLanguage = selected.language || null
     download.audioWarning = selected.warning || null
+    download.errorCode = null
     download.audioAvailableLanguages = selected.availableLanguages || []
     if (selected.warning) store.toast(`${download.title}: ${selected.warning}`, 'warn')
-    const wanted = languageCode(download.preferredAudioLanguage)
-    if (download.audioSelectionExplicit && wanted && wanted !== 'auto' &&
-        (selected.availableLanguages?.length && !selected.availableLanguages.includes(wanted) || selected.language && languageCode(selected.language) !== wanted)) {
-      const available = selected.availableLanguages?.includes(wanted)
-      throw Object.assign(new Error(`İstenen ${wanted === 'tr' ? 'Türkçe' : 'İngilizce'} ses ${available ? 'dosyada var ancak seçilemedi. Araçları kontrol edip yeniden dene.' : 'bu dosyada bulunamadı. Başka bir kaynak seç veya ses seçimini değiştir.'}`), { code: 'AUDIO_LANGUAGE_UNAVAILABLE' })
+    const wanted = languageCode(download.preferredAudioLanguage ?? settings.preferredAudioLanguage)
+    if (wanted && wanted !== 'auto' && !(selected.matched ?? selected.language === wanted)) {
+      throw Object.assign(new Error(`İstenen ${wanted === 'tr' ? 'Türkçe' : wanted === 'original' ? 'Orijinal' : 'İngilizce'} ses bu dosyada doğrulanamadı. Ses seçimini değiştir veya başka bir kaynak dene. Başka dil tamamlandı olarak işaretlenmedi.`), { code: 'AUDIO_LANGUAGE_UNAVAILABLE' })
     }
     if (!download.audioOnly) {
       if (!job.paused && !job.canceled && settings.writeSubs) {
@@ -720,7 +723,10 @@ function scheduleRecovery(download, settings, error) {
   const delay = retryDelay(count, kind)
   store.commit(() => {
     download.recoveryCount = count + 1
-    download.refreshPending = !!download.resolved?.pageUrl && (kind === 'expired' || count > 0)
+    // Connection resets are retried against the same manifest and journal.
+    // Re-resolving a live session rotates CDN URLs and used to discard already
+    // downloaded fragments after the second temporary network failure.
+    download.refreshPending = !!download.resolved?.pageUrl && kind === 'expired'
     if (kind === 'busy') download.recoveryConnections = Math.max(1, Math.floor((download.recoveryConnections || settings.connections || 8) / 2))
     download.status = 'queued'
     download.stage = null
@@ -842,6 +848,7 @@ function start(downloadId) {
  */
 async function startOwn(download, settings) {
   const job = beginJob(download)
+  download.verifiedAudioChoice = null
   try { prepareStorage(download, settings, job); settings = await prepareNetwork(download, settings, job); await prepareRecovery(download, settings, job) } catch (err) {
     return settle(job, download, settings, { paused: job.paused, canceled: job.canceled, error: err.message, raw: err })
   }
@@ -950,6 +957,8 @@ async function startYtdlp(download, settings) {
     if (job.paused) return settle(job, download, settings, { paused: true })
 
     if (code === 0) {
+      const requested = languageCode(download.preferredAudioLanguage || settings.preferredAudioLanguage)
+      download.verifiedAudioChoice = requested && requested !== 'auto' ? requested : null
       completeJob(job, download, settings, resolveFinalPath(job, settings)).catch((err) => settle(job, download, settings, { error: err.message, raw: err }))
     } else {
       const message = job.errorLines.length
@@ -993,6 +1002,11 @@ async function startYtdlp(download, settings) {
         return requeue(`${message} Çerezsiz yeniden deneniyor.`)
       }
 
+      const requested = languageCode(download.preferredAudioLanguage || settings.preferredAudioLanguage)
+      if (requested && requested !== 'auto' && /requested format is not available|no video formats found/i.test(job.stderrTail || message)) {
+        const error = require('./media-preferences').audioError(requested, download.streamAudioTracks || [])
+        return settle(job, download, settings, { error: error.message + ' Seçilen kalite de kaynakta mevcut olmalı.', raw: error })
+      }
       settle(job, download, settings, { error: message, raw: job.stderrTail || message })
     }
   })
@@ -1233,7 +1247,7 @@ function expectedSizeFor(item, quality, audioOnly) {
 function enqueue({ item, url, title, site, sourceId, quality, audioOnly, categoryId, preferredAudioLanguage }) {
   const settings = store.getState().settings
   const chosenLanguage = preferredAudioLanguage ?? settings.preferredAudioLanguage ?? 'en'
-  if (!['en', 'tr', 'auto'].includes(chosenLanguage)) throw new Error('Ses dili Türkçe, İngilizce veya kaynağın varsayılanı olmalı.')
+  if (!['en', 'tr', 'auto', 'original'].includes(chosenLanguage)) throw new Error('Ses dili Türkçe, İngilizce, orijinal veya kaynağın varsayılanı olmalı.')
   const chosenQuality = quality === undefined ? settings.defaultQuality : Number(quality) || 0
   const duplicate = queueOrder.activeDuplicate(store.getState().downloads, { item, url, sourceId, quality: chosenQuality, audioOnly, preferredAudioLanguage: chosenLanguage })
   if (duplicate) { store.toast('Bu video aynı kalite ve ses tercihiyle zaten kuyrukta.', 'info'); return duplicate }
@@ -1250,8 +1264,9 @@ function enqueue({ item, url, title, site, sourceId, quality, audioOnly, categor
     language: item && item.language ? item.language : null,
     preferredAudioLanguage: chosenLanguage,
     audioSelectionExplicit: preferredAudioLanguage !== undefined && chosenLanguage !== 'auto',
-    refreshPending: !!(item?.resolved?.pageUrl && chosenLanguage !== 'auto' &&
-      (chosenLanguage !== (settings.preferredAudioLanguage || 'en') || (item?.audioTracks?.length && !item.audioTracks.some((track) => languageCode(track.lang) === chosenLanguage)))),
+    refreshPending: false,
+    originalUrl: url || item?.url || '',
+    sourceItemIndex: item?.index ?? null,
     series: item?.series || null,
     season: item?.season ?? null,
     episode: item?.episode ?? null,
@@ -1418,11 +1433,24 @@ function settleRemoved(download) {
   pump_queue()
 }
 
-function retry(id) {
+function retry(id, options = {}) {
   clearRecovery(id)
   const download = store.findDownload(id)
   if (!download || jobs.has(id)) return
+  if (options.preferredAudioLanguage !== undefined && !['en', 'tr', 'auto', 'original'].includes(options.preferredAudioLanguage)) throw new Error('Geçersiz ses seçimi.')
+  const audioFailure = download.errorCode === 'AUDIO_LANGUAGE_UNAVAILABLE' || /İstenen .* ses/.test(download.error || '')
+  const previousFailure = failureKind({ code: download.errorCode, message: download.error || '' })
+  const changedAudio = options.preferredAudioLanguage !== undefined && options.preferredAudioLanguage !== download.preferredAudioLanguage
+  const changedFormat = options.quality !== undefined && Number(options.quality) !== download.quality || options.audioOnly !== undefined && !!options.audioOnly !== !!download.audioOnly
   store.commit(() => {
+    if (options.preferredAudioLanguage !== undefined) { download.preferredAudioLanguage = options.preferredAudioLanguage; download.audioSelectionExplicit = options.preferredAudioLanguage !== 'auto' }
+    if (options.quality !== undefined) download.quality = Math.max(0, Number(options.quality) || 0)
+    if (options.audioOnly !== undefined) download.audioOnly = !!options.audioOnly
+    if ((audioFailure || changedAudio || changedFormat) && download.pendingFilePath) { download.rejectedAudioFilePath = download.pendingFilePath; download.pendingFilePath = null }
+    if (changedFormat) download.ownDestPath = null
+    if (audioFailure || changedAudio) download.verifiedAudioChoice = null
+    download.errorCode = null
+    download.audioWarning = null
     download.status = 'queued'
     download.error = null
     download.percent = 0
@@ -1430,7 +1458,7 @@ function retry(id) {
     download.total = null
     download.retryAt = null
     download.recoveryCount = 0
-    download.refreshPending = !!download.resolved?.pageUrl
+    download.refreshPending = !audioFailure && !changedAudio && !changedFormat && previousFailure !== 'network' && !!download.resolved?.pageUrl
   })
   pump_queue()
 }

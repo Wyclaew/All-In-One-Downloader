@@ -1,3 +1,5 @@
+import AudioSelect, { type AudioChoice } from '../components/AudioSelect'
+import { downloadForItem, mediaPreferenceKey } from '../download-state'
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import * as fmt from '../format'
@@ -33,13 +35,6 @@ export interface QualityMemory {
   audioRow: Record<string, AudioChoice>
   setAudioGroup: (fn: (prev: Record<string, AudioChoice>) => Record<string, AudioChoice>) => void
   setAudioRow: (fn: (prev: Record<string, AudioChoice>) => Record<string, AudioChoice>) => void
-}
-
-type AudioChoice = 'en' | 'tr' | 'auto'
-function AudioSelect({ value, onChange, title = 'İndirilecek ses dili' }: { value: AudioChoice; onChange: (value: AudioChoice) => void; title?: string }) {
-  return <select className="select" value={value} title={title} aria-label={title} onChange={(event) => onChange(event.target.value as AudioChoice)}>
-    <option value="tr">Türkçe ses</option><option value="en">İngilizce ses</option><option value="auto">Kaynağın sesi</option>
-  </select>
 }
 
 interface Props {
@@ -112,20 +107,7 @@ export default function Sources({
     return map
   }, [state.items])
 
-  /**
-   * Latest download per media URL, so a row can show its own state. Keyed on the
-   * URL rather than the item id: rescanning a source mints new item ids, and the
-   * "already downloaded" mark has to survive that.
-   */
-  const downloadByUrl = useMemo(() => {
-    const map = new Map<string, Download>()
-    for (const d of downloads) {
-      if (!d.url) continue
-      const existing = map.get(d.url)
-      if (!existing || d.createdAt > existing.createdAt) map.set(d.url, d)
-    }
-    return map
-  }, [downloads])
+  const downloadsByItem = useMemo(() => new Map(state.items.map((item) => [item.id, downloadForItem(item, downloads)])), [state.items, downloads])
 
   if (!state.sources.length) {
     return (
@@ -138,8 +120,8 @@ export default function Sources({
   }
 
   const qualityFor = (item: MediaItem) =>
-    rowQuality[item.id] ?? groupQuality[item.sourceId] ?? fallbackQuality
-  const audioFor = (item: MediaItem) => audioRow[item.id] ?? audioGroup[item.sourceId] ?? state.settings.preferredAudioLanguage ?? 'en'
+    rowQuality[mediaPreferenceKey(item)] ?? rowQuality[item.id] ?? groupQuality[item.sourceId] ?? fallbackQuality
+  const audioFor = (item: MediaItem) => audioRow[mediaPreferenceKey(item)] ?? audioRow[item.id] ?? audioGroup[item.sourceId] ?? state.settings.preferredAudioLanguage ?? 'en'
 
   const startDownload = (item: MediaItem) => {
     api.download({ itemIds: [item.id], ...toRequest(qualityFor(item)), preferredAudioLanguage: audioFor(item) })
@@ -216,7 +198,7 @@ export default function Sources({
       {state.sources.map((source) => {
         const items = itemsBySource.get(source.id) || []
         const doneCount = items.filter((i) => {
-          const d = downloadByUrl.get(i.url)
+          const d = downloadsByItem.get(i.id)
           return d && d.status === 'done'
         }).length
         const groupValue = groupQuality[source.id] ?? fallbackQuality
@@ -324,6 +306,7 @@ export default function Sources({
                     Durdur
                   </Btn>
                 ) : null}
+                {items.length > 1 ? <>
                 <select
                   className="select"
                   value={groupValue}
@@ -345,6 +328,7 @@ export default function Sources({
                 >
                   {T.source.downloadAll}
                 </Btn>
+                </> : null}
                 <IconBtn
                   icon="refresh"
                   title={T.source.rescan}
@@ -412,13 +396,13 @@ export default function Sources({
                     key={item.id}
                     item={item}
                     useProxy={source.useProxy}
-                    download={downloadByUrl.get(item.url) || null}
+                    download={downloadsByItem.get(item.id) || null}
                     quality={qualityFor(item)}
                     audioLanguage={audioFor(item)}
-                    onAudioLanguage={(value) => setAudioRow((previous) => ({ ...previous, [item.id]: value }))}
+                    onAudioLanguage={(value) => setAudioRow((previous) => ({ ...previous, [mediaPreferenceKey(item)]: value }))}
                     selected={selected.has(item.id)}
                     onToggleSelect={() => toggleOne(item.id)}
-                    onQuality={(value) => setRowQuality((prev) => ({ ...prev, [item.id]: value }))}
+                    onQuality={(value) => setRowQuality((prev) => ({ ...prev, [mediaPreferenceKey(item)]: value }))}
                     onDownload={() => startDownload(item)}
                     onToVault={toVault}
                     onToast={onToast}
@@ -590,12 +574,14 @@ function Row({
           ) : null}
           {size ? <span className="sep" /> : null}
           <span>{item.site}</span>
-          {download ? <><span className="sep" /><span>{download.status === 'done' ? `Ses: ${fmt.audioLanguage(download.audioLanguage)}` : `İstenen ses: ${fmt.audioLanguage(download.preferredAudioLanguage || 'auto')}`}</span></> : null}
+          {download ? <><span className="sep" /><span>{download.status === 'done' ? `Ses: ${fmt.audioLanguage(download.audioLanguage || (download.preferredAudioLanguage === 'original' ? 'original' : null))}` : `İstenen ses: ${fmt.audioLanguage(download.preferredAudioLanguage || 'auto')}`}</span></> : null}
+          {item.audioTracks?.length ? <><span className="sep" /><span title="Kaynağın bildirdiği ses seçenekleri">Sesler: {[...new Set(item.audioTracks.map((track) => track.name || fmt.audioLanguage(track.lang)))].join(", ")}</span></> : null}
           {!item.duration && !item.isLive ? <span className="sep" /> : null}
           {!item.duration && !item.isLive ? <span>{T.item.unknownDuration}</span> : null}
           {!size && !item.isLive ? <span className="sep" /> : null}
           {!size && !item.isLive ? <span>boyut bilinmiyor</span> : null}
         </div>
+        {download?.status === 'error' && download.error ? <p className="dl-error" role="alert">{download.error}</p> : null}
       </div>
 
       <div className="row-actions">
@@ -639,7 +625,7 @@ function Row({
               ))}
             </select>
             <AudioSelect value={audioLanguage} onChange={onAudioLanguage} title="Bu videonun indirilecek ses dili" />
-            <IconBtn icon="download" title={T.item.download} onClick={onDownload} />
+            {!(status === "done" && download?.missing) ? <IconBtn icon={status === "error" ? "refresh" : "download"} title={status === "error" ? "Seçilen ses ve kaliteyle yeniden dene" : T.item.download} onClick={() => status === "error" && download ? api.retry(download.id, { ...toRequest(quality), preferredAudioLanguage: audioLanguage }) : onDownload()} /> : null}
           </>
         ) : null}
 
@@ -661,9 +647,6 @@ function Row({
             variant="danger"
             onClick={() => api.cancel(download.id)}
           />
-        ) : null}
-        {download && download.status === 'error' ? (
-          <IconBtn icon="refresh" title={T.library.retry} onClick={() => api.retry(download.id)} />
         ) : null}
         {download && download.status === 'done' && download.filePath && !download.missing ? (
           <>

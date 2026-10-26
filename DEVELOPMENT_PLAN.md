@@ -212,3 +212,15 @@ Güncel uygulama/devir/test/yayın durumu: [CLAUDE_HANDOFF.md](CLAUDE_HANDOFF.md
 0.16.0 son inceleme: aynı başlıklı eşzamanlı dosya hedefleri ayrıldı; native
 rezervasyon ve kalıcı devam kimliği, yt-dlp iş başına ad ayrımı eklendi. MKV
 timestamp sıçramaları ve rescan öncesi cookie lease boşluğu düzeltildi.
+
+## 0.17.0 hata düzeltme turu — 26 Ekim 2026
+
+- Sıkı ses seçimi, isimden güvenilir dil etiketi, ayrı orijinal ses seçimi.
+- CDN/öğe değişiminde aynı aktarım kimliği; aynı kayıtla dil değiştirerek retry.
+- Ses/altyazı alt listelerinin video kataloğundan çıkarılması.
+- Deneme ve sıra numaralı ilerleme, kararlı toplam çubuk, tek indirme eylemi.
+- Metadata isteği sonrası paralellik ve ortak sunucu bütçesi düzeltmeleri.
+- Geçici kopmada manifest ve doğrulanmış parçaları koruma.
+- Kalan: tam bölüm canlı dayanıklılık turu, etiketlenmemiş konuşmayı gerçek dil
+  algılamayla doğrulama, yanlış sesli mevcut videoya yalnız yeni sesi ekleyerek
+  onarım. Bunlar tamamlandı diye raporlanmamalı.

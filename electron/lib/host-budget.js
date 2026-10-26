@@ -31,6 +31,7 @@ function createHostBudget({ now = Date.now, minCooldownMs = 1000, maxCooldownMs 
         state.lastAt = now()
         const kind = error ? failureKind(error) : null
         if (kind === 'busy' || kind === 'network') {
+          state.penalized = true
           state.limit = Math.max(1, kind === 'busy' ? Math.floor(state.limit / 2) : state.limit - 1)
           state.successes = 0
           const seconds = error?.retryAfter == null ? NaN : Number(error.retryAfter)
@@ -43,6 +44,7 @@ function createHostBudget({ now = Date.now, minCooldownMs = 1000, maxCooldownMs 
           state.successes += 1
           if (state.successes >= Math.max(recoveryEvery, state.limit * 2) && now() >= state.until) {
             state.limit = Math.min(state.ceiling, state.limit + 1)
+            if (state.limit === state.ceiling) state.penalized = false
             state.successes = 0
           }
         }
@@ -87,9 +89,16 @@ function createHostBudget({ now = Date.now, minCooldownMs = 1000, maxCooldownMs 
         signal?.addEventListener('abort', waiter.abort, { once: true })
         admissions.push(waiter)
       })
-      state = { limit: ceiling, ceiling, active: 0, queue: [], until: 0, successes: 0, timer: null, lastAt: now() }
+      state = { limit: ceiling, ceiling, penalized: false, active: 0, queue: [], until: 0, successes: 0, timer: null, lastAt: now() }
       states.set(key, state)
-    } else state.ceiling = Math.max(state.ceiling, ceiling)
+    } else {
+      state.ceiling = Math.max(state.ceiling, ceiling)
+      // A one-request metadata/key probe must not throttle a later real
+      // transfer. Preserve genuine 429/network backoff while work is active.
+      if (!state.penalized || !state.active && !state.queue.length && now() - state.lastAt > 30000 && now() >= state.until) {
+        state.limit = state.ceiling; state.penalized = false
+      }
+    }
     return new Promise((resolve, reject) => {
       const waiter = { resolve, reject, signal, abort: null }
       waiter.abort = () => {

@@ -142,7 +142,7 @@ function cleanCache(destPath) {
   } catch {}
 }
 
-async function transferHls({ url, audioUrl = null, audioLanguage = null, resolved, destPath, download, settings,
+async function transferHls({ url, audioUrl = null, audioLanguage = null, audioName = null, resolved, destPath, download, settings,
   proxy = '', signal, onProgress, onHandle, onNote, onStage, limit = null, sampleSegments = 0, preparedTracks = null, mediaLabel = 'HLS', outputDuration = null }) {
   const controller = new AbortController()
   let muxer = null
@@ -155,6 +155,7 @@ async function transferHls({ url, audioUrl = null, audioLanguage = null, resolve
   let ticker = null
   const keys = new Map()
   const connections = Math.floor(settingNumber(settings.connections, 8, { min: 1, max: 16 }))
+  const hostConnections = Math.min(16, connections * Math.max(1, Number(settings.concurrency) || 1))
   const save = (plan) => atomicWrite(journalPath, JSON.stringify(plan))
   try {
     let tracks = preparedTracks
@@ -164,7 +165,7 @@ async function transferHls({ url, audioUrl = null, audioLanguage = null, resolve
     const trackResults = await Promise.allSettled(trackUrls.map(async (trackUrl) => {
       try {
       let finalUrl = trackUrl
-      const bytes = await requestBytes(trackUrl, resolved, { proxy, signal: controller.signal, maxBytes: 2 * 1024 * 1024, maximum: connections, onResponse: (r) => { finalUrl = r.finalUrl || trackUrl } })
+      const bytes = await requestBytes(trackUrl, resolved, { proxy, signal: controller.signal, maxBytes: 2 * 1024 * 1024, maximum: hostConnections, onResponse: (r) => { finalUrl = r.finalUrl || trackUrl } })
       const track = parseMediaPlaylist(bytes.toString('utf8'), finalUrl)
       if (sampleSegments > 0) { track.segments = track.segments.slice(0, Math.min(3, sampleSegments)); track.duration = track.segments.reduce((sum, s) => sum + s.duration, 0) }
       return track
@@ -243,7 +244,7 @@ async function transferHls({ url, audioUrl = null, audioLanguage = null, resolve
     onNote?.(`${remaining.length}/${tasks.length} ${mediaLabel} parçası alınacak; tamamlanan parçalar korunuyor`)
     let cursor = 0, firstError = null
     const loadKey = (key) => {
-      if (!keys.has(key.url)) keys.set(key.url, requestBytes(key.url, resolved, { proxy, signal: controller.signal, maxBytes: 16, maximum: connections }).then((bytes) => {
+      if (!keys.has(key.url)) keys.set(key.url, requestBytes(key.url, resolved, { proxy, signal: controller.signal, maxBytes: 16, maximum: hostConnections }).then((bytes) => {
         if (bytes.length !== 16) throw new Error('HLS anahtarı geçersiz.')
         return bytes
       }).catch((err) => { keys.delete(key.url); throw err }))
@@ -255,7 +256,7 @@ async function transferHls({ url, audioUrl = null, audioLanguage = null, resolve
         for (let attempt = 0; ; attempt += 1) {
           try {
             let received = 0
-            const bytes = await requestBytes(task.url, resolved, { proxy, signal: controller.signal, range: task.range, limit, maximum: connections,
+            const bytes = await requestBytes(task.url, resolved, { proxy, signal: controller.signal, range: task.range, limit, maximum: hostConnections,
               onBytes: (done, size) => { wireBytes += done - received; received = done; active.set(task.index, { done, size: size || done }); report() } })
             let data = decryptSegment(bytes, task.key ? { ...task.key, bytes: await loadKey(task.key) } : null)
             if (/^\s*(?:<!doctype|<html|\{\s*"(?:error|message)")/i.test(data.subarray(0, 200).toString('utf8'))) throw Object.assign(new Error('Akış adresi geçmiş; HLS sunucusu video yerine hata sayfası döndürdü.'), { status: 403 })
@@ -315,8 +316,9 @@ async function transferHls({ url, audioUrl = null, audioLanguage = null, resolve
       args.push('-c:a', ...(codecs[settings.audioFormat] || codecs.mp3))
     } else {
       args.push('-map', '0:v:0?', '-map', audioUrl ? '1:a:0' : '0:a?', '-c', 'copy')
-      if (audioLanguage) args.push('-metadata:s:a:0', `language=${({ en: 'eng', tr: 'tur' })[languageCode(audioLanguage)] || audioLanguage}`)
     }
+    if (audioLanguage) args.push('-metadata:s:a:0', `language=${({ en: 'eng', tr: 'tur' })[languageCode(audioLanguage)] || audioLanguage}`)
+    if (audioName) args.push('-metadata:s:a:0', `title=${audioName}`, '-metadata:s:a:0', `handler_name=${audioName}`)
     const ext = path.extname(destPath).slice(1).toLowerCase()
     const mux = { mkv: 'matroska', mp4: 'mp4', m4a: 'ipod', mp3: 'mp3', opus: 'opus', flac: 'flac', wav: 'wav' }[ext] || 'mp4'
     if (mux === 'mp4') args.push('-movflags', '+faststart')

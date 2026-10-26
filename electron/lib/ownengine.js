@@ -31,7 +31,7 @@ const { agentsFor, ffmpegEnv, parseProxy } = require('./proxy')
 const { safeName, settingNumber, atomicWrite } = require('./util')
 const { failureKind, retryDelay, httpError, sleep } = require('./recovery')
 const { TransferStats } = require('./transfer-stats')
-const { languageCode } = require('./media-preferences')
+const { languageCode, pickAudioTrack, trackLanguage } = require('./media-preferences')
 const targets = require('./download-targets')
 
 const AUDIO_CODECS = {
@@ -192,17 +192,20 @@ async function pickVariant(url, resolved = {}, quality, onNote, proxy = '', pref
   if (signal?.aborted) throw abortError()
   const rejected = new Set(resolved?.rejectedVariantUrls || [])
   const cap = Number(quality) || 0
-  const lang = languageCode(preferred)
+  const audioMatches = (tracks) => {
+    if (!preferred || preferred === 'auto' || !tracks?.length) return false
+    try { return !!pickAudioTrack(tracks, preferred) } catch { return false }
+  }
   const prepared = (Array.isArray(resolved.preparedVariants) ? resolved.preparedVariants : []).slice(0, 8)
     .filter((variant) => variant.mediaUrl && !rejected.has(variant.url) && !rejected.has(variant.mediaUrl)
-      && (!cap || variant.height > 0 && variant.height <= cap))
+      && (!cap || !variant.height || variant.height <= cap))
     .sort((a, b) => (b.height || 0) - (a.height || 0) || (b.bandwidth || 0) - (a.bandwidth || 0))
   if (prepared.length) {
-    const chosen = prepared[0]
+    const chosen = prepared.find((variant) => audioMatches(variant.audioTracks)) || prepared[0]
     const tracks = chosen.audioTracks || []
-    const audio = tracks.find((track) => languageCode(track.lang) === lang) || tracks.find((track) => track.default) || tracks[0]
+    const audio = pickAudioTrack(tracks, preferred)
     return { url: chosen.mediaUrl, height: chosen.height || null,
-      audioUrl: audio?.url || chosen.audioUrl || null, audioLanguage: audio?.lang || chosen.audioLanguage || null }
+      audioUrl: audio?.url || chosen.audioUrl || null, audioLanguage: audio?.lang || trackLanguage(audio) || chosen.audioLanguage || null, ...(audio?.name ? { audioName: audio.name } : {}) }
   }
   async function descend(current, depth, ancestors) {
     if (depth > 3 || ancestors.has(current)) throw new Error('HLS ana listesi döngü içeriyor veya iç içe liste sınırını aştı.')
@@ -216,16 +219,17 @@ async function pickVariant(url, resolved = {}, quality, onNote, proxy = '', pref
     const viable = hls.variants.filter((v) => !rejected.has(v.url))
     if (!viable.length) throw new Error('Bu oynatıcının kalite bağlantıları artık geçerli değil. Kaynak yeniden çözümlenmeli.')
     const video = viable.filter((v) => v.height)
-    const ranked = video.length ? video : viable
-    const chosen = cap ? ranked.find((v) => (v.height || 0) <= cap) : ranked[0]
-    if (!chosen) throw new Error('HLS listesinde seçilen kalite sınırına uygun akış yok.')
+    const ranked = video.length ? [...video, ...viable.filter((v) => !v.height && (!v.codecs || /avc|hvc|hev|vp0?9|av01/i.test(v.codecs) || !/mp4a|aac|opus|vorbis|ac-3|ec-3/i.test(v.codecs)))] : viable
+    const eligible = ranked.filter((v) => !cap || !v.height || v.height <= cap)
+    const chosen = eligible.find((v) => audioMatches(hls.audioTracks.filter((track) => !v.audioGroup || track.group === v.audioGroup))) || eligible[0]
+    if (!chosen) throw new Error('Seçilen kalite bu kaynakta yok. Mevcut kaliteler: ' + [...new Set(video.map((v) => v.height + 'p'))].join(', ') + '. Kaliteyi En iyi veya mevcut bir değer olarak seç.')
     if (chosen.height && chosen.height !== ranked[0].height) onNote?.(`${chosen.height}p akış seçildi`)
     const tracks = (hls.audioTracks || []).filter((t) => !chosen.audioGroup || t.group === chosen.audioGroup)
-    const audio = tracks.find((t) => languageCode(t.lang) === lang) || tracks.find((t) => t.default) || tracks[0]
-    if (lang !== 'auto' && audio?.lang && languageCode(audio.lang) !== lang) onNote?.(`İstenen ses dili yok; ${audio.lang} ses mevcut`)
     const child = await descend(chosen.url || current, depth + 1, seen)
+    const audio = child.audioUrl || child.audioLanguage ? null : pickAudioTrack(tracks, preferred)
     return { ...child, height: child.height || chosen.height || null,
-      audioUrl: child.audioUrl || audio?.url || null, audioLanguage: child.audioLanguage || audio?.lang || null }
+      audioUrl: child.audioUrl || audio?.url || null, audioLanguage: child.audioLanguage || audio?.lang || trackLanguage(audio) || null,
+      ...(child.audioName || audio?.name ? { audioName: child.audioName || audio.name } : {}) }
   }
   const selected = await descend(url, 0, new Set())
   if (selected.audioUrl) {
@@ -729,7 +733,7 @@ const MUXERS = {
   wav: 'wav',
 }
 
-function ffmpegArgs({ url, resolved, audioUrl = null, selectedAudioIndex = null, destPath, workPath, download, settings }) {
+function ffmpegArgs({ url, resolved, audioUrl = null, audioLanguage = null, audioName = null, selectedAudioIndex = null, destPath, workPath, download, settings }) {
   const args = [
     '-hide_banner',
     '-loglevel',
@@ -761,6 +765,8 @@ function ffmpegArgs({ url, resolved, audioUrl = null, selectedAudioIndex = null,
     args.push('-c', 'copy')
   }
 
+  if (audioLanguage) args.push('-metadata:s:a:0', `language=${({ en: 'eng', tr: 'tur' })[languageCode(audioLanguage)] || audioLanguage}`)
+  if (audioName) args.push('-metadata:s:a:0', `title=${audioName}`, '-metadata:s:a:0', `handler_name=${audioName}`)
   const ext = path.extname(destPath).replace('.', '').toLowerCase()
   if (ext === 'mp4') args.push('-movflags', '+faststart')
   args.push('-f', MUXERS[ext] || 'mp4', workPath)
@@ -778,6 +784,8 @@ function runFfmpeg({
   url,
   resolved,
   audioUrl = null,
+  audioLanguage = null,
+  audioName = null,
   selectedAudioIndex = null,
   destPath,
   workPath,
@@ -810,7 +818,7 @@ function runFfmpeg({
 
     const child = spawn(
       bin,
-      ffmpegArgs({ url, resolved, audioUrl, selectedAudioIndex, destPath, workPath, download, settings }),
+      ffmpegArgs({ url, resolved, audioUrl, audioLanguage, audioName, selectedAudioIndex, destPath, workPath, download, settings }),
       { env, windowsHide: true }
     )
     onHandle(child)
@@ -932,11 +940,16 @@ async function transfer({
   download.url = located.url
   let audioUrl = null
   let audioLanguage = null
+  let audioName = null
 
   if (kind === 'hls') {
     const picked = await pickVariant(url, resolved, download.quality, onNote, proxy, download.preferredAudioLanguage || settings.preferredAudioLanguage || 'en', signal)
     audioUrl = picked.audioUrl || null
     audioLanguage = picked.audioLanguage || null
+    audioName = picked.audioName || null
+    const wanted = languageCode(download.preferredAudioLanguage || settings.preferredAudioLanguage || 'en')
+    if (wanted !== 'auto' && !(wanted === 'original' ? audioName : languageCode(audioLanguage) === wanted)) throw require('./media-preferences').audioError(wanted, download.streamAudioTracks || [])
+    download.selectedAudioName = audioName
     url = download.audioOnly && audioUrl ? audioUrl : picked.url
     if (download.audioOnly) audioUrl = null
     halt()
@@ -1013,7 +1026,7 @@ async function transfer({
 
   if (kind === 'hls' && settings.nativeHls !== false) {
     try {
-      return completed(await require('./hls-native').transferHls({ url, audioUrl, audioLanguage, resolved, destPath, download,
+      return completed(await require('./hls-native').transferHls({ url, audioUrl, audioLanguage, audioName, resolved, destPath, download,
         settings: { ...settings, connections: download.recoveryConnections || settings.connections },
         proxy, signal, onProgress, onHandle, onNote, onStage, limit }))
     } catch (err) {
@@ -1048,6 +1061,8 @@ async function transfer({
     url,
     resolved,
     audioUrl,
+    audioLanguage,
+    audioName,
     selectedAudioIndex,
     destPath,
     workPath: `${destPath}.part`,

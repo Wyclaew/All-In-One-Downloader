@@ -26,6 +26,11 @@ test('DASH native parser resolves inherited bases, finite Time/Number templates 
   const numbers = dash.parseManifest(manifest('<AdaptationSet mimeType="video/mp4"><SegmentTemplate duration="1" startNumber="7" initialization="init-$RepresentationID$.m4s" media="part-$Number%05d$.m4s"/><Representation id="v" height="720" bandwidth="9"/></AdaptationSet>'), 'https://example.test/v.mpd')
   assert.equal(numbers.periods[0].tracks[0].segments[3].url, 'https://example.test/part-00010.m4s')
 })
+
+test('DASH does not substitute a Turkish dub when the requested English rendition is absent', () => {
+  const text = manifest(`<AdaptationSet mimeType="audio/mp4" lang="tr">${template('presentationTimeOffset="9000"')}<Representation id="tr" bandwidth="128000"/></AdaptationSet>`)
+  assert.throws(() => dash.parseManifest(text, 'https://example.test/only-tr.mpd', { audioOnly: true, preferredAudioLanguage: 'en' }), { code: 'AUDIO_LANGUAGE_UNAVAILABLE' })
+})
 test('DASH native parser bounds open repeats and rejects DRM, live, gaps, unsupported addressing and over-cap quality', () => {
   const video = `<AdaptationSet mimeType="video/mp4">${template('presentationTimeOffset="9000"')}<Representation id="v" height="720" bandwidth="900000"/></AdaptationSet>`
   const open = manifest(video.replace('r="3"', 'r="-1"'))

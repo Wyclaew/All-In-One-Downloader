@@ -132,6 +132,9 @@ export interface Download {
   audioWarning?: string | null
   audioAvailableLanguages?: string[]
   audioSelectionExplicit?: boolean
+  originalUrl?: string
+  sourceItemIndex?: number | null
+  progressSequence?: number
   preferredAudioLanguage?: string
   series?: string | null
   season?: number | null
@@ -348,6 +351,8 @@ export interface DownloadPart {
 }
 
 export interface ProgressEvent {
+  attempt?: number
+  sequence?: number
   id: string
   status: DownloadStatus
   stage: DownloadStage
@@ -376,7 +381,7 @@ export interface Toast {
 }
 
 export interface DownloadRequest {
-  preferredAudioLanguage?: 'en' | 'tr' | 'auto'
+  preferredAudioLanguage?: 'en' | 'tr' | 'auto' | 'original'
   itemIds?: string[]
   url?: string
   quality?: number

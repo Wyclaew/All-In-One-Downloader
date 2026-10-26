@@ -31,17 +31,36 @@ test('missing preferred language produces a warning, not a false English claim',
   assert.equal(selected.language, 'tr')
   assert.match(selected.warning, /bulunamadı/)
   assert.equal((await inspectAudio(file)).length, 1)
+  assert.equal((await selectAudio(file, 'en', { verifiedChoice: 'en' })).matched, false, 'known contradictory audio cannot be relabelled')
+})
+test('strict extractor evidence can identify a single untagged audio stream without opening an unknown fallback', { skip: !ffmpeg }, async () => {
+  const file = path.join(root, 'untagged.m4a')
+  execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=500:duration=1', '-c:a', 'aac', '-y', file], { env: toolEnv() })
+  assert.equal((await selectAudio(file, 'en')).matched, false)
+  const verified = await selectAudio(file, 'en', { verifiedChoice: 'en' })
+  assert.equal(verified.matched, true); assert.equal(verified.language, 'en')
 })
 test('ffmpeg receives the separate audio input and explicit mapping', () => {
-  const args = own.ffmpegArgs({ url: 'https://cdn.example.test/video.m3u8', audioUrl: 'https://cdn.example.test/en/audio.m3u8',
+  const args = own.ffmpegArgs({ url: 'https://cdn.example.test/video.m3u8', audioUrl: 'https://cdn.example.test/en/audio.m3u8', audioName: 'Original Audio', audioLanguage: 'en',
     resolved: null, download: { audioOnly: false }, settings: {}, destPath: '/tmp/film.mp4', workPath: '/tmp/film.mp4.part' })
   assert.equal(args.filter((x) => x === '-i').length, 2)
   assert.equal(args.includes('1:a:0'), true)
   assert.equal(args.includes('-reconnect_at_eof'), false)
+  assert.ok(args.includes('language=eng')); assert.ok(args.includes('title=Original Audio'))
 })
 
 const { ffprobePath } = load('electron/lib/binaries.js')
 const { languageCode, formatSelector, rankCandidates } = require('../electron/lib/media-preferences')
+const { pickAudioTrack, trackLanguage } = require('../electron/lib/media-preferences')
+test('named HDF renditions select Turkish or original and never invent an English label', async () => {
+  const tracks = [{ lang: '', name: 'Turkish', default: true, url: '/tr' }, { lang: '', name: 'Original Audio', url: '/original' }]
+  assert.equal(trackLanguage(tracks[0]), 'tr')
+  assert.equal(trackLanguage(tracks[1]), '')
+  assert.equal(pickAudioTrack(tracks, 'tr').url, '/tr')
+  assert.equal(pickAudioTrack(tracks, 'original').url, '/original')
+  assert.throws(() => pickAudioTrack(tracks, 'en'), { code: 'AUDIO_LANGUAGE_UNAVAILABLE' })
+  assert.equal(formatSelector({ preferredAudioLanguage: 'en' }).split('/').every((part) => part.includes('language^=en')), true)
+})
 function packetHashes(file, index) {
   return JSON.parse(execFileSync(ffprobePath(), ['-v', 'error', '-select_streams', `a:${index}`, '-show_packets', '-show_entries', 'packet=data_hash', '-show_data_hash', 'sha256', '-of', 'json', file], { env: toolEnv() })).packets.map((packet) => packet.data_hash)
 }
