@@ -6,7 +6,7 @@ satırının ses/kalite seçicileri eski işin isteği yerine genel ayara dönü
 regresyonu eklendi. Satır/iş eşlemesi güncelleme başına indekslenir; büyük bir
 kitaplık her satır için baştan taranmaz. Ses seçeneklerinde bitrate/DRC gibi
 çıkarıcı ayrıntıları yerine tekilleştirilmiş dil ve orijinal ses adları gösterilir.
-0.17.0 etiketi değiştirilmeyecek; tamamlanmış yaması 0.17.1 olarak yayımlanacak.
+0.17.0 etiketi değiştirilmedi; son yama 0.17.1 olarak yayımlandı ve kurulu sürüm doğrulandı.
 
 Bu bölüm günceldir; alttaki 0.16.0 tarihçedir.
 Kullanıcının ses seçimi, Hdf/Dizibox aktarımı, geç başlama, kaynak/kitaplık
@@ -83,7 +83,51 @@ durum farkı ve oynayan ilerleme çubukları şikâyetleri incelendi.
 - Yeni helper'lar: `media-catalog.js`, `src/download-state.ts`, `AudioSelect.tsx`.
   Yeni test: `download-state.test.js`, `tests/manual/transfer-ui-smoke.js`.
 
-Yayın/kurulum tamamlandığında 0.17.1 kaynak commit, CI ve kurulum kaydı buraya eklenecek.
+## Yayın ve kurulum doğrulaması tamamlandı — 29 Ekim 2026
+
+- Kaynak **`545a59b`**, `main` ve annotated **`v0.17.1`** GitHub'da.
+  [0.17.1 kararlı yayını](https://github.com/Wyclaew/All-In-One-Downloader/releases/tag/v0.17.1)
+  public: draft=false, prerelease=false. Mac arm64/x64 ZIP+DMG, Windows installer
+  ve iki güncelleme manifesti mevcut.
+- [Release workflow 40353504921](https://github.com/Wyclaew/All-In-One-Downloader/actions/runs/40353504921)
+  başarılı; Mac/Windows test, typecheck, build ve yayın doğrulaması tamamlandı.
+  Yerel son tam tur **265/265, 0 skip**; ek UI regresyonu, hata satırındaki önceki
+  İngilizce ve 720p seçiminin genel auto ayarına dönmediğini doğrular.
+  Loglar `/tmp/aio-0171-full.log`, `/tmp/aio-0171-transfer-ui.log`.
+- Gerçek updater, izole profil ile **0.17.0 → 0.17.1**, `phase=available`,
+  `automatic=true` verdi. Log `/tmp/aio-0171-update-smoke.log`.
+- 26 Ekim'de önce 0.17.0 yerel paketi uygulamanın üzerine kurulmuştu. Aradaki
+  son UI düzeltmesi 0.17.1 olarak yayımlandı. **29 Ekim devamında kullanıcının
+  `/Applications/All in One Downloader.app` paketi zaten 0.17.1 olarak bulundu.**
+  Bu son güncellemeyi hangi adımın kurduğu bu tur gözlenmedi; benim 29 Ekim'de
+  yeniden paket değiştirdiğim söylenmemeli. Gereksiz yeniden kurulum yapılmadı.
+- Kurulu arşivdeki **54 uygulama kaynak dosyası**, yayımlanmış tam `545a59b`
+  commit'iyle; **3 renderer çıktısı** yerel 0.17.1 build'iyle bayt olarak aynı.
+  Paket kimliği/sürümü ve deep/strict codesign geçti. Kaynak kayıtları:
+  `/tmp/aio-0171-package-verification.json`,
+  `/tmp/aio-0171-installed-verification.json`. GitHub ZIP'in SHA512'si bu yerel
+  kontrol kapsamında doğrulandı diye iddia edilmemeli.
+- Gerçek masaüstünde uygulama açıldı: ana sayfa/kitaplık **31 indirme kaydı**,
+  **26 kaynak ve 26 öğe**, etkin indirme yok. Bunlar 26 Ekim kurulumundaki 20/21
+  kayıttan farklı; arada kullanıcı verileri değişmiş. Eski yedeğe geri dönülmedi,
+  yeni kayıtlar değiştirilmedi. Ayarlar sürüm alanı bu CUA okumasında `v …`
+  gösterdi; arayüzde açıkça 0.17.1 yazısı görüldü denmemeli. Sürüm kurulu paket
+  içeriğinden ve kaynak karşılaştırmasından doğrulandı.
+- Mentalist 8 ve 9'un **mevcut tamamlanmış yerel dosyaları** ffprobe ile yalnız
+  ses metadata'sı açısından okundu: istek `original`, kayıt `en`, ses izi
+  `eng`. Bu, dil etiketini doğrular; konuşmayı dinleyerek dil tanıma veya her
+  sahneyi/kareyi tarama testi değildir. Dosyalar bu tur yeniden indirilmedi,
+  değiştirilmedi veya oynatılmadı.
+- 0.17.0 kurulumu sırasında alınan 0.16.0 geri dönüş paketi ve eski kütüphane
+  yedeği `/Applications/.aio-install-tkundenq/` altında durur. Bunlar tarihî
+  yedektir; kullanıcının güncel 31 kaydı üzerine otomatik geri yüklenmemeli.
+  0.17.1 için hazırlanmış ama bu tur kullanılmamış paket
+  `/Applications/.aio-install-zdgov8e4/incoming.app` konumunda kalmıştır.
+
+Tam bölümün bütünlüğü ve değişken CDN hızında uzun süreli dayanıklılık için yeni
+bir canlı uçtan uca test yapılmış değildir. Kısa canlı örneklerin sınırı yukarıda
+belirtilmiştir. Güncel kaynak ve kurulum için bu bölüm esas alınır.
+
 
 ---
 
