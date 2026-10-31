@@ -122,6 +122,7 @@ export default function Home({ state, downloads, category, query, onToast, onOpe
   const cardProps = {
     positions,
     watched,
+    vaultEnabled: state.settings.vaultEnabled !== false,
     onSubtitle: (d: Download) => setSubtitleFor(d),
     onToast,
     onCollection: (d: Download) => { setCollectionFor(d); setCollectionName(d.series || '') },
@@ -229,6 +230,7 @@ function Card({
   wide,
   positions,
   watched,
+  vaultEnabled,
   onSubtitle,
   onCollection,
   onToast,
@@ -237,6 +239,7 @@ function Card({
   wide?: boolean
   positions: Record<string, { at: number; duration: number; seen: number }>
   watched: Record<string, number>
+  vaultEnabled: boolean
   onSubtitle: (d: Download) => void
   onCollection: (d: Download) => void
   onToast: (message: string, kind?: 'info' | 'warn' | 'error' | 'ok') => void
@@ -322,17 +325,19 @@ function Card({
               >
                 {T.subs.find}
               </MenuItem>
-              <MenuItem
-                icon="lock"
-                onClick={async () => {
-                  close()
-                  onToast(T.library.movingToVault, 'info')
-                  const entry = await api.vaultTakeDownload(d.id)
-                  if (entry) onToast(T.library.movedToVault, 'ok')
-                }}
-              >
-                {T.library.toVault}
-              </MenuItem>
+              {vaultEnabled ? (
+                <MenuItem
+                  icon="lock"
+                  onClick={async () => {
+                    close()
+                    onToast(T.library.movingToVault, 'info')
+                    const entry = await api.vaultTakeDownload(d.id)
+                    if (entry) onToast(T.library.movedToVault, 'ok')
+                  }}
+                >
+                  {T.library.toVault}
+                </MenuItem>
+              ) : null}
               <MenuItem
                 icon="external"
                 onClick={() => {

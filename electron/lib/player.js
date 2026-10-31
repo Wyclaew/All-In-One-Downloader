@@ -30,6 +30,7 @@ const { BrowserWindow, ipcMain, protocol, shell, clipboard } = require('electron
 const { ffmpegPath, ffprobePath, toolEnv } = require('./binaries')
 const { createTimingAnalyzer } = require('../player/timing')
 const store = require('./store')
+const { createShowTrackerBridge, reportTitle } = require('./show-tracker')
 
 const SCHEME = 'aiomedia'
 const PAGE = path.join(__dirname, '..', 'player', 'index.html')
@@ -1036,6 +1037,7 @@ async function launch({ session, vault }) {
   sessions.set(win.webContents.id, session)
   if (vault) vaultWindows.add(win)
   win.on('closed', () => {
+    reportToShowTracker(session, false)
     releaseSession(session)
     sessions.delete(win.webContents.id)
     vaultWindows.delete(win)
@@ -1134,6 +1136,23 @@ function closeVaultWindows() {
 /* ipc                                                                         */
 /* -------------------------------------------------------------------------- */
 
+const showTracker = createShowTrackerBridge({
+  enabled: () => store.getState().settings.showTrackerSync !== false,
+  fetchImpl: (url, init) => fetch(url, init),
+})
+
+function reportToShowTracker(session, playing) {
+  if (session.vault || !Number.isFinite(session.lastSeconds)) return
+  const fileName = path.basename(session.file)
+  const record = store.getState().downloads.find((d) => d.filePath === session.file)
+  showTracker.report(session, {
+    title: reportTitle({ ...record, fileName }),
+    seconds: session.lastSeconds,
+    duration: session.lastDuration,
+    playing,
+  })
+}
+
 function sessionOf(event) {
   const session = sessions.get(event.sender.id)
   if (!session) throw new Error('Bu pencere artık bir dosya oynatmıyor.')
@@ -1186,6 +1205,11 @@ function registerIpc() {
   ipcMain.on('player:position', (event, { seconds, duration } = {}) => {
     const session = sessions.get(event.sender.id)
     if (session) store.rememberPosition(session.key, Number(seconds), Number(duration))
+    if (session) {
+      session.lastSeconds = Number(seconds)
+      session.lastDuration = Number(duration)
+      reportToShowTracker(session, true)
+    }
     if (session && session.vault) require('./vault').touch()
   })
 

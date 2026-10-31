@@ -9,6 +9,7 @@ export const T = {
     home: 'Ana sayfa',
     sources: 'Kaynaklar',
     library: 'Kitaplık',
+    shows: 'Diziler',
     vault: 'Kasa',
     settings: 'Ayarlar',
     categories: 'Kategoriler',

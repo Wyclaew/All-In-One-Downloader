@@ -1,4 +1,5 @@
 import type {
+  ShowSummary,
   AppState,
   BrowserOption,
   Category,
@@ -126,6 +127,9 @@ interface Bridge {
   onOutlook(handler: (p: Outlook) => void): () => void
   onTor(handler: (p: TorStatus) => void): () => void
   onUpdate(handler: (p: UpdateState) => void): () => void
+  showsList(): Promise<Result<ShowSummary[]>>
+  showsRefresh(): Promise<Result<{ shows: ShowSummary[]; failures: string[] }>>
+  showsRematch(payload: { name: string; query: string }): Promise<Result<ShowSummary[]>>
   updateStatus(): Promise<Result<UpdateState>>
   updateCheck(): Promise<Result<UpdateState>>
   updateInstall(): Promise<Result<UpdateState>>
@@ -179,6 +183,9 @@ export const api = {
   proxyPresets: () => call(bridge.proxyPresets()),
   torStatus: () => call(bridge.torStatus()),
   updateStatus: () => call(bridge.updateStatus()),
+  showsList: () => call(bridge.showsList()),
+  showsRefresh: () => call(bridge.showsRefresh()),
+  showsRematch: (payload: { name: string; query: string }) => call(bridge.showsRematch(payload)),
   updateCheck: () => call(bridge.updateCheck()),
   updateInstall: () => call(bridge.updateInstall()),
   updateSetToken: (value: string) => call(bridge.updateSetToken(value)),

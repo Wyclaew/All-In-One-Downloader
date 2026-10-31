@@ -58,6 +58,12 @@ function defaultSettings() {
     torAutoStart: false,
     // Ask GitHub for a newer version at start and every few hours.
     autoCheckUpdates: true,
+    // Hides the vault everywhere when off. Its files stay where they are.
+    vaultEnabled: true,
+    // Compare the library's series with TVmaze's episode lists.
+    trackShows: true,
+    // Report playback to the Show Tracker app over loopback.
+    showTrackerSync: true,
     // A GitHub token for a private repository, encrypted with the OS keystore.
     // Empty unless the user enters one.
     updateTokenSealed: '',
@@ -121,6 +127,8 @@ function emptyState() {
     // path for a library file and by id for a vault entry, so a vaulted file
     // remembers its place without its name appearing here.
     positions: {},
+    // series key -> cached TVmaze episode list.
+    shows: {},
     // key -> seconds. A subtitle aligned by hand stays aligned: the same release
     // is off by the same amount every time it is opened.
     delays: {},
@@ -178,6 +186,7 @@ function init() {
       positions: loaded.positions && typeof loaded.positions === 'object' ? loaded.positions : {},
       delays: loaded.delays && typeof loaded.delays === 'object' ? loaded.delays : {},
       watched: loaded.watched && typeof loaded.watched === 'object' ? loaded.watched : {},
+      shows: loaded.shows && typeof loaded.shows === 'object' ? loaded.shows : {},
     }
   }
   state.items = require('./media-catalog').withoutRenditionRows(state.items)

@@ -148,6 +148,7 @@ export default function Library({
     onToggle: toggle,
     categoryById,
     vaultingId: vaulting,
+    vaultEnabled: state.settings.vaultEnabled !== false,
     outlook,
     onRemove: (d: Download) => askRemove([d]),
     onFindSubtitle: (d: Download) => setSubtitleFor(d),
@@ -382,6 +383,7 @@ function Row({
   onToggle,
   categoryById,
   vaultingId,
+  vaultEnabled,
   outlook,
   onRemove,
   onFindSubtitle,
@@ -396,6 +398,7 @@ function Row({
   onToggle: (id: string) => void
   categoryById: Map<string, Category>
   vaultingId: string | null
+  vaultEnabled: boolean
   outlook: Outlook
   onRemove: (d: Download) => void
   onFindSubtitle: (d: Download) => void
@@ -631,7 +634,7 @@ function Row({
                   {T.subs.find}
                 </MenuItem>
               ) : null}
-              {playable ? (
+              {playable && vaultEnabled ? (
                 <MenuItem
                   icon="lock"
                   onClick={() => {

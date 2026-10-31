@@ -212,8 +212,30 @@ export interface Settings {
   /** The app runs its own tor when this is on; empty path means "go and find it". */
   torAutoStart: boolean
   autoCheckUpdates: boolean
+  vaultEnabled: boolean
+  trackShows: boolean
+  showTrackerSync: boolean
   torPath: string
   playerSubtitleSize: 'small' | 'normal' | 'large' | 'huge'
+}
+
+export interface ShowEpisode {
+  episode: number
+  name: string
+  airdate: string | null
+}
+
+export interface ShowSummary {
+  key: string
+  name: string
+  query: string
+  owned: number
+  unnumbered: number
+  matched: boolean
+  checked: boolean
+  show?: { id: number; name: string; status: string }
+  seasons: { season: number; total: number; have: number; missing: ShowEpisode[] }[]
+  next: (ShowEpisode & { season: number }) | null
 }
 
 export interface TorStatus {

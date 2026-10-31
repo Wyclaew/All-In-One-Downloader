@@ -9,10 +9,11 @@ import UpdateBanner from './components/UpdateBanner'
 import Home from './views/Home'
 import Library from './views/Library'
 import Settings from './views/Settings'
+import Shows from './views/Shows'
 import SourcesView from './views/Sources'
 import VaultView from './views/Vault'
 
-type View = 'home' | 'sources' | 'library' | 'vault' | 'settings'
+type View = 'home' | 'sources' | 'library' | 'shows' | 'vault' | 'settings'
 const ALL = null
 const UNCATEGORIZED = '__none__'
 
@@ -302,13 +303,18 @@ export default function App() {
             active={view === 'library'}
             onClick={() => goLibrary(ALL)}
           />
-          <RailItem
-            icon={vault.unlocked ? 'unlock' : 'lock'}
-            label={T.nav.vault}
-            count={vault.unlocked ? vault.entries.length : undefined}
-            active={view === 'vault'}
-            onClick={() => setView('vault')}
-          />
+          {state.settings.trackShows !== false ? (
+            <RailItem icon="layers" label={T.nav.shows} active={view === 'shows'} onClick={() => setView('shows')} />
+          ) : null}
+          {state.settings.vaultEnabled !== false ? (
+            <RailItem
+              icon={vault.unlocked ? 'unlock' : 'lock'}
+              label={T.nav.vault}
+              count={vault.unlocked ? vault.entries.length : undefined}
+              active={view === 'vault'}
+              onClick={() => setView('vault')}
+            />
+          ) : null}
           <RailItem
             icon="sliders"
             label={T.nav.settings}
@@ -366,6 +372,8 @@ export default function App() {
                 ? T.nav.sources
                 : view === 'library'
                   ? T.nav.library
+                  : view === 'shows'
+                    ? T.nav.shows
                   : view === 'vault'
                     ? T.nav.vault
                     : T.settings.title}
@@ -500,7 +508,9 @@ export default function App() {
               />
             ) : null}
 
-            {view === 'vault' ? (
+            {view === 'shows' && state.settings.trackShows !== false ? <Shows onToast={pushToast} /> : null}
+
+            {view === 'vault' && state.settings.vaultEnabled !== false ? (
               <VaultView
                 vault={vault}
                 autoLockMinutes={state.settings.vaultAutoLockMinutes ?? 15}

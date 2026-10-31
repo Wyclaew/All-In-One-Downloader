@@ -1,4 +1,14 @@
-# Claude için güncel devir notu — 0.17.1
+# Claude için güncel devir notu — 0.18.0
+
+31 Ekim 2026. Yeni: `electron/lib/shows.js` (TVmaze bölüm takibi, Diziler görünümü),
+`electron/lib/show-tracker.js` (Show Tracker yerel köprüsüne `127.0.0.1:7423/progress`
+raporu; kasa hariç), `vaultEnabled` ayarı. Doğrulama: 274 test, gerçek Electron
+`tests/manual/shows-smoke.js` (canlı TVmaze, sahte köprü). Gerçek Show Tracker ile
+uçtan uca deneme ve çift yönlü senkron bu sürümde yok. Dosya adı şablonu yapılmadı.
+
+---
+
+# Tarihçe — 0.17.1
 
 26 Ekim 2026. Son kurulum kontrolünde ek bir UI düzeltmesi gerekti: hata
 satırının ses/kalite seçicileri eski işin isteği yerine genel ayara dönüyordu.

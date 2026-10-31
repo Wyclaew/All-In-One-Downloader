@@ -1,34 +1,20 @@
-Kitaplığını daha kolay düzenleyebilir, takılan bir videonun zamanlamasını kontrol edebilir ve daha güvenilir iptal/devam davranışından yararlanabilirsin.
+Dizilerini takip et, Kasa'yı istediğinde gizle ve izlediklerini Show Tracker'a gönder.
 
-Ses seçimi ve aktarım hataları düzeltildi. Türkçe/İngilizce isteği başka dile
-sessizce düşmez; etiketsiz `Original Audio` için ayrı **Orijinal ses** seçeneği
-vardır. Mentalist kaynağında İngilizce etiketi yerine bu ad sunuluyorsa Orijinal
-ses seçilebilir. Kaynak ve kitaplık durumu, toplam ilerleme çubuğu, yinelenen
-indirme düğmeleri ve ses değiştirerek aynı işi yeniden deneme düzeltildi.
-Gereksiz yeniden çözümleme kaldırıldı; geçici kopmalarda sağlam parçalar korunur.
+## 0.18.0 ile gelenler
 
+- **Diziler sekmesi:** kitaplıktaki diziler TVmaze bölüm listesiyle karşılaştırılır. Sezon sezon durum, eksik bölümler, sıradaki bölümün tarihi ve yeni bölüm bildirimi. Yanlış eşleşen dizi elle aranabilir. TVmaze'e yalnız dizi adı gider ve bu istek Tor'dan geçmez.
+- **Kasa aç/kapa:** Ayarlar'dan kapatınca Kasa sekmesi ve kasaya taşıma seçenekleri gizlenir, açık kasa kilitlenir. Şifreli dosyalar silinmez.
+- **Show Tracker senkronu:** oynatıcıda izlediğin bölüm ve kaldığın yer bu bilgisayardaki Show Tracker uygulamasına bildirilir. Kasadaki videolar ve dosya yolları gönderilmez.
 
-Aynı başlıklı eşzamanlı indirmeler için ayrı dosya hedefleri, yeniden çözümlemede
-oturum koruması ve MKV kesinti tanısı düzeltmeleri de bu sürüme dahildir.
-
-## 0.17.1 ile gelenler
-
-- **Toplu dizi / bölüm düzenleme:** koleksiyon adı, sezon ve bölüm numaraları. Önizleme, doğal sıralama ve son işlemi geri alma. Video dosyaları yeniden adlandırılmaz.
-- **Video zamanlama kontrolü:** kitaplıktaki video menüsünden ses/görüntü boşluklarını incele. Kontrol dosyayı değiştirmez; modal kapanınca durur.
-- **Daha güvenilir aktarım:** tek/paralel dosyalarda iptal sinyali tüm aşamalara ulaşır; doğrulanan kısmi dosyadan devam edilir.
-- **DASH kalan süre:** çok dönemli videolarda sonraki dönemler de hesaba katılır.
-- **Oturum temizliği:** aktif işin/kitaplığın kullandığı çerez dosyaları korunur, kullanılmayan özel geçici dosyalar sınırlı temizlenir.
-- **Kuyruk tercihi:** otomatik başlatma kapalıyken ayar değiştirmek veya uygulamayı açmak indirmeleri kendiliğinden başlatmaz. Koleksiyon adına göre arama eklenmiştir.
-
-Önceki ses seçimi, Dizibox çözümleme, site hesapları, Touch ID ve her açılışta kapalı altyazı davranışı korunur.
+Yeni özellikler Ayarlar'dan kapatılabilir.
 
 ## İndir
 
 | Sistem | Dosya |
 |---|---|
-| macOS Apple Silicon | `All-in-One-Downloader-0.17.1-arm64.dmg` |
-| macOS Intel | `All-in-One-Downloader-0.17.1-x64.dmg` |
-| Windows 10/11 64 bit | `All-in-One-Downloader-0.17.1-setup.exe` |
+| macOS Apple Silicon | `All-in-One-Downloader-0.18.0-arm64.dmg` |
+| macOS Intel | `All-in-One-Downloader-0.18.0-x64.dmg` |
+| Windows 10/11 64 bit | `All-in-One-Downloader-0.18.0-setup.exe` |
 
 Uygulama içindeki güncelleme denetimi açıksa yeni sürüm üstte bildirilir. Açılıştan yaklaşık 15 saniye sonra, ardından altı saatte bir kontrol edilir. Hemen kontrol etmek için Ayarlar → Uygulama → Güncellemeleri denetle kullanılabilir. Kurulum kullanıcı düğmeye bastığında başlar.
 

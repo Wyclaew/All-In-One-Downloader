@@ -1,7 +1,8 @@
 'use strict'
 
 const path = require('path')
-const { app, BrowserWindow, ipcMain, shell, dialog, clipboard, Menu, powerMonitor } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, dialog, clipboard, Menu, powerMonitor, net, Notification } = require('electron')
+const { createShows, CHECK_INTERVAL_MS } = require('./lib/shows')
 
 const store = require('./lib/store')
 const probe = require('./lib/probe')
@@ -398,6 +399,19 @@ function cancelSource(id) {
   return true
 }
 
+const shows = createShows({
+  getDownloads: () => store.getState().downloads,
+  getCache: () => store.getState().shows,
+  updateCache: (key, value) => store.commit((s) => { s.shows[key] = value }),
+  fetchImpl: (url, init) => net.fetch(url, init),
+  notify: (title, body) => { if (Notification.isSupported()) new Notification({ title, body }).show() },
+})
+
+function refreshShows() {
+  if (store.getState().settings.trackShows === false) return
+  shows.refresh().catch((err) => console.error('[shows] refresh failed', err))
+}
+
 function handle(channel, fn) {
   ipcMain.handle(channel, async (_event, payload) => {
     try {
@@ -724,6 +738,11 @@ function registerIpc() {
     store.commit((s) => {
       s.settings = { ...s.settings, ...patch }
     })
+    if (patch.vaultEnabled === false) {
+      vault.lock()
+      pushVault()
+    }
+    if (patch.trackShows === true) refreshShows()
     if (patch && patch.vaultAutoLockMinutes !== undefined) {
       vault.configure({ autoLockMinutes: patch.vaultAutoLockMinutes })
       pushVault()
@@ -731,6 +750,10 @@ function registerIpc() {
     if (store.getState().settings.autoStartDownloads) downloader.pumpQueue()
     return store.getState().settings
   })
+
+  handle('shows:list', () => shows.overview())
+  handle('shows:refresh', () => shows.refresh({ force: true }))
+  handle('shows:rematch', (payload) => shows.rematch(payload))
 
   handle('settings:backup', () => { const file = store.backup(); shell.showItemInFolder(file); return { path: file } })
 
@@ -942,6 +965,7 @@ function registerIpc() {
 
   /** Move a finished download into the vault: encrypt it, then drop the record. */
   handle('vault:takeDownload', async (downloadId) => {
+    if (store.getState().settings.vaultEnabled === false) throw new Error('Kasa Ayarlar\'dan kapalı.')
     const download = store.findDownload(downloadId)
     if (!download) throw new Error('Kayıt bulunamadı.')
 
@@ -1119,6 +1143,8 @@ if (!app.requestSingleInstanceLock()) {
     // is up so it never delays it.
     setTimeout(() => runTidy({ quiet: true }), 8000)
     updater.schedule()
+    setTimeout(refreshShows, 30000)
+    setInterval(refreshShows, CHECK_INTERVAL_MS).unref()
     // Tor was left running last time: bring it back up so the proxy address in
     // settings keeps meaning something across a restart.
     tor.restoreIfWanted()

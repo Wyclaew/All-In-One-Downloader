@@ -2918,3 +2918,16 @@ a {
 .media-health-facts { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 16px; font-size: 13px; }
 .media-health-facts dt { color: var(--ink-dim); }
 .media-health-facts dd { margin: 0; overflow-wrap: anywhere; }
+
+/* Series tracking */
+.shows { display: flex; flex-direction: column; gap: 12px; padding: 16px 20px; }
+.shows-bar { display: flex; justify-content: flex-end; }
+.show-card { padding: 14px 16px; border: 1px solid var(--rule); border-radius: 10px; }
+.show-card header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.show-card h3 { margin: 0 0 4px; font-size: 15px; }
+.show-meta { margin: 0; font-size: 12px; opacity: 0.72; }
+.show-rematch { display: flex; gap: 8px; margin-top: 10px; }
+.show-rematch input { flex: 1; min-width: 0; }
+.show-season { margin-top: 8px; font-size: 13px; }
+.show-season summary { cursor: pointer; }
+.show-season ul { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }

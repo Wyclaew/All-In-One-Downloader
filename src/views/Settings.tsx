@@ -673,6 +673,18 @@ export default function Settings({ settings, tools, vaultExists, onRefreshTools,
           />
         </Row>
 
+        <Row label="Kasa" hint="Kapatınca Kasa sekmesi ve kasaya taşıma seçenekleri kaybolur, açık kasa kilitlenir. Şifreli dosyalar silinmez; tekrar açınca aynen gelir.">
+          <Toggle checked={settings.vaultEnabled !== false} onChange={(v) => patch({ vaultEnabled: v })} label="Kasayı göster" />
+        </Row>
+
+        <Row label="Dizi takibi" hint="Kitaplıktaki dizilerin bölüm listesini TVmaze'den alır; eksikleri ve yeni bölümleri gösterir. TVmaze'e yalnız dizi adı gider ve bu istek Tor'dan geçmez.">
+          <Toggle checked={settings.trackShows !== false} onChange={(v) => patch({ trackShows: v })} label="Dizileri takip et" />
+        </Row>
+
+        <Row label="Show Tracker" hint="Oynatıcıda izlediğin bölümü ve kaldığın yeri bu bilgisayardaki Show Tracker uygulamasına bildirir. Show Tracker açık değilse bildirim atlanır. Kasadaki videolar asla bildirilmez.">
+          <Toggle checked={settings.showTrackerSync !== false} onChange={(v) => patch({ showTrackerSync: v })} label="İzlediklerimi gönder" />
+        </Row>
+
         <Row label="Kitaplık yedeği" hint="Kaynakları, indirme kayıtlarını ve ayarları bu cihazda yedekler. Şifreli kasa dosyaları ayrı tutulur; bu yedek onları içermez. Son sekiz yedek korunur.">
           <Btn size="sm" icon="folder" onClick={async () => { const result = await api.backupLibrary(); if (result) onToast('Kitaplık yedeği oluşturuldu.', 'ok') }}>Şimdi yedekle</Btn>
         </Row>
